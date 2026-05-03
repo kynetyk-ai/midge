@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Environments
+.venv/
+venv/
+.env
+
+# Poetry
+# poetry.lock IS committed; nothing to ignore here
+
+# Tooling
+.pytest_cache/
+.ruff_cache/
+.pyright/
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+
+# Agent runtime state (mirrors pi-mono's .pi/ convention)
+.pi/
+.pi-*/

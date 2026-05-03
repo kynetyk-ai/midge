@@ -1,0 +1,49 @@
+[project]
+name = "pi"
+version = "0.1.0"
+description = "Hackable Python agent harness — readable, retargetable, ~2k LOC."
+authors = [{ name = "Joshua Ziel", email = "josh@kynetyk.ai" }]
+license = "MIT"
+readme = "README.md"
+requires-python = ">=3.11,<4.0"
+dependencies = [
+    "openai>=1.50.0,<2.0.0",
+    "pydantic>=2.9,<3.0",
+    "mistune>=3.2.0,<4.0.0",
+    "pygments>=2.20.0,<3.0.0",
+    "textual>=8.2.5,<9.0.0",
+]
+
+[project.scripts]
+pi = "pi.cli:main"
+
+[tool.poetry]
+packages = [{ include = "pi", from = "src" }]
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3"
+pytest-asyncio = "^0.24"
+ruff = "^0.7"
+pyright = "^1.1.380"
+
+[build-system]
+requires = ["poetry-core>=2.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+ignore = ["E501"]
+
+[tool.pyright]
+include = ["src", "tests"]
+pythonVersion = "3.11"
+typeCheckingMode = "standard"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
