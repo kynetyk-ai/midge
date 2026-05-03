@@ -1,0 +1,37 @@
+version: 2
+updates:
+  # Python dependencies: openai, pydantic, mistune, pygments, textual,
+  # plus dev tools (pytest, ruff, pyright, ...). Reads pyproject.toml + poetry.lock.
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "America/New_York"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+    labels:
+      - "dependencies"
+      - "python"
+    groups:
+      python-deps:
+        patterns: ["*"]
+
+  # GitHub Actions used in .github/workflows/*.yml — actions/checkout,
+  # actions/setup-python, etc. Auto-bumps reduce the maintenance burden
+  # of Node-runtime deprecations on third-party actions.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "America/New_York"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+    labels:
+      - "dependencies"
+      - "github-actions"
