@@ -69,10 +69,10 @@ async def test_submit_creates_user_and_assistant_bubbles() -> None:
     )
     app = PiApp(agent)
     async with app.run_test() as pilot:
-        # Type into the input area and submit via Ctrl+J
+        # Type into the input area and submit via Enter
         input_widget = app.query_one("#input")
         input_widget.text = "hi"  # type: ignore[attr-defined]
-        await pilot.press("ctrl+j")
+        await pilot.press("enter")
 
         # Wait for the run worker to complete
         await app.workers.wait_for_complete()
@@ -95,3 +95,53 @@ async def test_escape_clears_input() -> None:
         input_widget.text = "draft text"  # type: ignore[attr-defined]
         await pilot.press("escape")
         assert input_widget.text == ""  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_alt_enter_inserts_newline_without_submitting() -> None:
+    agent = _build_agent([])
+    app = PiApp(agent)
+    async with app.run_test() as pilot:
+        input_widget = app.query_one("#input")
+        input_widget.text = "line one"  # type: ignore[attr-defined]
+        await pilot.press("alt+enter")
+        await pilot.pause()
+
+        # Newline got inserted; nothing was submitted
+        assert "\n" in input_widget.text  # type: ignore[attr-defined]
+        assert len(list(app.query(UserBubble))) == 0
+
+
+@pytest.mark.asyncio
+async def test_enter_on_empty_input_is_noop() -> None:
+    agent = _build_agent([])
+    app = PiApp(agent)
+    async with app.run_test() as pilot:
+        await pilot.press("enter")
+        await pilot.pause()
+        assert len(list(app.query(UserBubble))) == 0
+
+
+@pytest.mark.asyncio
+async def test_multiline_prompt_submits_via_enter_with_newlines_intact() -> None:
+    agent = _build_agent(
+        [[_chunk(content="ok"), _chunk(finish_reason="stop")]]
+    )
+    app = PiApp(agent)
+    async with app.run_test() as pilot:
+        input_widget = app.query_one("#input")
+        input_widget.text = "line one\nline two"  # type: ignore[attr-defined]
+        await pilot.press("enter")
+
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+
+        user_bubbles = list(app.query(UserBubble))
+        assert len(user_bubbles) == 1
+        # The agent's history should carry both lines
+        history = agent.history
+        assert len(history) >= 1
+        first = history[0]
+        assert hasattr(first, "content")
+        assert "line one" in str(first.content)
+        assert "line two" in str(first.content)
