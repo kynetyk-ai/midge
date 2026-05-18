@@ -132,7 +132,7 @@ async def test_edit_ambiguous_match_raises(tmp_path: Path) -> None:
 async def test_edit_overlapping_raises(tmp_path: Path) -> None:
     f = tmp_path / "code.py"
     f.write_text("abcdef\n")
-    with pytest.raises(ValueError, match="[Oo]verlapping"):
+    with pytest.raises(ValueError, match=r"[Oo]verlapping"):
         await edit.invoke(
             {
                 "path": str(f),
