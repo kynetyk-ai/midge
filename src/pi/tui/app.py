@@ -43,10 +43,16 @@ from pi.persistence import Session
 
 
 class _SubmitTextArea(TextArea):
-    """TextArea that emits Submitted on Ctrl+J (terminals' Ctrl+Enter)."""
+    """TextArea where Enter submits and Alt+Enter inserts a newline.
+
+    Ctrl+J is kept as a fallback for terminals that don't deliver a clean
+    Enter keysym.
+    """
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("ctrl+j", "submit", "Submit", show=False)
+        Binding("enter", "submit", "Submit", show=False, priority=True),
+        Binding("alt+enter", "newline", "Newline", show=True, priority=True),
+        Binding("ctrl+j", "submit", "Submit", show=False),
     ]
 
     class Submitted(Message):
@@ -60,6 +66,9 @@ class _SubmitTextArea(TextArea):
             return
         self.post_message(self.Submitted(text))
         self.clear()
+
+    def action_newline(self) -> None:
+        self.insert("\n")
 
 
 class UserBubble(Static):
