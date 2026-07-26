@@ -136,6 +136,21 @@ def test_single_file_path_works(tmp_path: Path) -> None:
     assert "lone" in registry
 
 
+def test_skill_file_can_import_sibling_module(tmp_path: Path) -> None:
+    (tmp_path / "helpers.py").write_text("def shout(s):\n    return s.upper()\n")
+    (tmp_path / "main.py").write_text(
+        "from helpers import shout\n"
+        "from pym.tools import tool\n\n"
+        "@tool\n"
+        "async def loud(text: str) -> str:\n"
+        "    return shout(text)\n"
+    )
+
+    registry, _ = load_skills([tmp_path / "main.py"])
+    assert "loud" in registry
+    assert asyncio.run(registry.get("loud").invoke({"text": "hey"})) == "HEY"
+
+
 def test_failing_import_warns_and_continues(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:

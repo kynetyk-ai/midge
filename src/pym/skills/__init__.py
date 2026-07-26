@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import importlib.util
 import logging
+import sys
 from collections.abc import Iterable
 from pathlib import Path
 from types import ModuleType
@@ -81,8 +82,22 @@ def _import_file(path: Path) -> ModuleType:
     spec = importlib.util.spec_from_file_location(name, abs_path)
     if spec is None or spec.loader is None:
         raise ImportError(f"Cannot create import spec for {path}")
+
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    module.__package__ = abs_path.parent.name
+    module.__file__ = str(abs_path)
+    sys.modules[name] = module
+    sys.path.insert(0, str(abs_path.parent))
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        sys.modules.pop(name, None)
+        raise
+    finally:
+        try:
+            sys.path.remove(str(abs_path.parent))
+        except ValueError:
+            pass
     return module
 
 
