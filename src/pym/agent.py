@@ -7,14 +7,14 @@ from typing import Any, Literal
 
 from pydantic import ValidationError
 
-from pi.client import (
+from pym.client import (
     Client,
     Done,
     Error,
     StreamEvent,
     StreamStart,
 )
-from pi.messages import (
+from pym.messages import (
     AssistantMessage,
     Message,
     TextContent,
@@ -22,7 +22,7 @@ from pi.messages import (
     ToolResultMessage,
     UserMessage,
 )
-from pi.tools import ToolRegistry
+from pym.tools import ToolRegistry
 
 
 @dataclass(slots=True)

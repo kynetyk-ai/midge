@@ -1,4 +1,4 @@
-from pi import __version__
+from pym import __version__
 
 
 def test_version_present() -> None:
