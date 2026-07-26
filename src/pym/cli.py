@@ -4,7 +4,7 @@ Usage:
     py [--skill-dir DIR] [--session PATH] [--compaction-threshold N] \\
        [--compaction-keep-recent N]
 
-Env: OPENAI_API_KEY, OPENAI_BASE_URL, PI_MODEL (default: gpt-4o-mini).
+Env: OPENAI_API_KEY, OPENAI_BASE_URL, PYM_MODEL (default: gpt-4o-mini).
 """
 
 from __future__ import annotations
@@ -76,13 +76,13 @@ def main(argv: list[str] | None = None) -> None:
             full_prompt = BASE_SYSTEM_PROMPT
             if prompt_addition:
                 full_prompt += "\n\n" + prompt_addition
-            model = os.getenv("PI_MODEL", "gpt-4o-mini")
+            model = os.getenv("PYM_MODEL", "gpt-4o-mini")
             session = Session.new(args.session, model=model, system_prompt=full_prompt)
     else:
         full_prompt = BASE_SYSTEM_PROMPT
         if prompt_addition:
             full_prompt += "\n\n" + prompt_addition
-        model = os.getenv("PI_MODEL", "gpt-4o-mini")
+        model = os.getenv("PYM_MODEL", "gpt-4o-mini")
 
     client = Client(
         api_key=os.getenv("OPENAI_API_KEY"),
