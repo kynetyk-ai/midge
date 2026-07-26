@@ -20,8 +20,8 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Sequence
 
-from pi.client import Client, Error, TextDelta
-from pi.messages import Message, UserMessage
+from pym.client import Client, Error, TextDelta
+from pym.messages import Message, UserMessage
 
 SUMMARIZATION_SYSTEM_PROMPT = """You are a context summarization assistant. Your job is to produce a compact summary of a conversation history so the rest of the conversation can resume with full context but reduced token usage. Do not continue the conversation; only summarize.
 

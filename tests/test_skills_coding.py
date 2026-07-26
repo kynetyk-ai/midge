@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from pi.skills.coding import bash, edit, read, write
+from pym.skills.coding import bash, edit, read, write
 
 
 async def test_read_basic(tmp_path: Path) -> None:

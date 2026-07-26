@@ -6,8 +6,8 @@ from typing import Any
 
 import pytest
 
-from pi.client import Client
-from pi.compaction import (
+from pym.client import Client
+from pym.compaction import (
     COMPACTION_PREFIX,
     COMPACTION_SUFFIX,
     compact,
@@ -17,7 +17,7 @@ from pi.compaction import (
     needs_compaction,
     summarize,
 )
-from pi.messages import (
+from pym.messages import (
     AssistantMessage,
     Message,
     TextContent,

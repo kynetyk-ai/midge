@@ -7,8 +7,8 @@ notes tools and *only* the notes tools (no bash/edit/read/write).
 Usage:
     poetry run python -m examples.notes_agent [--session PATH]
 
-The KB lives at `~/.pi-notes/kb.json` by default; override with
-`PI_NOTES_KB`.
+The KB lives at `~/.pym-notes/kb.json` by default; override with
+`PYM_NOTES_KB`.
 """
 
 from __future__ import annotations
@@ -18,11 +18,11 @@ import os
 import sys
 from pathlib import Path
 
-from pi.agent import Agent
-from pi.client import Client
-from pi.persistence import Session
-from pi.skills import load_skills
-from pi.tui import run_tui
+from pym.agent import Agent
+from pym.client import Client
+from pym.persistence import Session
+from pym.skills import load_skills
+from pym.tui import run_tui
 
 NOTES_SYSTEM_PROMPT = (
     "You are a personal knowledge assistant. Help the user capture, find, "
@@ -68,10 +68,10 @@ def main(argv: list[str] | None = None) -> None:
             model = session.header.model
             full_prompt = session.header.system_prompt or full_prompt
         else:
-            model = os.getenv("PI_MODEL", "gpt-4o-mini")
+            model = os.getenv("PYM_MODEL", "gpt-4o-mini")
             session = Session.new(args.session, model=model, system_prompt=full_prompt)
     else:
-        model = os.getenv("PI_MODEL", "gpt-4o-mini")
+        model = os.getenv("PYM_MODEL", "gpt-4o-mini")
 
     client = Client(
         api_key=os.getenv("OPENAI_API_KEY"),

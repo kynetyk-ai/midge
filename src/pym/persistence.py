@@ -32,7 +32,7 @@ from typing import IO, Any, Literal
 
 from pydantic import BaseModel, TypeAdapter
 
-from pi.messages import Message
+from pym.messages import Message
 
 VERSION = 1
 

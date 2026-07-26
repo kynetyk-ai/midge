@@ -5,8 +5,8 @@ from itertools import pairwise
 
 from pydantic import BaseModel
 
-from pi.skills.coding._helpers import resolve_path
-from pi.tools import tool
+from pym.skills.coding._helpers import resolve_path
+from pym.tools import tool
 
 _BOM = "﻿"
 

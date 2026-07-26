@@ -94,7 +94,7 @@ A single Python process at a time owns a session file. We don't add locks for mu
 
 ## What Phase 3 implements
 
-A new module `src/pi/persistence.py` (we already have `src/pi/session.py` for HTML export — calling this one `persistence.py` keeps the names from colliding):
+A new module `src/pym/persistence.py` (we already have `src/pym/session.py` for HTML export — calling this one `persistence.py` keeps the names from colliding):
 
 ```python
 class Session:

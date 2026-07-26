@@ -6,9 +6,9 @@ from typing import Any
 
 import pytest
 
-from pi.agent import Agent
-from pi.client import Client
-from pi.tui.app import AssistantBubble, PiApp, UserBubble
+from pym.agent import Agent
+from pym.client import Client
+from pym.tui.app import AssistantBubble, PiApp, UserBubble
 
 
 def _chunk(
