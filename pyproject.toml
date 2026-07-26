@@ -1,5 +1,5 @@
 [project]
-name = "pi"
+name = "pym"
 version = "0.1.0"
 description = "Hackable Python agent harness — readable, retargetable, ~2k LOC."
 authors = [{ name = "Joshua Ziel", email = "josh@kynetyk.ai" }]
@@ -15,10 +15,10 @@ dependencies = [
 ]
 
 [project.scripts]
-pi = "pi.cli:main"
+pym = "pym.cli:main"
 
 [tool.poetry]
-packages = [{ include = "pi", from = "src" }]
+packages = [{ include = "pym", from = "src" }]
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3"

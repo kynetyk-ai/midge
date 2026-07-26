@@ -31,7 +31,7 @@ Python 3.11+. Poetry for env and dep management.
 ### Interactive TUI (coding domain)
 
 ```bash
-poetry run pi
+poetry run pym
 ```
 
 Flags: `--skill-dir DIR` (repeatable), `--session PATH`, `--compaction-threshold N`, `--compaction-keep-recent N`. Bindings: `Ctrl+J` submit, `Ctrl+C` interrupt, `Ctrl+D` quit, `Esc` clear input.
@@ -68,7 +68,7 @@ Newline-delimited JSON; commands `prompt`, `abort`, `get_messages`. Protocol det
 poetry run python -m examples.notes_agent
 ```
 
-Same TUI, same agent, no coding tools — just `add_note`, `search_notes`, `read_note`, `list_notes`, `link_notes`. KB lives at `~/.pi-notes/kb.json` by default (override with `PI_NOTES_KB`).
+Same TUI, same agent, no coding tools — just `add_note`, `search_notes`, `read_note`, `list_notes`, `link_notes`. KB lives at `~/.pym-notes/kb.json` by default (override with `PYM_NOTES_KB`).
 
 ## Adapting to a new domain
 
@@ -81,7 +81,7 @@ The harness deliberately separates from the "coding agent" identity. See `exampl
 ## Layout
 
 ```
-src/pi/
+src/pym/
 ├── messages.py        # typed message history + OpenAI conversion boundary
 ├── client.py          # async OpenAI-compatible client + stream events
 ├── tools.py           # @tool decorator + Pydantic schema + ToolRegistry
@@ -94,7 +94,7 @@ src/pi/
 │   ├── __init__.py    # load_skills(dirs) → (ToolRegistry, prompt_addition)
 │   └── coding/        # read, bash, edit, write
 ├── tui/app.py         # Textual TUI
-└── cli.py             # `pi` entrypoint
+└── cli.py             # `pym` entrypoint
 examples/
 ├── coding_agent.py    # one-shot CLI for the coding domain
 ├── rpc_agent.py       # RPC server for external clients
@@ -108,12 +108,12 @@ tests/                 # pytest tests
 
 If you want to understand how the harness works, the files in dependency order:
 
-1. `src/pi/messages.py` — the data model.
-2. `src/pi/client.py` — chunk → event mapping; the streaming part.
-3. `src/pi/tools.py` — `@tool` and the registry.
-4. `src/pi/agent.py` — the loop.
-5. `src/pi/skills/coding/` — four real tools.
-6. `src/pi/skills/__init__.py` — the loader.
+1. `src/pym/messages.py` — the data model.
+2. `src/pym/client.py` — chunk → event mapping; the streaming part.
+3. `src/pym/tools.py` — `@tool` and the registry.
+4. `src/pym/agent.py` — the loop.
+5. `src/pym/skills/coding/` — four real tools.
+6. `src/pym/skills/__init__.py` — the loader.
 7. Anything else, in any order: `compaction.py`, `persistence.py`, `session.py`, `rpc.py`, `tui/app.py`.
 
 ## License

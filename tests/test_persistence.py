@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from pi.messages import (
+from pym.messages import (
     AssistantMessage,
     ImageContent,
     TextContent,
@@ -13,7 +13,7 @@ from pi.messages import (
     ToolResultMessage,
     UserMessage,
 )
-from pi.persistence import VERSION, Session, SessionHeader
+from pym.persistence import VERSION, Session, SessionHeader
 
 
 def test_new_session_writes_header(tmp_path: Path) -> None:

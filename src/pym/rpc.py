@@ -24,13 +24,13 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from pi.agent import (
+from pym.agent import (
     Agent,
     AgentEnd,
     ToolExecutionEnd,
     ToolExecutionStart,
 )
-from pi.client import (
+from pym.client import (
     Done,
     Error,
     StreamStart,
@@ -41,7 +41,7 @@ from pi.client import (
     ToolCallEnd,
     ToolCallStart,
 )
-from pi.messages import TextContent, ToolCall
+from pym.messages import TextContent, ToolCall
 
 _logger = logging.getLogger(__name__)
 

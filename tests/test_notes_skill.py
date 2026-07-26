@@ -13,15 +13,15 @@ from types import ModuleType
 
 import pytest
 
-from pi.skills import load_skills
+from pym.skills import load_skills
 
 _NOTES_FILE = Path(__file__).parent.parent / "examples" / "notes_skill" / "notes.py"
 
 
 @pytest.fixture
 def notes_skill(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ModuleType:
-    """Import the notes skill module fresh, with PI_NOTES_KB pointed at tmp_path."""
-    monkeypatch.setenv("PI_NOTES_KB", str(tmp_path / "kb.json"))
+    """Import the notes skill module fresh, with PYM_NOTES_KB pointed at tmp_path."""
+    monkeypatch.setenv("PYM_NOTES_KB", str(tmp_path / "kb.json"))
     spec = importlib.util.spec_from_file_location(
         f"_pi_test_notes_{id(tmp_path)}", _NOTES_FILE
     )
@@ -136,7 +136,7 @@ def test_skill_loads_through_load_skills(
     """The whole point of Phase 5: load_skills() picks up the notes pack
     exactly the way it picks up the built-in coding skills, with no special
     casing in core."""
-    monkeypatch.setenv("PI_NOTES_KB", str(tmp_path / "kb.json"))
+    monkeypatch.setenv("PYM_NOTES_KB", str(tmp_path / "kb.json"))
     registry, prompt_addition = load_skills([_NOTES_FILE.parent])
     expected = {"add_note", "search_notes", "read_note", "list_notes", "link_notes"}
     assert {t.name for t in registry} == expected
