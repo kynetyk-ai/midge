@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from pi.skills.coding._helpers import resolve_path
-from pi.tools import tool
+from pym.skills.coding._helpers import resolve_path
+from pym.tools import tool
 
 _MAX_LINES = 2000
 _MAX_BYTES = 50_000

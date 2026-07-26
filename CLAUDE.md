@@ -37,8 +37,8 @@ The user does not work in TypeScript and wants a codebase they can read, modify,
 ## Layout
 
 ```
-src/pi/            # the harness package
-src/pi/skills/     # built-in skills (coding tools live here)
+src/pym/            # the harness package
+src/pym/skills/     # built-in skills (coding tools live here)
 tests/             # pytest tests
 examples/          # entrypoints
 notes/             # patterns borrowed from pi-mono during reading passes

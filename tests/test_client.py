@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from pi.client import (
+from pym.client import (
     Client,
     Done,
     Error,
@@ -20,7 +20,7 @@ from pi.client import (
     ToolCallEnd,
     ToolCallStart,
 )
-from pi.messages import TextContent, ToolCall, UserMessage
+from pym.messages import TextContent, ToolCall, UserMessage
 
 
 def _chunk(

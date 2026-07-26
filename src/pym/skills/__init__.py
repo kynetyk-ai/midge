@@ -18,7 +18,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from types import ModuleType
 
-from pi.tools import Tool, ToolRegistry
+from pym.tools import Tool, ToolRegistry
 
 _BUILTIN_ROOT = Path(__file__).parent
 BUILTIN_DIRS: list[Path] = [_BUILTIN_ROOT / "coding"]

@@ -6,7 +6,7 @@ import os
 import signal
 import tempfile
 
-from pi.tools import tool
+from pym.tools import tool
 
 _MAX_LINES = 2000
 _MAX_BYTES = 50_000

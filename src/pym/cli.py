@@ -1,7 +1,7 @@
-"""`pi` CLI: launches the interactive TUI.
+"""`pym` CLI: launches the interactive TUI.
 
 Usage:
-    pi [--skill-dir DIR] [--session PATH] [--compaction-threshold N] \\
+    py [--skill-dir DIR] [--session PATH] [--compaction-threshold N] \\
        [--compaction-keep-recent N]
 
 Env: OPENAI_API_KEY, OPENAI_BASE_URL, PI_MODEL (default: gpt-4o-mini).
@@ -13,11 +13,11 @@ import argparse
 import os
 from pathlib import Path
 
-from pi.agent import Agent
-from pi.client import Client
-from pi.persistence import Session
-from pi.skills import BUILTIN_DIRS, load_skills
-from pi.tui import run_tui
+from pym.agent import Agent
+from pym.client import Client
+from pym.persistence import Session
+from pym.skills import BUILTIN_DIRS, load_skills
+from pym.tui import run_tui
 
 BASE_SYSTEM_PROMPT = (
     "You are a coding assistant working in a local repository. "
@@ -27,7 +27,7 @@ BASE_SYSTEM_PROMPT = (
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(prog="pi")
+    parser = argparse.ArgumentParser(prog="pym")
     parser.add_argument(
         "--skill-dir",
         action="append",
