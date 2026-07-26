@@ -16,6 +16,7 @@ import importlib.util
 import logging
 import sys
 from collections.abc import Iterable
+from contextlib import suppress
 from pathlib import Path
 from types import ModuleType
 
@@ -94,10 +95,8 @@ def _import_file(path: Path) -> ModuleType:
         sys.modules.pop(name, None)
         raise
     finally:
-        try:
+        with suppress(ValueError):
             sys.path.remove(str(abs_path.parent))
-        except ValueError:
-            pass
     return module
 
 
