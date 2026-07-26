@@ -79,16 +79,14 @@ def _is_skill_file(p: Path) -> bool:
 
 def _import_file(path: Path) -> ModuleType:
     abs_path = path.resolve()
-    name = f"_pi_skill_{abs_path.stem}_{abs(hash(str(abs_path)))}"
+    name = f"_pym_skill_{abs_path.stem}_{abs(hash(str(abs_path)))}"
     spec = importlib.util.spec_from_file_location(name, abs_path)
     if spec is None or spec.loader is None:
         raise ImportError(f"Cannot create import spec for {path}")
 
     module = importlib.util.module_from_spec(spec)
-    module.__package__ = abs_path.parent.name
-    module.__file__ = str(abs_path)
     sys.modules[name] = module
-    sys.path.insert(0, str(abs_path.parent))
+    sys.path.append(str(abs_path.parent))
     try:
         spec.loader.exec_module(module)
     except Exception:

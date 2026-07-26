@@ -107,6 +107,7 @@ def test_duplicate_tool_name_first_wins(
 
     assert len(registry) == 1
     t = registry.get("shared")
+    assert t is not None
     assert isinstance(t, Tool)
     assert asyncio.run(t.invoke({})) == "first"
     assert any("shadowed" in rec.message for rec in caplog.records)
@@ -148,7 +149,9 @@ def test_skill_file_can_import_sibling_module(tmp_path: Path) -> None:
 
     registry, _ = load_skills([tmp_path / "main.py"])
     assert "loud" in registry
-    assert asyncio.run(registry.get("loud").invoke({"text": "hey"})) == "HEY"
+    loud = registry.get("loud")
+    assert loud is not None
+    assert asyncio.run(loud.invoke({"text": "hey"})) == "HEY"
 
 
 def test_failing_import_warns_and_continues(
