@@ -47,11 +47,11 @@ Against a local OpenAI-compatible server:
 
 ```bash
 OPENAI_BASE_URL=http://127.0.0.1:1234/v1 \
-PI_MODEL=ibm/granite-3.2-8b \
+PYM_MODEL=ibm/granite-3.2-8b \
 poetry run python -m examples.coding_agent --session run.jsonl --export-html run.html "summarize the README"
 ```
 
-`PI_MODEL` defaults to `gpt-4o-mini`. Other flags: `--skill-dir DIR`, `--session PATH` (resumes if file exists), `--export-html PATH`, `--compaction-threshold N`.
+`PYM_MODEL` defaults to `gpt-4o-mini`. Other flags: `--skill-dir DIR`, `--session PATH` (resumes if file exists), `--export-html PATH`, `--compaction-threshold N`.
 
 ### RPC (JSON-on-stdio)
 

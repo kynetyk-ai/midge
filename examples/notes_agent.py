@@ -68,10 +68,10 @@ def main(argv: list[str] | None = None) -> None:
             model = session.header.model
             full_prompt = session.header.system_prompt or full_prompt
         else:
-            model = os.getenv("PI_MODEL", "gpt-4o-mini")
+            model = os.getenv("PYM_MODEL", "gpt-4o-mini")
             session = Session.new(args.session, model=model, system_prompt=full_prompt)
     else:
-        model = os.getenv("PI_MODEL", "gpt-4o-mini")
+        model = os.getenv("PYM_MODEL", "gpt-4o-mini")
 
     client = Client(
         api_key=os.getenv("OPENAI_API_KEY"),
