@@ -22,7 +22,7 @@ from pygments.formatters import HtmlFormatter
 from pygments.lexers import get_lexer_by_name
 from pygments.util import ClassNotFound
 
-from pi.messages import (
+from pym.messages import (
     AssistantMessage,
     ImageContent,
     Message,
@@ -122,7 +122,7 @@ $body
 def export_html(
     messages: list[Message],
     *,
-    title: str = "pi session",
+    title: str = "pym session",
     model: str = "",
 ) -> str:
     pygments_css = HtmlFormatter(cssclass="codehilite").get_style_defs(".codehilite")

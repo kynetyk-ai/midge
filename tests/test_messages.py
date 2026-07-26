@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from pi.messages import (
+from pym.messages import (
     AssistantMessage,
     ImageContent,
     TextContent,

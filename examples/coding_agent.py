@@ -10,7 +10,7 @@ Options:
                           exists, the agent resumes from it (re-using the
                           model and system prompt from its header).
 
-Env: OPENAI_API_KEY, OPENAI_BASE_URL, PI_MODEL (default: gpt-4o-mini).
+Env: OPENAI_API_KEY, OPENAI_BASE_URL, PYM_MODEL (default: gpt-4o-mini).
 """
 
 from __future__ import annotations
@@ -21,13 +21,13 @@ import os
 import sys
 from pathlib import Path
 
-from pi.agent import Agent, AgentEnd, ToolExecutionEnd, ToolExecutionStart
-from pi.client import Client, TextDelta
-from pi.compaction import compact, needs_compaction
-from pi.messages import TextContent
-from pi.persistence import Session
-from pi.session import export_html
-from pi.skills import BUILTIN_DIRS, load_skills
+from pym.agent import Agent, AgentEnd, ToolExecutionEnd, ToolExecutionStart
+from pym.client import Client, TextDelta
+from pym.compaction import compact, needs_compaction
+from pym.messages import TextContent
+from pym.persistence import Session
+from pym.session import export_html
+from pym.skills import BUILTIN_DIRS, load_skills
 
 BASE_SYSTEM_PROMPT = (
     "You are a coding assistant working in a local repository. "
@@ -103,7 +103,7 @@ async def amain(
             full_prompt = BASE_SYSTEM_PROMPT
             if prompt_addition:
                 full_prompt += "\n\n" + prompt_addition
-            model = os.getenv("PI_MODEL", "gpt-4o-mini")
+            model = os.getenv("PYM_MODEL", "gpt-4o-mini")
             session = Session.new(
                 session_path, model=model, system_prompt=full_prompt
             )
@@ -111,7 +111,7 @@ async def amain(
         full_prompt = BASE_SYSTEM_PROMPT
         if prompt_addition:
             full_prompt += "\n\n" + prompt_addition
-        model = os.getenv("PI_MODEL", "gpt-4o-mini")
+        model = os.getenv("PYM_MODEL", "gpt-4o-mini")
 
     client = Client(
         api_key=os.getenv("OPENAI_API_KEY"),
@@ -174,7 +174,7 @@ async def amain(
         export_html_path.write_text(
             export_html(
                 agent.history,
-                title=f"pi · {prompt[:60]}",
+                title=f"pym · {prompt[:60]}",
                 model=agent.model,
             ),
             encoding="utf-8",

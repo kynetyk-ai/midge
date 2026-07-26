@@ -101,7 +101,7 @@ For v1: use `usage` if available (stash on `AssistantMessage.extra["usage"]` fro
 
 ## What Phase 3 implements
 
-In `src/pi/compaction.py`:
+In `src/pym/compaction.py`:
 
 ```python
 def needs_compaction(history, *, threshold_tokens, count_tokens) -> bool: ...

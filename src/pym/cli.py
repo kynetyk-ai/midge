@@ -1,10 +1,10 @@
-"""`pi` CLI: launches the interactive TUI.
+"""`pym` CLI: launches the interactive TUI.
 
 Usage:
-    pi [--skill-dir DIR] [--session PATH] [--compaction-threshold N] \\
+    py [--skill-dir DIR] [--session PATH] [--compaction-threshold N] \\
        [--compaction-keep-recent N]
 
-Env: OPENAI_API_KEY, OPENAI_BASE_URL, PI_MODEL (default: gpt-4o-mini).
+Env: OPENAI_API_KEY, OPENAI_BASE_URL, PYM_MODEL (default: gpt-4o-mini).
 """
 
 from __future__ import annotations
@@ -13,11 +13,11 @@ import argparse
 import os
 from pathlib import Path
 
-from pi.agent import Agent
-from pi.client import Client
-from pi.persistence import Session
-from pi.skills import BUILTIN_DIRS, load_skills
-from pi.tui import run_tui
+from pym.agent import Agent
+from pym.client import Client
+from pym.persistence import Session
+from pym.skills import BUILTIN_DIRS, load_skills
+from pym.tui import run_tui
 
 BASE_SYSTEM_PROMPT = (
     "You are a coding assistant working in a local repository. "
@@ -27,7 +27,7 @@ BASE_SYSTEM_PROMPT = (
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(prog="pi")
+    parser = argparse.ArgumentParser(prog="pym")
     parser.add_argument(
         "--skill-dir",
         action="append",
@@ -76,13 +76,13 @@ def main(argv: list[str] | None = None) -> None:
             full_prompt = BASE_SYSTEM_PROMPT
             if prompt_addition:
                 full_prompt += "\n\n" + prompt_addition
-            model = os.getenv("PI_MODEL", "gpt-4o-mini")
+            model = os.getenv("PYM_MODEL", "gpt-4o-mini")
             session = Session.new(args.session, model=model, system_prompt=full_prompt)
     else:
         full_prompt = BASE_SYSTEM_PROMPT
         if prompt_addition:
             full_prompt += "\n\n" + prompt_addition
-        model = os.getenv("PI_MODEL", "gpt-4o-mini")
+        model = os.getenv("PYM_MODEL", "gpt-4o-mini")
 
     client = Client(
         api_key=os.getenv("OPENAI_API_KEY"),

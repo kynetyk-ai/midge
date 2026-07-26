@@ -4,21 +4,21 @@ from collections.abc import Iterable
 from types import SimpleNamespace
 from typing import Any
 
-from pi.agent import (
+from pym.agent import (
     Agent,
     AgentEnd,
     AgentEvent,
     ToolExecutionEnd,
     ToolExecutionStart,
 )
-from pi.client import Client
-from pi.messages import (
+from pym.client import Client
+from pym.messages import (
     AssistantMessage,
     TextContent,
     ToolResultMessage,
     UserMessage,
 )
-from pi.tools import ToolRegistry, tool
+from pym.tools import ToolRegistry, tool
 
 
 def _chunk(

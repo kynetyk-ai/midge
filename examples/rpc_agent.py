@@ -1,13 +1,13 @@
 """Run the agent in RPC (JSON-over-stdio) mode.
 
 Reads newline-delimited JSON commands from stdin; writes responses and async
-events to stdout. See `notes/rpc.md` and `src/pi/rpc.py` for the protocol.
+events to stdout. See `notes/rpc.md` and `src/pym/rpc.py` for the protocol.
 
 Usage:
     poetry run python -m examples.rpc_agent [--skill-dir DIR ...]
 
 Same env vars as `examples.coding_agent`: OPENAI_API_KEY, OPENAI_BASE_URL,
-PI_MODEL.
+PYM_MODEL.
 
 Try it from a separate shell:
     echo '{"id": "1", "type": "prompt", "message": "say hi"}' \\
@@ -22,10 +22,10 @@ import os
 import sys
 from pathlib import Path
 
-from pi.agent import Agent
-from pi.client import Client
-from pi.rpc import RpcServer
-from pi.skills import BUILTIN_DIRS, load_skills
+from pym.agent import Agent
+from pym.client import Client
+from pym.rpc import RpcServer
+from pym.skills import BUILTIN_DIRS, load_skills
 
 BASE_SYSTEM_PROMPT = (
     "You are a coding assistant. "
@@ -58,7 +58,7 @@ async def amain(skill_dirs: list[Path]) -> int:
     )
     agent = Agent(
         client=client,
-        model=os.getenv("PI_MODEL", "gpt-4o-mini"),
+        model=os.getenv("PYM_MODEL", "gpt-4o-mini"),
         tools=registry,
         system_prompt=full_prompt,
     )
