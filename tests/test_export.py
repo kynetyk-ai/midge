@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pym.messages import (
+from midge.messages import (
     AssistantMessage,
     ImageContent,
     Message,
@@ -9,7 +9,7 @@ from pym.messages import (
     ToolResultMessage,
     UserMessage,
 )
-from pym.session import export_html
+from midge.session import export_html
 
 
 def test_basic_text_session() -> None:
@@ -190,7 +190,7 @@ def test_assistant_with_only_tool_calls_no_empty_placeholder() -> None:
 
 def test_default_title_when_none_given() -> None:
     out = export_html([UserMessage(content="hi")])
-    assert "<title>pym session</title>" in out
+    assert "<title>midge session</title>" in out
 
 
 def test_full_loop_session_round_trip() -> None:

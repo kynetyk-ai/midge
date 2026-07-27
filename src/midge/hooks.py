@@ -23,7 +23,7 @@ from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from typing import Any, ClassVar, Literal, TypeAlias, overload
 
-from pym.messages import AssistantMessage, Message, ToolCall, UserContent, UserMessage
+from midge.messages import AssistantMessage, Message, ToolCall, UserContent, UserMessage
 
 _logger = logging.getLogger(__name__)
 

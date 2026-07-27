@@ -1,13 +1,13 @@
 """Run the agent in RPC (JSON-over-stdio) mode.
 
 Reads newline-delimited JSON commands from stdin; writes responses and async
-events to stdout. See `notes/rpc.md` and `src/pym/rpc.py` for the protocol.
+events to stdout. See `notes/rpc.md` and `src/midge/rpc.py` for the protocol.
 
 Usage:
     poetry run python -m examples.rpc_agent [--extension-dir DIR ...]
 
 Same env vars as `examples.coding_agent`: OPENAI_API_KEY, OPENAI_BASE_URL,
-PYM_MODEL.
+MIDGE_MODEL.
 
 Try it from a separate shell:
     echo '{"id": "1", "type": "prompt", "message": "say hi"}' \\
@@ -22,10 +22,10 @@ import os
 import sys
 from pathlib import Path
 
-from pym.agent import Agent
-from pym.client import Client
-from pym.extensions import BUILTIN_TOOL_DIRS, load_extensions
-from pym.rpc import RpcServer
+from midge.agent import Agent
+from midge.client import Client
+from midge.extensions import BUILTIN_TOOL_DIRS, load_extensions
+from midge.rpc import RpcServer
 
 BASE_SYSTEM_PROMPT = (
     "You are a coding assistant. "
@@ -58,7 +58,7 @@ async def amain(extension_dirs: list[Path]) -> int:
     )
     agent = Agent(
         client=client,
-        model=os.getenv("PYM_MODEL", "gpt-4o-mini"),
+        model=os.getenv("MIDGE_MODEL", "gpt-4o-mini"),
         tools=registry,
         system_prompt=full_prompt,
     )

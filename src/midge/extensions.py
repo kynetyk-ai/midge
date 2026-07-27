@@ -9,7 +9,7 @@ public `.py` file (skipping `_*.py` and `__init__.py`), and pulls every `Tool`
 into a fresh `ToolRegistry`. First-registered wins on name collisions; later
 duplicates are warned about and dropped.
 
-The built-in tools in `pym/tools/coding/` are loaded through this same path —
+The built-in tools in `midge/tools/coding/` are loaded through this same path —
 built-in and user-supplied tools are not special-cased.
 """
 
@@ -22,8 +22,8 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
-from pym.hooks import Hooks
-from pym.tools import Tool, ToolRegistry
+from midge.hooks import Hooks
+from midge.tools import Tool, ToolRegistry
 
 _BUILTIN_TOOL_ROOT = Path(__file__).parent / "tools"
 BUILTIN_TOOL_DIRS: list[Path] = [_BUILTIN_TOOL_ROOT / "coding"]
@@ -122,7 +122,7 @@ def _is_extension_file(p: Path) -> bool:
 
 def _import_file(path: Path) -> ModuleType:
     abs_path = path.resolve()
-    name = f"_pym_ext_{abs_path.stem}_{abs(hash(str(abs_path)))}"
+    name = f"_midge_ext_{abs_path.stem}_{abs(hash(str(abs_path)))}"
     spec = importlib.util.spec_from_file_location(name, abs_path)
     if spec is None or spec.loader is None:
         raise ImportError(f"Cannot create import spec for {path}")

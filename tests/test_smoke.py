@@ -1,4 +1,4 @@
-from pym import __version__
+from midge import __version__
 
 
 def test_version_present() -> None:

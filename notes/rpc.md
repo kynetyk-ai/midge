@@ -78,7 +78,7 @@ We mirror this **two-category** pattern. It keeps responses idempotent (one per 
 
 ## Outbound: event mapping from our internal taxonomy
 
-Our internal `AgentEvent` (in `src/pym/agent.py` and `src/pym/client.py`) maps cleanly to pi-mono's wire events:
+Our internal `AgentEvent` (in `src/midge/agent.py` and `src/midge/client.py`) maps cleanly to pi-mono's wire events:
 
 | Internal | Wire | Notes |
 |---|---|---|
@@ -100,7 +100,7 @@ The naming difference (`tool_call_*` for LLM emission vs. `tool_execution_*`/`to
 
 ## Lifecycle
 
-1. Process spawns with `pym --rpc` (or however we wire it; an `examples/rpc_agent.py` is the simplest start).
+1. Process spawns with `midge --rpc` (or however we wire it; an `examples/rpc_agent.py` is the simplest start).
 2. Read stdin line by line; parse each as a command.
 3. Write responses (correlated by `id`) and events (uncorrelated) to stdout, each as one `json.dumps + "\n"`.
 4. On stdin EOF, shut down cleanly.
@@ -121,7 +121,7 @@ The naming difference (`tool_call_*` for LLM emission vs. `tool_execution_*`/`to
 
 ## What Phase 2 implements
 
-- `src/pym/rpc.py`:
+- `src/midge/rpc.py`:
   - A `serve_stdio()` async function that reads stdin, dispatches commands, writes events.
   - One handler per inbound command type. Use a dispatch dict, not isinstance chains.
   - Internal mapper `agent_event_to_wire(ev) -> dict | None` — returns None for events we drop.

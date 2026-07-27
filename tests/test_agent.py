@@ -4,21 +4,21 @@ from collections.abc import Iterable
 from types import SimpleNamespace
 from typing import Any
 
-from pym.agent import (
+from midge.agent import (
     Agent,
     AgentEnd,
     AgentEvent,
     ToolExecutionEnd,
     ToolExecutionStart,
 )
-from pym.client import Client
-from pym.messages import (
+from midge.client import Client
+from midge.messages import (
     AssistantMessage,
     TextContent,
     ToolResultMessage,
     UserMessage,
 )
-from pym.tools import ToolRegistry, tool
+from midge.tools import ToolRegistry, tool
 
 
 def _chunk(

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from pym.tools import tool
-from pym.tools.coding._helpers import resolve_path
+from midge.tools import tool
+from midge.tools.coding._helpers import resolve_path
 
 
 @tool

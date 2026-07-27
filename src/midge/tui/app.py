@@ -28,8 +28,8 @@ from textual.message import Message
 from textual.widgets import Footer, Header, Static, TextArea
 from textual.worker import Worker, WorkerState
 
-from pym.agent import Agent, AgentEnd, ToolExecutionEnd, ToolExecutionStart
-from pym.client import (
+from midge.agent import Agent, AgentEnd, ToolExecutionEnd, ToolExecutionStart
+from midge.client import (
     Done,
     Error,
     StreamEvent,
@@ -37,9 +37,9 @@ from pym.client import (
     ToolCallEnd,
     ToolCallStart,
 )
-from pym.compaction import compact, needs_compaction
-from pym.messages import TextContent, ToolCall
-from pym.persistence import Session
+from midge.compaction import compact, needs_compaction
+from midge.messages import TextContent, ToolCall
+from midge.persistence import Session
 
 
 class _SubmitTextArea(TextArea):
@@ -148,7 +148,7 @@ class PiApp(App[None]):
         self._current_assistant: AssistantBubble | None = None
         self._tool_bubbles: dict[str, ToolCallBubble] = {}
         self._current_worker: Worker[None] | None = None
-        self.title = f"pym · {agent.model}"
+        self.title = f"midge · {agent.model}"
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)

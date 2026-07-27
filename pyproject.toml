@@ -1,5 +1,5 @@
 [project]
-name = "pym"
+name = "midge"
 version = "0.1.0"
 description = "Hackable Python agent harness — readable, retargetable, ~2k LOC."
 authors = [{ name = "Joshua Ziel", email = "josh@kynetyk.ai" }]
@@ -15,10 +15,10 @@ dependencies = [
 ]
 
 [project.scripts]
-pym = "pym.cli:main"
+midge = "midge.cli:main"
 
 [tool.poetry]
-packages = [{ include = "pym", from = "src" }]
+packages = [{ include = "midge", from = "src" }]
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^9.1"

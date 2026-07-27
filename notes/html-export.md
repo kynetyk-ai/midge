@@ -78,8 +78,8 @@ Alternative: `mistune` with a custom renderer + Pygments. Slightly more code, sl
 
 ## What Phase 2 implements
 
-- `src/pym/session.py` (or `src/pym/export.py` — name TBD; if we anticipate session save/load in Phase 3 the file should be `session.py` and the export function lives there as a sibling to save/load):
-  - `def export_html(messages: list[Message], *, title: str = "pym session", model: str = "") -> str` — returns the full HTML document as a string.
+- `src/midge/session.py` (or `src/midge/export.py` — name TBD; if we anticipate session save/load in Phase 3 the file should be `session.py` and the export function lives there as a sibling to save/load):
+  - `def export_html(messages: list[Message], *, title: str = "midge session", model: str = "") -> str` — returns the full HTML document as a string.
   - Helpers: `_render_user`, `_render_assistant`, `_render_tool_result`, `_render_tool_call`, `_md(text)`.
 - A constant `_PAGE_TEMPLATE` string with placeholders for `{title}`, `{model}`, `{message_count}`, `{pygments_css}`, `{body}`.
 - Tests in `tests/test_export.py`:

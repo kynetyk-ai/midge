@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from pym.extensions import BUILTIN_TOOL_DIRS, load_extensions
-from pym.tools import Tool
+from midge.extensions import BUILTIN_TOOL_DIRS, load_extensions
+from midge.tools import Tool
 
 
 def test_load_builtin_coding_tools() -> None:
@@ -20,7 +20,7 @@ def test_load_builtin_coding_tools() -> None:
 def test_load_user_extension_dir(tmp_path: Path) -> None:
     ext = tmp_path / "my_ext.py"
     ext.write_text(
-        "from pym.tools import tool\n\n"
+        "from midge.tools import tool\n\n"
         "@tool\n"
         "async def hello(name: str) -> str:\n"
         '    """Say hello."""\n'
@@ -33,7 +33,7 @@ def test_load_user_extension_dir(tmp_path: Path) -> None:
 
 def test_skips_underscore_and_init(tmp_path: Path) -> None:
     (tmp_path / "_helper.py").write_text(
-        "from pym.tools import tool\n"
+        "from midge.tools import tool\n"
         "@tool\n"
         "async def hidden() -> str:\n"
         "    return 'no'\n"
@@ -41,7 +41,7 @@ def test_skips_underscore_and_init(tmp_path: Path) -> None:
     (tmp_path / "__init__.py").write_text("")
     public = tmp_path / "public.py"
     public.write_text(
-        "from pym.tools import tool\n"
+        "from midge.tools import tool\n"
         "@tool\n"
         "async def visible() -> str:\n"
         "    return 'ok'\n"
@@ -55,14 +55,14 @@ def test_skips_underscore_and_init(tmp_path: Path) -> None:
 
 def test_system_prompt_constants_concatenated(tmp_path: Path) -> None:
     (tmp_path / "a.py").write_text(
-        "from pym.tools import tool\n"
+        "from midge.tools import tool\n"
         "SYSTEM_PROMPT = 'You can do A.'\n"
         "@tool\n"
         "async def a_tool() -> str:\n"
         "    return 'a'\n"
     )
     (tmp_path / "b.py").write_text(
-        "from pym.tools import tool\n"
+        "from midge.tools import tool\n"
         "SYSTEM_PROMPT = 'You can do B.'\n"
         "@tool\n"
         "async def b_tool() -> str:\n"
@@ -76,7 +76,7 @@ def test_system_prompt_constants_concatenated(tmp_path: Path) -> None:
 
 def test_empty_or_whitespace_system_prompt_ignored(tmp_path: Path) -> None:
     (tmp_path / "a.py").write_text(
-        "from pym.tools import tool\n"
+        "from midge.tools import tool\n"
         "SYSTEM_PROMPT = '   '\n"
         "@tool\n"
         "async def a() -> str:\n"
@@ -90,19 +90,19 @@ def test_duplicate_tool_name_first_wins(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     (tmp_path / "a.py").write_text(
-        "from pym.tools import tool\n"
+        "from midge.tools import tool\n"
         "@tool(name='shared')\n"
         "async def first() -> str:\n"
         "    return 'first'\n"
     )
     (tmp_path / "b.py").write_text(
-        "from pym.tools import tool\n"
+        "from midge.tools import tool\n"
         "@tool(name='shared')\n"
         "async def second() -> str:\n"
         "    return 'second'\n"
     )
 
-    with caplog.at_level(logging.WARNING, logger="pym.extensions"):
+    with caplog.at_level(logging.WARNING, logger="midge.extensions"):
         registry, _ = load_extensions([tmp_path])
 
     assert len(registry) == 1
@@ -116,7 +116,7 @@ def test_missing_directory_warns(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     nonexistent = tmp_path / "ghost"
-    with caplog.at_level(logging.WARNING, logger="pym.extensions"):
+    with caplog.at_level(logging.WARNING, logger="midge.extensions"):
         registry, _ = load_extensions([nonexistent])
 
     assert len(registry) == 0
@@ -126,7 +126,7 @@ def test_missing_directory_warns(
 def test_single_file_path_works(tmp_path: Path) -> None:
     f = tmp_path / "lone.py"
     f.write_text(
-        "from pym.tools import tool\n"
+        "from midge.tools import tool\n"
         "@tool\n"
         "async def lone() -> str:\n"
         "    return 'ok'\n"
@@ -141,13 +141,13 @@ def test_failing_import_warns_and_continues(
 ) -> None:
     (tmp_path / "broken.py").write_text("import this_module_does_not_exist_xyz\n")
     (tmp_path / "good.py").write_text(
-        "from pym.tools import tool\n"
+        "from midge.tools import tool\n"
         "@tool\n"
         "async def good() -> str:\n"
         "    return 'ok'\n"
     )
 
-    with caplog.at_level(logging.WARNING, logger="pym.extensions"):
+    with caplog.at_level(logging.WARNING, logger="midge.extensions"):
         registry, _ = load_extensions([tmp_path])
 
     assert "good" in registry
@@ -160,13 +160,13 @@ def test_two_dirs_compose(tmp_path: Path) -> None:
     a_dir.mkdir()
     b_dir.mkdir()
     (a_dir / "tool_a.py").write_text(
-        "from pym.tools import tool\n"
+        "from midge.tools import tool\n"
         "@tool\n"
         "async def alpha() -> str:\n"
         "    return 'a'\n"
     )
     (b_dir / "tool_b.py").write_text(
-        "from pym.tools import tool\n"
+        "from midge.tools import tool\n"
         "@tool\n"
         "async def beta() -> str:\n"
         "    return 'b'\n"

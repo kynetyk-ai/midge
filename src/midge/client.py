@@ -9,7 +9,7 @@ from typing import Any, Literal
 
 import openai
 
-from pym.messages import (
+from midge.messages import (
     AssistantMessage,
     Message,
     StopReason,

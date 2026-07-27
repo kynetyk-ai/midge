@@ -5,7 +5,7 @@ from typing import Annotated
 import pytest
 from pydantic import Field, ValidationError
 
-from pym.tools import Tool, ToolRegistry, tool
+from midge.tools import Tool, ToolRegistry, tool
 
 
 async def test_simple_tool_decoration() -> None:

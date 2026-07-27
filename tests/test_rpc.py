@@ -6,10 +6,10 @@ from collections.abc import Iterable
 from types import SimpleNamespace
 from typing import Any
 
-from pym.agent import Agent
-from pym.client import Client
-from pym.rpc import RpcServer, event_to_wire
-from pym.tools import ToolRegistry, tool
+from midge.agent import Agent
+from midge.client import Client
+from midge.rpc import RpcServer, event_to_wire
+from midge.tools import ToolRegistry, tool
 
 
 def _chunk(
@@ -357,8 +357,8 @@ async def test_tool_call_events_flow_through() -> None:
 
 
 def test_event_to_wire_drops_internal_events() -> None:
-    from pym.client import StreamStart, TextEnd, TextStart
-    from pym.messages import AssistantMessage
+    from midge.client import StreamStart, TextEnd, TextStart
+    from midge.messages import AssistantMessage
 
     partial = AssistantMessage()
     assert event_to_wire(StreamStart(partial=partial)) is None
@@ -367,8 +367,8 @@ def test_event_to_wire_drops_internal_events() -> None:
 
 
 def test_event_to_wire_text_delta() -> None:
-    from pym.client import TextDelta
-    from pym.messages import AssistantMessage, TextContent
+    from midge.client import TextDelta
+    from midge.messages import AssistantMessage, TextContent
 
     partial = AssistantMessage(content=[TextContent(text="hel")])
     wire = event_to_wire(TextDelta(content_index=0, delta="lo", partial=partial))
@@ -376,8 +376,8 @@ def test_event_to_wire_text_delta() -> None:
 
 
 def test_event_to_wire_tool_call_end() -> None:
-    from pym.client import ToolCallEnd
-    from pym.messages import AssistantMessage, ToolCall
+    from midge.client import ToolCallEnd
+    from midge.messages import AssistantMessage, ToolCall
 
     tc = ToolCall(id="c1", name="read", arguments={"path": "x"})
     partial = AssistantMessage(content=[tc])
@@ -394,8 +394,8 @@ def test_event_to_wire_tool_call_end() -> None:
 
 def test_event_to_wire_unicode_preserved() -> None:
     """ensure_ascii=False so unicode survives without \\u escapes."""
-    from pym.client import TextDelta
-    from pym.messages import AssistantMessage
+    from midge.client import TextDelta
+    from midge.messages import AssistantMessage
 
     partial = AssistantMessage()
     wire = event_to_wire(TextDelta(content_index=0, delta="héllo 🚀", partial=partial))

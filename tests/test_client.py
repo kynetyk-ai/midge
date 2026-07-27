@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from pym.client import (
+from midge.client import (
     Client,
     Done,
     Error,
@@ -20,7 +20,7 @@ from pym.client import (
     ToolCallEnd,
     ToolCallStart,
 )
-from pym.messages import TextContent, ToolCall, UserMessage
+from midge.messages import TextContent, ToolCall, UserMessage
 
 
 def _chunk(

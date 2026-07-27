@@ -2,7 +2,7 @@
 
 A Phase 5 demo extension: shows how a user-authored extension pack retargets the
 harness without any change to core code. Storage is a single JSON file
-(default `~/.pym-notes/kb.json`; override via `PYM_NOTES_KB`).
+(default `~/.midge-notes/kb.json`; override via `MIDGE_NOTES_KB`).
 
 Tools:
     add_note(title, content, tags=None) — create a new note.
@@ -21,7 +21,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from pym.tools import tool
+from midge.tools import tool
 
 SYSTEM_PROMPT = """You also have access to a personal-notes knowledge base. Use the notes tools to help the user capture, find, and connect their notes.
 
@@ -33,7 +33,7 @@ Conventions:
 
 
 def _kb_path() -> Path:
-    return Path(os.getenv("PYM_NOTES_KB", str(Path.home() / ".pym-notes" / "kb.json")))
+    return Path(os.getenv("MIDGE_NOTES_KB", str(Path.home() / ".midge-notes" / "kb.json")))
 
 
 def _load() -> dict[str, Any]:

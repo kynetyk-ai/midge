@@ -24,13 +24,13 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from pym.agent import (
+from midge.agent import (
     Agent,
     AgentEnd,
     ToolExecutionEnd,
     ToolExecutionStart,
 )
-from pym.client import (
+from midge.client import (
     Done,
     Error,
     StreamStart,
@@ -41,7 +41,7 @@ from pym.client import (
     ToolCallEnd,
     ToolCallStart,
 )
-from pym.messages import TextContent, ToolCall
+from midge.messages import TextContent, ToolCall
 
 _logger = logging.getLogger(__name__)
 
