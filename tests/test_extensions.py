@@ -6,27 +6,27 @@ from pathlib import Path
 
 import pytest
 
-from pym.skills import BUILTIN_DIRS, load_skills
+from pym.extensions import BUILTIN_TOOL_DIRS, load_extensions
 from pym.tools import Tool
 
 
-def test_load_builtin_coding_skills() -> None:
-    registry, prompt = load_skills(BUILTIN_DIRS)
+def test_load_builtin_coding_tools() -> None:
+    registry, prompt = load_extensions(BUILTIN_TOOL_DIRS)
     names = {t.name for t in registry}
     assert names == {"read", "bash", "edit", "write"}
     assert prompt == ""
 
 
-def test_load_user_skill_dir(tmp_path: Path) -> None:
-    skill = tmp_path / "my_skill.py"
-    skill.write_text(
+def test_load_user_extension_dir(tmp_path: Path) -> None:
+    ext = tmp_path / "my_ext.py"
+    ext.write_text(
         "from pym.tools import tool\n\n"
         "@tool\n"
         "async def hello(name: str) -> str:\n"
         '    """Say hello."""\n'
         "    return f'hi {name}'\n"
     )
-    registry, prompt_addition = load_skills([tmp_path])
+    registry, prompt_addition = load_extensions([tmp_path])
     assert "hello" in registry
     assert prompt_addition == ""
 
@@ -47,7 +47,7 @@ def test_skips_underscore_and_init(tmp_path: Path) -> None:
         "    return 'ok'\n"
     )
 
-    registry, _ = load_skills([tmp_path])
+    registry, _ = load_extensions([tmp_path])
     assert "visible" in registry
     assert "hidden" not in registry
     assert len(registry) == 1
@@ -69,7 +69,7 @@ def test_system_prompt_constants_concatenated(tmp_path: Path) -> None:
         "    return 'b'\n"
     )
 
-    _, prompt = load_skills([tmp_path])
+    _, prompt = load_extensions([tmp_path])
     assert "You can do A." in prompt
     assert "You can do B." in prompt
 
@@ -82,7 +82,7 @@ def test_empty_or_whitespace_system_prompt_ignored(tmp_path: Path) -> None:
         "async def a() -> str:\n"
         "    return 'a'\n"
     )
-    _, prompt = load_skills([tmp_path])
+    _, prompt = load_extensions([tmp_path])
     assert prompt == ""
 
 
@@ -102,8 +102,8 @@ def test_duplicate_tool_name_first_wins(
         "    return 'second'\n"
     )
 
-    with caplog.at_level(logging.WARNING, logger="pym.skills"):
-        registry, _ = load_skills([tmp_path])
+    with caplog.at_level(logging.WARNING, logger="pym.extensions"):
+        registry, _ = load_extensions([tmp_path])
 
     assert len(registry) == 1
     t = registry.get("shared")
@@ -116,8 +116,8 @@ def test_missing_directory_warns(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     nonexistent = tmp_path / "ghost"
-    with caplog.at_level(logging.WARNING, logger="pym.skills"):
-        registry, _ = load_skills([nonexistent])
+    with caplog.at_level(logging.WARNING, logger="pym.extensions"):
+        registry, _ = load_extensions([nonexistent])
 
     assert len(registry) == 0
     assert any("not found" in rec.message for rec in caplog.records)
@@ -132,7 +132,7 @@ def test_single_file_path_works(tmp_path: Path) -> None:
         "    return 'ok'\n"
     )
 
-    registry, _ = load_skills([f])
+    registry, _ = load_extensions([f])
     assert "lone" in registry
 
 
@@ -147,11 +147,11 @@ def test_failing_import_warns_and_continues(
         "    return 'ok'\n"
     )
 
-    with caplog.at_level(logging.WARNING, logger="pym.skills"):
-        registry, _ = load_skills([tmp_path])
+    with caplog.at_level(logging.WARNING, logger="pym.extensions"):
+        registry, _ = load_extensions([tmp_path])
 
     assert "good" in registry
-    assert any("Failed to load skill" in rec.message for rec in caplog.records)
+    assert any("Failed to load extension" in rec.message for rec in caplog.records)
 
 
 def test_two_dirs_compose(tmp_path: Path) -> None:
@@ -172,5 +172,5 @@ def test_two_dirs_compose(tmp_path: Path) -> None:
         "    return 'b'\n"
     )
 
-    registry, _ = load_skills([a_dir, b_dir])
+    registry, _ = load_extensions([a_dir, b_dir])
     assert {t.name for t in registry} == {"alpha", "beta"}

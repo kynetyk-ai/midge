@@ -1,7 +1,7 @@
 """`pym` CLI: launches the interactive TUI.
 
 Usage:
-    py [--skill-dir DIR] [--session PATH] [--compaction-threshold N] \\
+    pym [--extension-dir DIR] [--session PATH] [--compaction-threshold N] \\
        [--compaction-keep-recent N]
 
 Env: OPENAI_API_KEY, OPENAI_BASE_URL, PYM_MODEL (default: gpt-4o-mini).
@@ -15,8 +15,8 @@ from pathlib import Path
 
 from pym.agent import Agent
 from pym.client import Client
+from pym.extensions import BUILTIN_TOOL_DIRS, load_extensions
 from pym.persistence import Session
-from pym.skills import BUILTIN_DIRS, load_skills
 from pym.tui import run_tui
 
 BASE_SYSTEM_PROMPT = (
@@ -29,12 +29,12 @@ BASE_SYSTEM_PROMPT = (
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="pym")
     parser.add_argument(
-        "--skill-dir",
+        "--extension-dir",
         action="append",
         type=Path,
         default=[],
         metavar="DIR",
-        help="Directory of skill .py files to load (repeatable).",
+        help="Directory of extension .py files to load (repeatable).",
     )
     parser.add_argument(
         "--session",
@@ -64,7 +64,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
-    registry, prompt_addition = load_skills([*BUILTIN_DIRS, *args.skill_dir])
+    registry, prompt_addition = load_extensions([*BUILTIN_TOOL_DIRS, *args.extension_dir])
 
     session: Session | None = None
     if args.session is not None:

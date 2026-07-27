@@ -1,6 +1,6 @@
-"""Personal-notes knowledge-base skill.
+"""Personal-notes knowledge-base extension.
 
-A Phase 5 demo skill: shows how a user-authored skill pack retargets the
+A Phase 5 demo extension: shows how a user-authored extension pack retargets the
 harness without any change to core code. Storage is a single JSON file
 (default `~/.pym-notes/kb.json`; override via `PYM_NOTES_KB`).
 

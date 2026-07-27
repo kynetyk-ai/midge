@@ -1,7 +1,7 @@
 """Notes-domain TUI — Phase 5 adaptability proof.
 
-Same harness, same TUI, same agent loop — only the skills and the system
-prompt differ. No `BUILTIN_DIRS` is loaded, so the model has access to the
+Same harness, same TUI, same agent loop — only the extensions and the system
+prompt differ. No `BUILTIN_TOOL_DIRS` is loaded, so the model has access to the
 notes tools and *only* the notes tools (no bash/edit/read/write).
 
 Usage:
@@ -20,8 +20,8 @@ from pathlib import Path
 
 from pym.agent import Agent
 from pym.client import Client
+from pym.extensions import load_extensions
 from pym.persistence import Session
-from pym.skills import load_skills
 from pym.tui import run_tui
 
 NOTES_SYSTEM_PROMPT = (
@@ -32,7 +32,7 @@ NOTES_SYSTEM_PROMPT = (
     "something new from the user, suggest saving it as a note."
 )
 
-_SKILL_DIR = Path(__file__).parent / "notes_skill"
+_EXTENSION_DIR = Path(__file__).parent / "notes_extension"
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -56,7 +56,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
 
-    registry, prompt_addition = load_skills([_SKILL_DIR])
+    registry, prompt_addition = load_extensions([_EXTENSION_DIR])
     full_prompt = NOTES_SYSTEM_PROMPT
     if prompt_addition:
         full_prompt += "\n\n" + prompt_addition

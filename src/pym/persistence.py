@@ -15,7 +15,7 @@ write a new file.
 A session is intentionally simple:
 - Linear history, no tree / branching / forks.
 - Append-only writes; no rewrite-on-modify, no deletions.
-- Tools and skills are NOT persisted — they're rebuilt from the registry at
+- Tools and extensions are NOT persisted — they're rebuilt from the registry at
   load time, the same way pi-mono works.
 
 Don't open the same session file in two processes simultaneously; results
