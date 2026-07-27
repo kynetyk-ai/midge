@@ -41,6 +41,8 @@ from midge.messages import (
 )
 from midge.tools import ToolRegistry
 
+INTERRUPTED_MESSAGE = "Interrupted by user before the tool finished."
+
 
 @dataclass(slots=True)
 class ToolExecutionStart:
@@ -158,63 +160,95 @@ class Agent:
             if not tool_calls:
                 break
 
-            # `tool_call` hooks must resolve before the gather, so a blocked call
-            # never executes. Decisions are gathered concurrently across calls;
-            # handlers for a single call still run sequentially inside `emit`.
-            if self.hooks is not None:
-                decisions = await asyncio.gather(
-                    *(self.hooks.emit(ToolCallEvent(tool_call=tc)) for tc in tool_calls)
-                )
-            else:
-                decisions = [None] * len(tool_calls)
-
-            for i, (tc, decision) in enumerate(zip(tool_calls, decisions, strict=True)):
-                if isinstance(decision, ToolCallResult) and decision.arguments is not None:
-                    tool_calls[i] = tc.model_copy(update={"arguments": decision.arguments})
-
-            for tc in tool_calls:
-                yield ToolExecutionStart(tool_call=tc)
-
-            # Order must survive the partition — `zip(strict=True)` below depends on it.
-            pending = [
-                (i, tc)
-                for i, (tc, d) in enumerate(zip(tool_calls, decisions, strict=True))
-                if not (isinstance(d, ToolCallResult) and d.block)
-            ]
-            executed = await asyncio.gather(*(self._run_tool(tc) for _, tc in pending))
-
-            results: list[ToolResultMessage | None] = [None] * len(tool_calls)
-            for (i, _), result in zip(pending, executed, strict=True):
-                results[i] = result
-            for i, decision in enumerate(decisions):
-                if results[i] is None:
-                    assert isinstance(decision, ToolCallResult)
-                    results[i] = _tool_error(
-                        tool_calls[i], decision.reason or "Blocked by hook"
-                    )
-
-            for tc, result in zip(tool_calls, results, strict=True):
-                assert result is not None
+            # The assistant message with these tool calls is already in `history`.
+            # Providers reject any request where a `tool_call` has no matching
+            # result, so an interrupt landing anywhere below would poison every
+            # later turn. `answered` tracks what we managed to append.
+            answered: set[str] = set()
+            tool_tasks: dict[str, asyncio.Task[ToolResultMessage]] = {}
+            try:
+                # `tool_call` hooks must resolve before the gather, so a blocked call
+                # never executes. Decisions are gathered concurrently across calls;
+                # handlers for a single call still run sequentially inside `emit`.
                 if self.hooks is not None:
-                    patch = await self.hooks.emit(
-                        ToolResultEvent(
-                            tool_call=tc, content=result.content, is_error=result.is_error
-                        )
+                    decisions = await asyncio.gather(
+                        *(self.hooks.emit(ToolCallEvent(tool_call=tc)) for tc in tool_calls)
                     )
-                    if isinstance(patch, ToolResultResult):
-                        result = result.model_copy(
-                            update={
-                                "content": patch.content
-                                if patch.content is not None
-                                else result.content,
-                                "is_error": patch.is_error
-                                if patch.is_error is not None
-                                else result.is_error,
-                            }
+                else:
+                    decisions = [None] * len(tool_calls)
+
+                for i, (tc, decision) in enumerate(zip(tool_calls, decisions, strict=True)):
+                    if isinstance(decision, ToolCallResult) and decision.arguments is not None:
+                        tool_calls[i] = tc.model_copy(
+                            update={"arguments": decision.arguments}
                         )
-                self.history.append(result)
-                new_messages.append(result)
-                yield ToolExecutionEnd(tool_call=tc, result=result)
+
+                for tc in tool_calls:
+                    yield ToolExecutionStart(tool_call=tc)
+
+                # Order must survive the partition — `zip(strict=True)` below depends on it.
+                pending = [
+                    (i, tc)
+                    for i, (tc, d) in enumerate(zip(tool_calls, decisions, strict=True))
+                    if not (isinstance(d, ToolCallResult) and d.block)
+                ]
+                # Kept as tasks so a cancel can still harvest whichever already
+                # finished — `gather` alone would discard their results.
+                for _, tc in pending:
+                    tool_tasks[tc.id] = asyncio.ensure_future(self._run_tool(tc))
+                executed = await asyncio.gather(*(tool_tasks[tc.id] for _, tc in pending))
+
+                results: list[ToolResultMessage | None] = [None] * len(tool_calls)
+                for (i, _), result in zip(pending, executed, strict=True):
+                    results[i] = result
+                for i, decision in enumerate(decisions):
+                    if results[i] is None:
+                        assert isinstance(decision, ToolCallResult)
+                        results[i] = _tool_error(
+                            tool_calls[i], decision.reason or "Blocked by hook"
+                        )
+
+                for tc, result in zip(tool_calls, results, strict=True):
+                    assert result is not None
+                    if self.hooks is not None:
+                        patch = await self.hooks.emit(
+                            ToolResultEvent(
+                                tool_call=tc,
+                                content=result.content,
+                                is_error=result.is_error,
+                            )
+                        )
+                        if isinstance(patch, ToolResultResult):
+                            result = result.model_copy(
+                                update={
+                                    "content": patch.content
+                                    if patch.content is not None
+                                    else result.content,
+                                    "is_error": patch.is_error
+                                    if patch.is_error is not None
+                                    else result.is_error,
+                                }
+                            )
+                    self.history.append(result)
+                    new_messages.append(result)
+                    answered.add(tc.id)
+                    yield ToolExecutionEnd(tool_call=tc, result=result)
+            except asyncio.CancelledError:
+                for tc in tool_calls:
+                    if tc.id in answered:
+                        continue
+                    task = tool_tasks.get(tc.id)
+                    if task is not None and task.done() and not task.cancelled():
+                        # It ran to completion before the interrupt landed; its
+                        # side effects are real, so report what it actually did.
+                        result = task.result() if task.exception() is None else None
+                    else:
+                        result = None
+                    if result is None:
+                        result = _tool_error(tc, INTERRUPTED_MESSAGE)
+                    self.history.append(result)
+                    new_messages.append(result)
+                raise
 
         if self.hooks is not None:
             await self.hooks.emit(TurnEnd(new_messages=new_messages))
