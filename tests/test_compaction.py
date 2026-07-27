@@ -6,8 +6,8 @@ from typing import Any
 
 import pytest
 
-from pym.client import Client
-from pym.compaction import (
+from midge.client import Client
+from midge.compaction import (
     COMPACTION_PREFIX,
     COMPACTION_SUFFIX,
     compact,
@@ -17,7 +17,7 @@ from pym.compaction import (
     needs_compaction,
     summarize,
 )
-from pym.messages import (
+from midge.messages import (
     AssistantMessage,
     Message,
     TextContent,

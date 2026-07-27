@@ -3,7 +3,7 @@
 Demonstrates the `tool_call` hook — the only lifecycle point that can stop
 work before it happens.
 
-    pym --extension-dir examples/approval_extension
+    midge --extension-dir examples/approval_extension
 
 An extension participates in the lifecycle by defining `register_hooks`.
 The loader calls it with a source-tagged view of the shared `Hooks`, so a
@@ -32,7 +32,7 @@ def register_hooks(hooks: Any) -> None:
 
 
 def _deny_destructive_bash(event: Any, ctx: Any) -> Any:
-    from pym.hooks import ToolCallResult
+    from midge.hooks import ToolCallResult
 
     if event.tool_call.name != "bash":
         return None

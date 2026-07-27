@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from pym.messages import (
+from midge.messages import (
     AssistantMessage,
     ImageContent,
     TextContent,

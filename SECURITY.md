@@ -2,9 +2,9 @@
 
 ## Threat model
 
-`py-mono` is a local CLI / TUI that runs an LLM agent in your shell. The threat surface is small but real:
+`midge` is a local CLI / TUI that runs an LLM agent in your shell. The threat surface is small but real:
 
-- **The `bash` tool executes whatever shell command the model emits.** That is its job. If you point the agent at an untrusted model or paste an untrusted prompt, the model can run arbitrary commands as the user that launched `pym`. Treat the agent like a shell session — don't run it as root, don't run it against random servers, and review the prompt and tool calls before approving destructive actions.
+- **The `bash` tool executes whatever shell command the model emits.** That is its job. If you point the agent at an untrusted model or paste an untrusted prompt, the model can run arbitrary commands as the user that launched `midge`. Treat the agent like a shell session — don't run it as root, don't run it against random servers, and review the prompt and tool calls before approving destructive actions.
 - **Session JSONL files contain the verbatim conversation,** including any secrets or paths you mentioned. Treat them like shell history.
 - **Custom extensions that hit the network** can be a vector. Validate inputs and prefer narrow APIs over `bash`.
 
@@ -13,10 +13,10 @@ These are intentional design choices, not bugs.
 ## What I'd consider a real vulnerability
 
 - Crashes or arbitrary code execution triggered by **input from the LLM endpoint** (a malicious server returning crafted streaming chunks, tool-call arguments, or `usage` payloads) that escape the harness's parsing.
-- HTML escape misses in `pym.session.export_html` that allow an attacker who controls part of a session to inject script tags into the rendered transcript.
-- RPC parse handling in `pym.rpc` that lets a malicious stdin stream crash the process or escape the command dispatcher.
+- HTML escape misses in `midge.session.export_html` that allow an attacker who controls part of a session to inject script tags into the rendered transcript.
+- RPC parse handling in `midge.rpc` that lets a malicious stdin stream crash the process or escape the command dispatcher.
 - Path traversal or injection in the `read` / `edit` / `write` tools beyond the usual "the LLM asked for it" surface — i.e., something the model can accidentally trigger via well-formed-looking arguments.
-- Session loader (`pym.persistence.Session.load`) parsing issues that let a crafted JSONL file crash or hang the process.
+- Session loader (`midge.persistence.Session.load`) parsing issues that let a crafted JSONL file crash or hang the process.
 
 ## How to report
 

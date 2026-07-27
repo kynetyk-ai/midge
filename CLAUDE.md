@@ -1,4 +1,4 @@
-# py-mono — instructions for Claude
+# midge — instructions for Claude
 
 This repo is a Python agent harness originally ported from [`pi-mono`](../pi) (TypeScript). The harness is feature-complete for its original goals (see `README.md`); future work is incremental — bug fixes, polish, new extension packs, individual feature additions.
 
@@ -18,14 +18,14 @@ The user does not work in TypeScript and wants a codebase they can read, modify,
 
 ### Vocabulary — deliberately aligned with `pi-mono`
 
-| Concept | py-mono | `pi-mono` |
+| Concept | midge | `pi-mono` |
 |---|---|---|
-| Built-in LLM-callable tools (`read`, `bash`, …) | `src/pym/tools/coding/` | `packages/coding-agent/src/core/tools/` |
-| Loading user `.py` files that register tools | `src/pym/extensions.py`, `--extension-dir` | `src/core/extensions/` |
+| Built-in LLM-callable tools (`read`, `bash`, …) | `src/midge/tools/coding/` | `packages/coding-agent/src/core/tools/` |
+| Loading user `.py` files that register tools | `src/midge/extensions.py`, `--extension-dir` | `src/core/extensions/` |
 | `SKILL.md` — the [Agent Skills standard](https://agentskills.io/specification) | **no equivalent** | `src/core/skills.ts` |
 
 The word **skill** means the `SKILL.md` standard and nothing else. Do not use it for tools or
-extensions. py-mono has no skills support today; the name is kept free in case it is added.
+extensions. midge has no skills support today; the name is kept free in case it is added.
 
 ## Tooling and conventions
 
@@ -48,10 +48,10 @@ extensions. py-mono has no skills support today; the name is kept free in case i
 ## Layout
 
 ```
-src/pym/            # the harness package
-src/pym/tools/      # @tool decorator + built-in coding tools
-src/pym/extensions.py  # the loader for tool directories
-src/pym/hooks.py    # lifecycle events + handler registry
+src/midge/            # the harness package
+src/midge/tools/      # @tool decorator + built-in coding tools
+src/midge/extensions.py  # the loader for tool directories
+src/midge/hooks.py    # lifecycle events + handler registry
 tests/              # pytest tests
 examples/           # entrypoints
 notes/              # patterns borrowed from pi-mono during reading passes

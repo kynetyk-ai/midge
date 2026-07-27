@@ -5,10 +5,10 @@ Source:
 - `pi-mono/packages/coding-agent/src/core/system-prompt.ts:69–73, 162–164` — placement
 - Extension loader (registers tools dynamically): the `pi.registerTool(definition)` API in `loader.ts`
 
-> **Terminology update.** This note was written during the original port, when py-mono called
+> **Terminology update.** This note was written during the original port, when midge called
 > its extension loader "skills". It now uses `pi-mono`'s vocabulary: **tools** are the
 > LLM-callable functions, **extensions** are the `.py` files that register them, and **skill**
-> is reserved for the `SKILL.md` standard, which py-mono does not implement. The design
+> is reserved for the `SKILL.md` standard, which midge does not implement. The design
 > decisions below are unchanged — only the words are. See the glossary in `CLAUDE.md`.
 
 ## Important: pi-mono splits "skills" from "extensions" — we are porting the latter, not the former
@@ -20,7 +20,7 @@ In `pi-mono` the two concepts are distinct:
 | **Skill** | Markdown `SKILL.md` with YAML frontmatter | Filesystem scan, presented to model as `<available_skills>` block; model reads SKILL.md on demand via the `read` tool ("progressive disclosure") | None — skills *reference* tools that already exist; they don't add any |
 | **Extension** | TypeScript/JS module loaded via `jiti` | Dynamic require | Yes — `pi.registerTool(...)` adds new LLM-callable tools |
 
-Our roadmap's "skills auto-loading" — *"drop a Python file into a temp dir with one `@tool` function; `pym --extension-dir <dir>` picks it up and the model can call it"* — describes the **extension** pattern, not the markdown-SKILL.md pattern. Phase 2 implements exactly that, under the name `extensions` (see `src/pym/extensions.py`).
+Our roadmap's "skills auto-loading" — *"drop a Python file into a temp dir with one `@tool` function; `midge --extension-dir <dir>` picks it up and the model can call it"* — describes the **extension** pattern, not the markdown-SKILL.md pattern. Phase 2 implements exactly that, under the name `extensions` (see `src/midge/extensions.py`).
 
 We are **not** porting:
 - Markdown SKILL.md files
@@ -36,7 +36,7 @@ kept free for it.
 
 ### Discovery is filesystem-based and explicit
 
-User points the harness at directories (`--extension-dir`); the harness scans them at startup. Built-in tools live in the package itself (`src/pym/tools/coding/`); user extensions live wherever the user puts them. **Built-in vs. user tools are not special-cased** — they all flow through the same loader.
+User points the harness at directories (`--extension-dir`); the harness scans them at startup. Built-in tools live in the package itself (`src/midge/tools/coding/`); user extensions live wherever the user puts them. **Built-in vs. user tools are not special-cased** — they all flow through the same loader.
 
 ### Each extension module declares zero or more `@tool` functions
 
@@ -62,7 +62,7 @@ When two extensions register a tool with the same `name`, the loader emits a war
 |---|---|
 | `jiti` for dynamic require of `.ts`/`.js` modules | `importlib.util.spec_from_file_location` + `module_from_spec` for arbitrary `.py` paths; or `importlib.import_module(name)` for installed packages |
 | `pi.registerTool(definition)` API | `loader` walks the imported module's `vars()` and picks out `Tool` instances (no API call needed; the decorator already produced the right thing) |
-| `~/.pi/agent/skills/` vs `.pi/skills/` tiered scan | Just a list of `--extension-dir` paths plus the built-in `src/pym/tools/coding/`. No tiering. |
+| `~/.pi/agent/skills/` vs `.pi/skills/` tiered scan | Just a list of `--extension-dir` paths plus the built-in `src/midge/tools/coding/`. No tiering. |
 | Frontmatter metadata | Module-level constants (`NAME`, `SYSTEM_PROMPT`) — convention, not protocol |
 | `disable-model-invocation` | Skip — not relevant when extensions are tool-bundles, not markdown |
 
@@ -75,7 +75,7 @@ When two extensions register a tool with the same `name`, the loader emits a war
   - Aggregates any `SYSTEM_PROMPT` strings from the modules into a single concatenated prompt addition
 - A way to wire this into `Agent` construction so `examples/coding_agent.py` can do:
   ```python
-  registry, prompt_addition = load_extensions(["src/pym/tools/coding", *args.extension_dirs])
+  registry, prompt_addition = load_extensions(["src/midge/tools/coding", *args.extension_dirs])
   agent = Agent(client=..., model=..., tools=registry, system_prompt=BASE_PROMPT + prompt_addition)
   ```
 - A CLI flag `--extension-dir DIR` (repeatable) on `examples/coding_agent.py`.

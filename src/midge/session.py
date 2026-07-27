@@ -22,7 +22,7 @@ from pygments.formatters import HtmlFormatter
 from pygments.lexers import get_lexer_by_name
 from pygments.util import ClassNotFound
 
-from pym.messages import (
+from midge.messages import (
     AssistantMessage,
     ImageContent,
     Message,
@@ -122,7 +122,7 @@ $body
 def export_html(
     messages: list[Message],
     *,
-    title: str = "pym session",
+    title: str = "midge session",
     model: str = "",
 ) -> str:
     pygments_css = HtmlFormatter(cssclass="codehilite").get_style_defs(".codehilite")

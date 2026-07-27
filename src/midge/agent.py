@@ -7,14 +7,14 @@ from typing import Any, Literal
 
 from pydantic import ValidationError
 
-from pym.client import (
+from midge.client import (
     Client,
     Done,
     Error,
     StreamEvent,
     StreamStart,
 )
-from pym.hooks import (
+from midge.hooks import (
     AfterProviderResponse,
     BeforeProviderRequest,
     Context,
@@ -31,7 +31,7 @@ from pym.hooks import (
     TurnStart,
     TurnStartResult,
 )
-from pym.messages import (
+from midge.messages import (
     AssistantMessage,
     Message,
     TextContent,
@@ -39,7 +39,7 @@ from pym.messages import (
     ToolResultMessage,
     UserMessage,
 )
-from pym.tools import ToolRegistry
+from midge.tools import ToolRegistry
 
 
 @dataclass(slots=True)

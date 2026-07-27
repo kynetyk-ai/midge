@@ -2,7 +2,7 @@
 
 Source: `pi-mono/packages/agent/docs/hooks.md` (445 lines, marked "Final design").
 
-Ported to `src/pym/hooks.py`. Concepts follow pi; the Python is written from scratch.
+Ported to `src/midge/hooks.py`. Concepts follow pi; the Python is written from scratch.
 
 ## The core split
 
@@ -35,7 +35,7 @@ equivalent, so `on()` carries an `@overload` per event instead. Same checking, d
 and a plain `on(type, handler)` fallback overload keeps custom event types open to extensions.
 
 **`after_provider_response` vs `message_end`.** In pi these are separated by a provider-payload
-layer that py-mono doesn't have, so both would fire on the same object at the same instant.
+layer that midge doesn't have, so both would fire on the same object at the same instant.
 Given distinct semantics here instead: `after_provider_response` is a **transform** that can
 replace the `AssistantMessage` before it enters `history`; `message_end` is **observe-only**,
 after the append.
@@ -82,4 +82,4 @@ source-tagged proxy so handler failures name the file. See `examples/approval_ex
 - Exposing hooks over RPC
 - Hot-reload / `set_hooks()` on a running agent (pi defers this too)
 - Registries that aren't hooks — commands, renderers, providers. pi keeps these separate
-  deliberately (its "poking holes" item #3); py-mono has no equivalent surface.
+  deliberately (its "poking holes" item #3); midge has no equivalent surface.

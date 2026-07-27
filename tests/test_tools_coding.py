@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from pym.tools.coding import bash, edit, read, write
+from midge.tools.coding import bash, edit, read, write
 
 
 async def test_read_basic(tmp_path: Path) -> None:

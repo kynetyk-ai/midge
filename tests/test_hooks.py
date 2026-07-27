@@ -7,10 +7,10 @@ from typing import Any
 
 import pytest
 
-from pym.agent import Agent, AgentEvent, ToolExecutionEnd, ToolExecutionStart
-from pym.client import Client
-from pym.compaction import compact
-from pym.hooks import (
+from midge.agent import Agent, AgentEvent, ToolExecutionEnd, ToolExecutionStart
+from midge.client import Client
+from midge.compaction import compact
+from midge.hooks import (
     BeforeCompact,
     BeforeProviderRequest,
     CancelResult,
@@ -29,8 +29,8 @@ from pym.hooks import (
     TurnStart,
     TurnStartResult,
 )
-from pym.messages import AssistantMessage, TextContent, UserMessage
-from pym.tools import tool
+from midge.messages import AssistantMessage, TextContent, UserMessage
+from midge.tools import tool
 
 # --- shared fakes (mirrors tests/test_agent.py) ---------------------------
 
@@ -184,7 +184,7 @@ async def test_raising_handler_is_logged_and_skipped(
     hooks.on("context", boom, source="/ext/bad.py")
     hooks.on("context", lambda ev, ctx: ContextResult(messages=[UserMessage(content="ok")]))
 
-    with caplog.at_level(logging.WARNING, logger="pym.hooks"):
+    with caplog.at_level(logging.WARNING, logger="midge.hooks"):
         res = await hooks.emit(Context(messages=[]))
 
     assert isinstance(res, ContextResult)
@@ -326,7 +326,7 @@ async def test_unchanged_transform_returns_none() -> None:
 
 
 def _make_tool_call() -> Any:
-    from pym.messages import ToolCall
+    from midge.messages import ToolCall
 
     return ToolCall(id="c1", name="echo", arguments={"text": "hi"})
 
@@ -342,7 +342,7 @@ async def danger(text: str) -> str:
 
 
 def _registry() -> Any:
-    from pym.tools import ToolRegistry
+    from midge.tools import ToolRegistry
 
     reg = ToolRegistry()
     reg.add(echo)

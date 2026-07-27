@@ -31,5 +31,5 @@ venv/
 *.log
 
 # Agent runtime state (mirrors pi-mono's .pi/ convention)
-.pym/
-.pym-*/
+.midge/
+.midge-*/

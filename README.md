@@ -1,4 +1,4 @@
-# py-mono
+# midge
 
 A hackable Python agent harness originally ported from [`pi-mono`](https://github.com/badlogic/pi-mono) (TypeScript) for personal preference, readability, and domain-adaptability.
 
@@ -32,7 +32,7 @@ Python 3.11+. Poetry for env and dep management.
 ### Interactive TUI (coding domain)
 
 ```bash
-poetry run pym
+poetry run midge
 ```
 
 Flags: `--extension-dir DIR` (repeatable), `--session PATH`, `--compaction-threshold N`, `--compaction-keep-recent N`. Bindings: `Ctrl+J` submit, `Ctrl+C` interrupt, `Ctrl+D` quit, `Esc` clear input.
@@ -48,11 +48,11 @@ Against a local OpenAI-compatible server:
 
 ```bash
 OPENAI_BASE_URL=http://127.0.0.1:1234/v1 \
-PYM_MODEL=ibm/granite-3.2-8b \
+MIDGE_MODEL=ibm/granite-3.2-8b \
 poetry run python -m examples.coding_agent --session run.jsonl --export-html run.html "summarize the README"
 ```
 
-`PYM_MODEL` defaults to `gpt-4o-mini`. Other flags: `--extension-dir DIR`, `--session PATH` (resumes if file exists), `--export-html PATH`, `--compaction-threshold N`.
+`MIDGE_MODEL` defaults to `gpt-4o-mini`. Other flags: `--extension-dir DIR`, `--session PATH` (resumes if file exists), `--export-html PATH`, `--compaction-threshold N`.
 
 ### RPC (JSON-on-stdio)
 
@@ -69,7 +69,7 @@ Newline-delimited JSON; commands `prompt`, `abort`, `get_messages`. Protocol det
 poetry run python -m examples.notes_agent
 ```
 
-Same TUI, same agent, no coding tools — just `add_note`, `search_notes`, `read_note`, `list_notes`, `link_notes`. KB lives at `~/.pym-notes/kb.json` by default (override with `PYM_NOTES_KB`).
+Same TUI, same agent, no coding tools — just `add_note`, `search_notes`, `read_note`, `list_notes`, `link_notes`. KB lives at `~/.midge-notes/kb.json` by default (override with `MIDGE_NOTES_KB`).
 
 ## Adapting to a new domain
 
@@ -82,7 +82,7 @@ The harness deliberately separates from the "coding agent" identity. See `exampl
 ## Layout
 
 ```
-src/pym/
+src/midge/
 ├── messages.py        # typed message history + OpenAI conversion boundary
 ├── client.py          # async OpenAI-compatible client + stream events
 ├── tools/
@@ -96,7 +96,7 @@ src/pym/
 ├── extensions.py      # load_extensions(dirs) → (ToolRegistry, prompt_addition)
 ├── hooks.py           # lifecycle events + handler registry
 ├── tui/app.py         # Textual TUI
-└── cli.py             # `pym` entrypoint
+└── cli.py             # `midge` entrypoint
 examples/
 ├── coding_agent.py    # one-shot CLI for the coding domain
 ├── rpc_agent.py       # RPC server for external clients
@@ -111,13 +111,13 @@ tests/                 # pytest tests
 
 If you want to understand how the harness works, the files in dependency order:
 
-1. `src/pym/messages.py` — the data model.
-2. `src/pym/client.py` — chunk → event mapping; the streaming part.
-3. `src/pym/tools/__init__.py` — `@tool` and the registry.
-4. `src/pym/agent.py` — the loop.
-5. `src/pym/tools/coding/` — four real tools.
-6. `src/pym/extensions.py` — the loader.
-7. `src/pym/hooks.py` — lifecycle interception.
+1. `src/midge/messages.py` — the data model.
+2. `src/midge/client.py` — chunk → event mapping; the streaming part.
+3. `src/midge/tools/__init__.py` — `@tool` and the registry.
+4. `src/midge/agent.py` — the loop.
+5. `src/midge/tools/coding/` — four real tools.
+6. `src/midge/extensions.py` — the loader.
+7. `src/midge/hooks.py` — lifecycle interception.
 8. Anything else, in any order: `compaction.py`, `persistence.py`, `session.py`, `rpc.py`, `tui/app.py`.
 
 ## License

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from pym.messages import (
+from midge.messages import (
     AssistantMessage,
     ImageContent,
     TextContent,
@@ -13,7 +13,7 @@ from pym.messages import (
     ToolResultMessage,
     UserMessage,
 )
-from pym.persistence import VERSION, Session, SessionHeader
+from midge.persistence import VERSION, Session, SessionHeader
 
 
 def test_new_session_writes_header(tmp_path: Path) -> None:
