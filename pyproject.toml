@@ -9,9 +9,9 @@ requires-python = ">=3.11,<4.0"
 dependencies = [
     "openai>=1.50.0,<2.0.0",
     "pydantic>=2.13.4,<3.0",
-    "mistune>=3.3.1,<4.0.0",
+    "mistune>=3.3.4,<4.0.0",
     "pygments>=2.20.0,<3.0.0",
-    "textual>=8.2.7,<9.0.0",
+    "textual>=8.2.8,<9.0.0",
 ]
 
 [project.scripts]
@@ -23,8 +23,8 @@ packages = [{ include = "midge", from = "src" }]
 [tool.poetry.group.dev.dependencies]
 pytest = "^9.1"
 pytest-asyncio = "^1.4"
-ruff = "^0.15"
-pyright = "^1.1.410"
+ruff = "^0.16"
+pyright = "^1.1.411"
 
 [build-system]
 requires = ["poetry-core>=2.0.0"]
