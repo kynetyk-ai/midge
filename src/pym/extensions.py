@@ -1,13 +1,16 @@
-"""Skills: directories of `@tool`-decorated Python files that auto-register.
+"""Extensions: directories of `@tool`-decorated Python files that auto-register.
 
-A "skill" is a `.py` file that defines one or more `Tool` instances at module
-top level (typically via `@tool`) and optionally a `SYSTEM_PROMPT` constant
-whose contents are appended to the agent's system prompt.
+An "extension" is a `.py` file that defines one or more `Tool` instances at
+module top level (typically via `@tool`) and optionally a `SYSTEM_PROMPT`
+constant whose contents are appended to the agent's system prompt.
 
 The loader walks each given directory (or single file path), imports each
 public `.py` file (skipping `_*.py` and `__init__.py`), and pulls every `Tool`
 into a fresh `ToolRegistry`. First-registered wins on name collisions; later
 duplicates are warned about and dropped.
+
+The built-in tools in `pym/tools/coding/` are loaded through this same path —
+built-in and user-supplied tools are not special-cased.
 """
 
 from __future__ import annotations
@@ -20,13 +23,13 @@ from types import ModuleType
 
 from pym.tools import Tool, ToolRegistry
 
-_BUILTIN_ROOT = Path(__file__).parent
-BUILTIN_DIRS: list[Path] = [_BUILTIN_ROOT / "coding"]
+_BUILTIN_TOOL_ROOT = Path(__file__).parent / "tools"
+BUILTIN_TOOL_DIRS: list[Path] = [_BUILTIN_TOOL_ROOT / "coding"]
 
 _logger = logging.getLogger(__name__)
 
 
-def load_skills(sources: Iterable[Path | str]) -> tuple[ToolRegistry, str]:
+def load_extensions(sources: Iterable[Path | str]) -> tuple[ToolRegistry, str]:
     registry = ToolRegistry()
     prompts: list[str] = []
 
@@ -39,12 +42,12 @@ def load_skills(sources: Iterable[Path | str]) -> tuple[ToolRegistry, str]:
             try:
                 module = _import_file(f)
             except Exception as e:
-                _logger.warning("Failed to load skill %s: %s", f, e)
+                _logger.warning("Failed to load extension %s: %s", f, e)
                 continue
             for t in _extract_tools(module):
                 if t.name in registry:
                     _logger.warning(
-                        "Skill tool %r from %s shadowed by earlier registration",
+                        "Tool %r from %s shadowed by earlier registration",
                         t.name,
                         f,
                     )
@@ -59,14 +62,14 @@ def load_skills(sources: Iterable[Path | str]) -> tuple[ToolRegistry, str]:
 
 def _files_for(path: Path) -> list[Path] | None:
     if path.is_file():
-        return [path] if _is_skill_file(path) else []
+        return [path] if _is_extension_file(path) else []
     if path.is_dir():
-        return sorted(p for p in path.iterdir() if _is_skill_file(p))
-    _logger.warning("Skill source not found: %s", path)
+        return sorted(p for p in path.iterdir() if _is_extension_file(p))
+    _logger.warning("Extension source not found: %s", path)
     return None
 
 
-def _is_skill_file(p: Path) -> bool:
+def _is_extension_file(p: Path) -> bool:
     return (
         p.suffix == ".py"
         and not p.name.startswith("_")
@@ -77,7 +80,7 @@ def _is_skill_file(p: Path) -> bool:
 
 def _import_file(path: Path) -> ModuleType:
     abs_path = path.resolve()
-    name = f"_pi_skill_{abs_path.stem}_{abs(hash(str(abs_path)))}"
+    name = f"_pym_ext_{abs_path.stem}_{abs(hash(str(abs_path)))}"
     spec = importlib.util.spec_from_file_location(name, abs_path)
     if spec is None or spec.loader is None:
         raise ImportError(f"Cannot create import spec for {path}")
@@ -90,4 +93,4 @@ def _extract_tools(module: ModuleType) -> list[Tool]:
     return [v for v in vars(module).values() if isinstance(v, Tool)]
 
 
-__all__ = ["BUILTIN_DIRS", "load_skills"]
+__all__ = ["BUILTIN_TOOL_DIRS", "load_extensions"]

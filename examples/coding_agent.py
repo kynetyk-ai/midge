@@ -4,7 +4,7 @@ Usage:
     poetry run python -m examples.coding_agent [options] "<prompt>"
 
 Options:
-    --skill-dir DIR       Add a skills directory (repeatable).
+    --extension-dir DIR       Add an extensions directory (repeatable).
     --export-html PATH    Write HTML transcript on completion.
     --session PATH        Append turns to a JSONL session file. If the file
                           exists, the agent resumes from it (re-using the
@@ -24,10 +24,10 @@ from pathlib import Path
 from pym.agent import Agent, AgentEnd, ToolExecutionEnd, ToolExecutionStart
 from pym.client import Client, TextDelta
 from pym.compaction import compact, needs_compaction
+from pym.extensions import BUILTIN_TOOL_DIRS, load_extensions
 from pym.messages import TextContent
 from pym.persistence import Session
 from pym.session import export_html
-from pym.skills import BUILTIN_DIRS, load_skills
 
 BASE_SYSTEM_PROMPT = (
     "You are a coding assistant working in a local repository. "
@@ -39,12 +39,12 @@ BASE_SYSTEM_PROMPT = (
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="examples.coding_agent")
     parser.add_argument(
-        "--skill-dir",
+        "--extension-dir",
         action="append",
         type=Path,
         default=[],
         metavar="DIR",
-        help="Directory of skill .py files to load (repeatable).",
+        help="Directory of extension .py files to load (repeatable).",
     )
     parser.add_argument(
         "--export-html",
@@ -85,13 +85,13 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 
 async def amain(
     prompt: str,
-    skill_dirs: list[Path],
+    extension_dirs: list[Path],
     export_html_path: Path | None = None,
     session_path: Path | None = None,
     compaction_threshold: int | None = None,
     compaction_keep_recent: int = 20_000,
 ) -> int:
-    registry, prompt_addition = load_skills([*BUILTIN_DIRS, *skill_dirs])
+    registry, prompt_addition = load_extensions([*BUILTIN_TOOL_DIRS, *extension_dirs])
 
     session: Session | None = None
     if session_path is not None:
@@ -190,7 +190,7 @@ def main() -> None:
         asyncio.run(
             amain(
                 " ".join(args.prompt),
-                list(args.skill_dir),
+                list(args.extension_dir),
                 export_html_path=args.export_html,
                 session_path=args.session,
                 compaction_threshold=args.compaction_threshold,

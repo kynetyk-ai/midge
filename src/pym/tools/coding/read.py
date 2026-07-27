@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from pym.skills.coding._helpers import resolve_path
 from pym.tools import tool
+from pym.tools.coding._helpers import resolve_path
 
 _MAX_LINES = 2000
 _MAX_BYTES = 50_000

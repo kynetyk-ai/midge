@@ -76,7 +76,7 @@ For v1 we want this to be **opt-in** — `examples/coding_agent.py` gets a `--se
 | Each `Message` verbatim | `agent.history` (rebuilt from the `message` entries in order) |
 | `compaction` entry (informational) | The synthetic summary message itself is persisted as a normal `message` entry, so it's already in the reconstructed history |
 
-The `system_prompt` is in the header so a session loaded by a different process gets the same agent persona. The `tools_registry` is **not** persisted — the loader uses whatever skills the current process loads (per `--skill-dir`). This matches pi-mono's behavior and is the right call.
+The `system_prompt` is in the header so a session loaded by a different process gets the same agent persona. The `tools_registry` is **not** persisted — the loader uses whatever extensions the current process loads (per `--extension-dir`). This matches pi-mono's behavior and is the right call.
 
 ## Concurrency
 

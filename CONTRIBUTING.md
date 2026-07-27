@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for your interest. This is a small personal-scale project — the harness is roughly 2k LOC, deliberately readable and hackable, and most contributions probably take the form of bug fixes, new skills, or small focused features. Before opening a PR with significant scope, please open an issue first to align on direction.
+Thanks for your interest. This is a small personal-scale project — the harness is roughly 2k LOC, deliberately readable and hackable, and most contributions probably take the form of bug fixes, new extensions, or small focused features. Before opening a PR with significant scope, please open an issue first to align on direction.
 
 ## Dev setup
 
@@ -31,21 +31,21 @@ The codebase optimizes for clarity over cleverness. A few load-bearing conventio
 - `pyright` and `ruff` must be clean on `main`. PRs that introduce new findings will be asked to fix them.
 - Public-API surface (anything imported in an `examples/` file or in the README's "Layout" section) should have type annotations.
 
-## Adding a skill
+## Adding an extension
 
-The fastest way to extend the harness is to write a skill. See [`examples/notes_skill/`](./examples/notes_skill/) for a complete example. In short:
+The fastest way to extend the harness is to write an extension. See [`examples/notes_extension/`](./examples/notes_extension/) for a complete example. In short:
 
 1. Create a `.py` file with `@tool`-decorated async functions.
 2. Optionally export a module-level `SYSTEM_PROMPT` string.
-3. Run with `--skill-dir path/to/your/dir`.
+3. Run with `--extension-dir path/to/your/dir`.
 
-If you'd like the skill upstreamed as a built-in, open an issue describing the use case.
+If you'd like the extension upstreamed as a built-in, open an issue describing the use case.
 
 ## Pull requests
 
 - Branch off `main`.
 - One logical change per PR; small PRs are easier to review and revert.
-- Commit messages: imperative mood, scope prefix when natural (`feat(skills):`, `fix(rpc):`, `docs:`). The history follows that pattern.
+- Commit messages: imperative mood, scope prefix when natural (`feat(extensions):`, `fix(rpc):`, `docs:`). The history follows that pattern.
 - CI runs `ruff`, `pyright`, and `pytest`; please run them locally before pushing.
 
 ## Reporting a bug

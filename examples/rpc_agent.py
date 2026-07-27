@@ -4,7 +4,7 @@ Reads newline-delimited JSON commands from stdin; writes responses and async
 events to stdout. See `notes/rpc.md` and `src/pym/rpc.py` for the protocol.
 
 Usage:
-    poetry run python -m examples.rpc_agent [--skill-dir DIR ...]
+    poetry run python -m examples.rpc_agent [--extension-dir DIR ...]
 
 Same env vars as `examples.coding_agent`: OPENAI_API_KEY, OPENAI_BASE_URL,
 PYM_MODEL.
@@ -24,8 +24,8 @@ from pathlib import Path
 
 from pym.agent import Agent
 from pym.client import Client
+from pym.extensions import BUILTIN_TOOL_DIRS, load_extensions
 from pym.rpc import RpcServer
-from pym.skills import BUILTIN_DIRS, load_skills
 
 BASE_SYSTEM_PROMPT = (
     "You are a coding assistant. "
@@ -36,18 +36,18 @@ BASE_SYSTEM_PROMPT = (
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="examples.rpc_agent")
     parser.add_argument(
-        "--skill-dir",
+        "--extension-dir",
         action="append",
         type=Path,
         default=[],
         metavar="DIR",
-        help="Directory of skill .py files to load (repeatable).",
+        help="Directory of extension .py files to load (repeatable).",
     )
     return parser.parse_args(argv)
 
 
-async def amain(skill_dirs: list[Path]) -> int:
-    registry, prompt_addition = load_skills([*BUILTIN_DIRS, *skill_dirs])
+async def amain(extension_dirs: list[Path]) -> int:
+    registry, prompt_addition = load_extensions([*BUILTIN_TOOL_DIRS, *extension_dirs])
     full_prompt = BASE_SYSTEM_PROMPT
     if prompt_addition:
         full_prompt += "\n\n" + prompt_addition
@@ -82,7 +82,7 @@ async def amain(skill_dirs: list[Path]) -> int:
 
 def main() -> None:
     args = _parse_args(sys.argv[1:])
-    sys.exit(asyncio.run(amain(list(args.skill_dir))))
+    sys.exit(asyncio.run(amain(list(args.extension_dir))))
 
 
 if __name__ == "__main__":

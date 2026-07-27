@@ -1,6 +1,6 @@
 # py-mono — instructions for Claude
 
-This repo is a Python agent harness originally ported from [`pi-mono`](../pi-mono) (TypeScript). The harness is feature-complete for its original goals (see `README.md`); future work is incremental — bug fixes, polish, new skill packs, individual feature additions.
+This repo is a Python agent harness originally ported from [`pi-mono`](../pi) (TypeScript). The harness is feature-complete for its original goals (see `README.md`); future work is incremental — bug fixes, polish, new extension packs, individual feature additions.
 
 The user does not work in TypeScript and wants a codebase they can read, modify, and adapt to non-coding domains.
 
@@ -8,13 +8,24 @@ The user does not work in TypeScript and wants a codebase they can read, modify,
 
 1. **Readable, hackable codebase.** Idiomatic Python, not a faithful translation of the TS source.
 2. **Learning vehicle.** The user is using this project to understand how an agent harness works internals-up.
-3. **Domain-adaptability.** The harness must cleanly separate from the "coding agent" identity. Skills + system prompt should be the only things that need to change to retarget it.
+3. **Domain-adaptability.** The harness must cleanly separate from the "coding agent" identity. Extensions + system prompt should be the only things that need to change to retarget it.
 
 ## Working with `pi-mono`
 
-- `../pi-mono/` is **read-only reference material**. Do not edit it.
+- `../pi/` is **read-only reference material** (the `pi-mono` repo, checked out as `pi`). Do not edit it.
 - `notes/` holds the patterns extracted from `pi-mono` during the original port. When extending a subsystem, check there first to avoid re-reading the same TS code.
 - Read for *concepts*, then write Python from scratch. Do not translate line-by-line.
+
+### Vocabulary — deliberately aligned with `pi-mono`
+
+| Concept | py-mono | `pi-mono` |
+|---|---|---|
+| Built-in LLM-callable tools (`read`, `bash`, …) | `src/pym/tools/coding/` | `packages/coding-agent/src/core/tools/` |
+| Loading user `.py` files that register tools | `src/pym/extensions.py`, `--extension-dir` | `src/core/extensions/` |
+| `SKILL.md` — the [Agent Skills standard](https://agentskills.io/specification) | **no equivalent** | `src/core/skills.ts` |
+
+The word **skill** means the `SKILL.md` standard and nothing else. Do not use it for tools or
+extensions. py-mono has no skills support today; the name is kept free in case it is added.
 
 ## Tooling and conventions
 
@@ -38,10 +49,11 @@ The user does not work in TypeScript and wants a codebase they can read, modify,
 
 ```
 src/pym/            # the harness package
-src/pym/skills/     # built-in skills (coding tools live here)
-tests/             # pytest tests
-examples/          # entrypoints
-notes/             # patterns borrowed from pi-mono during reading passes
+src/pym/tools/      # @tool decorator + built-in coding tools
+src/pym/extensions.py  # the loader for tool directories
+tests/              # pytest tests
+examples/           # entrypoints
+notes/              # patterns borrowed from pi-mono during reading passes
 ```
 
 ## Style
