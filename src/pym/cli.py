@@ -10,12 +10,14 @@ Env: OPENAI_API_KEY, OPENAI_BASE_URL, PYM_MODEL (default: gpt-4o-mini).
 from __future__ import annotations
 
 import argparse
+import asyncio
 import os
 from pathlib import Path
 
 from pym.agent import Agent
 from pym.client import Client
 from pym.extensions import BUILTIN_TOOL_DIRS, load_extensions
+from pym.hooks import Hooks, SessionEnd, SessionStart
 from pym.persistence import Session
 from pym.tui import run_tui
 
@@ -64,7 +66,10 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
-    registry, prompt_addition = load_extensions([*BUILTIN_TOOL_DIRS, *args.extension_dir])
+    hooks = Hooks()
+    registry, prompt_addition = load_extensions(
+        [*BUILTIN_TOOL_DIRS, *args.extension_dir], hooks=hooks
+    )
 
     session: Session | None = None
     if args.session is not None:
@@ -93,10 +98,16 @@ def main(argv: list[str] | None = None) -> None:
         model=model,
         tools=registry,
         system_prompt=full_prompt,
+        hooks=hooks,
     )
     if session is not None:
         agent.history = list(session.messages)
 
+    # These bookend the TUI's own event loop, so they run in their own.
+    # A handler that needs the running app's loop should use a turn-scoped
+    # event instead.
+    session_path = str(args.session) if args.session is not None else None
+    asyncio.run(hooks.emit(SessionStart(path=session_path)))
     try:
         run_tui(
             agent,
@@ -107,3 +118,4 @@ def main(argv: list[str] | None = None) -> None:
     finally:
         if session is not None:
             session.close()
+        asyncio.run(hooks.emit(SessionEnd(path=session_path)))

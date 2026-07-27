@@ -21,6 +21,7 @@ import json
 from collections.abc import Callable, Sequence
 
 from pym.client import Client, Error, TextDelta
+from pym.hooks import BeforeCompact, CompactResult, Hooks
 from pym.messages import Message, UserMessage
 
 SUMMARIZATION_SYSTEM_PROMPT = """You are a context summarization assistant. Your job is to produce a compact summary of a conversation history so the rest of the conversation can resume with full context but reduced token usage. Do not continue the conversation; only summarize.
@@ -173,11 +174,13 @@ async def compact(
     model: str,
     keep_recent_tokens: int,
     count_tokens_fn: CountTokensFn = count_tokens,
+    hooks: Hooks | None = None,
 ) -> tuple[list[Message], str, int] | None:
     """Compact `history` if a valid cut exists.
 
     Returns `(new_history, summary_text, cut_index)` on success, or `None` if
-    no compaction was applied (history fits, or no valid cut point).
+    no compaction was applied (history fits, no valid cut point, or a
+    `before_compact` hook cancelled it).
 
     The new history is `[summary_message, *history[cut_index:]]`. The caller
     is responsible for swapping the agent's history and (optionally) recording
@@ -190,6 +193,16 @@ async def compact(
     )
     if cut_idx == 0:
         return None
+
+    if hooks is not None:
+        res = await hooks.emit(BeforeCompact(history=history, cut_index=cut_idx))
+        if isinstance(res, CompactResult):
+            if res.cancel:
+                return None
+            if res.cut_index is not None:
+                cut_idx = res.cut_index
+                if cut_idx <= 0 or cut_idx >= len(history):
+                    return None
 
     summary_text = await summarize(client, model, history[:cut_idx])
     new_history: list[Message] = [make_summary_message(summary_text), *history[cut_idx:]]
