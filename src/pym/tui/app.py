@@ -199,6 +199,7 @@ class PiApp(App[None]):
                     client=self.agent.client,
                     model=self.agent.model,
                     keep_recent_tokens=self.compaction_keep_recent,
+                    hooks=self.agent.hooks,
                 )
             except Exception as e:
                 await log.mount(StatusLine(f"[compaction failed: {e}]"))

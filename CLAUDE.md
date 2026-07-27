@@ -51,6 +51,7 @@ extensions. py-mono has no skills support today; the name is kept free in case i
 src/pym/            # the harness package
 src/pym/tools/      # @tool decorator + built-in coding tools
 src/pym/extensions.py  # the loader for tool directories
+src/pym/hooks.py    # lifecycle events + handler registry
 tests/              # pytest tests
 examples/           # entrypoints
 notes/              # patterns borrowed from pi-mono during reading passes

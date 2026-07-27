@@ -20,7 +20,9 @@ import logging
 from collections.abc import Iterable
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
+from pym.hooks import Hooks
 from pym.tools import Tool, ToolRegistry
 
 _BUILTIN_TOOL_ROOT = Path(__file__).parent / "tools"
@@ -29,7 +31,9 @@ BUILTIN_TOOL_DIRS: list[Path] = [_BUILTIN_TOOL_ROOT / "coding"]
 _logger = logging.getLogger(__name__)
 
 
-def load_extensions(sources: Iterable[Path | str]) -> tuple[ToolRegistry, str]:
+def load_extensions(
+    sources: Iterable[Path | str], *, hooks: Hooks | None = None
+) -> tuple[ToolRegistry, str]:
     registry = ToolRegistry()
     prompts: list[str] = []
 
@@ -56,8 +60,46 @@ def load_extensions(sources: Iterable[Path | str]) -> tuple[ToolRegistry, str]:
             sp = getattr(module, "SYSTEM_PROMPT", None)
             if isinstance(sp, str) and sp.strip():
                 prompts.append(sp.strip())
+            if hooks is not None:
+                _register_hooks(module, f, hooks)
 
     return registry, "\n\n".join(prompts)
+
+
+def _register_hooks(module: ModuleType, path: Path, hooks: Hooks) -> None:
+    """Call an extension's `register_hooks(hooks)` if it defines one.
+
+    Registrations are tagged with the extension path so a failing handler
+    names the file it came from.
+    """
+    fn = getattr(module, "register_hooks", None)
+    if not callable(fn):
+        return
+    scoped = _SourceScopedHooks(hooks, str(path))
+    try:
+        fn(scoped)
+    except Exception as e:
+        _logger.warning("register_hooks failed for %s: %s", path, e)
+
+
+class _SourceScopedHooks:
+    """Thin proxy that stamps `source` onto every registration."""
+
+    def __init__(self, hooks: Hooks, source: str) -> None:
+        self._hooks = hooks
+        self._source = source
+
+    def on(self, type: str, handler: Any) -> Any:
+        return self._hooks.on(type, handler, source=self._source)
+
+    def observe(self, handler: Any) -> Any:
+        return self._hooks.observe(handler, source=self._source)
+
+    def add_cleanup(self, fn: Any) -> Any:
+        return self._hooks.add_cleanup(fn)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._hooks, name)
 
 
 def _files_for(path: Path) -> list[Path] | None:

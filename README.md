@@ -10,6 +10,7 @@ The whole harness is roughly 2k LOC. The agent loop, OpenAI-compatible client, t
 - **`@tool` decorator** that turns an async Python function into an LLM-callable tool, with JSON Schema generated from its signature via Pydantic.
 - **Filesystem extension loader** — drop a `.py` file with `@tool`-decorated functions and an optional `SYSTEM_PROMPT` constant into a directory, point `--extension-dir` at it, and the agent picks up the new tools.
 - **Built-in coding tools**: `read`, `write`, `edit`, `bash`.
+- **Lifecycle hooks** — block or rewrite a tool call before it runs, transform context, patch results, observe every event. See [`notes/hooks.md`](./notes/hooks.md) and `examples/approval_extension/`.
 - **Textual TUI** for interactive use, plus a JSON-on-stdio RPC mode for embedding the agent in external tools.
 - **JSONL session save/resume** and a single-file HTML transcript exporter.
 - **Context compaction** that summarizes old turns when a session gets long.
@@ -93,12 +94,14 @@ src/pym/
 ├── session.py         # single-file HTML transcript exporter
 ├── rpc.py             # JSON-on-stdio RPC server
 ├── extensions.py      # load_extensions(dirs) → (ToolRegistry, prompt_addition)
+├── hooks.py           # lifecycle events + handler registry
 ├── tui/app.py         # Textual TUI
 └── cli.py             # `pym` entrypoint
 examples/
 ├── coding_agent.py    # one-shot CLI for the coding domain
 ├── rpc_agent.py       # RPC server for external clients
 ├── notes_agent.py     # second-domain TUI demo
+├── approval_extension/ # tool-approval hook demo
 └── notes_extension/   # the notes extension pack
 notes/                 # design rationale + patterns extracted from pi-mono
 tests/                 # pytest tests
@@ -114,7 +117,8 @@ If you want to understand how the harness works, the files in dependency order:
 4. `src/pym/agent.py` — the loop.
 5. `src/pym/tools/coding/` — four real tools.
 6. `src/pym/extensions.py` — the loader.
-7. Anything else, in any order: `compaction.py`, `persistence.py`, `session.py`, `rpc.py`, `tui/app.py`.
+7. `src/pym/hooks.py` — lifecycle interception.
+8. Anything else, in any order: `compaction.py`, `persistence.py`, `session.py`, `rpc.py`, `tui/app.py`.
 
 ## License
 
