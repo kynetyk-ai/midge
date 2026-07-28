@@ -14,6 +14,7 @@ The whole harness is roughly 2k LOC. The agent loop, OpenAI-compatible client, t
 - **Textual TUI** for interactive use, plus a JSON-on-stdio RPC mode for embedding the agent in external tools.
 - **JSONL session save/resume** and a single-file HTML transcript exporter.
 - **Context compaction** that summarizes old turns when a session gets long.
+- **Provider retry** with a cancellable backoff — rate limits, 5xx, and transport failures get a few attempts before the turn fails. Retries stop once the response has started streaming, so nothing the model already emitted is replayed.
 - **Retargetable** — `examples/notes_agent.py` demonstrates a non-coding domain (personal-knowledge KB) running on the same harness with no core changes.
 
 ## Setup
