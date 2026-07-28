@@ -156,12 +156,18 @@ async def amain(
         ):
             sys.stdout.write("[compacting context...]\n")
             sys.stdout.flush()
-            result = await compact(
-                agent.history,
-                client=client,
-                model=agent.model,
-                keep_recent_tokens=compaction_keep_recent,
-            )
+            try:
+                result = await compact(
+                    agent.history,
+                    client=client,
+                    model=agent.model,
+                    keep_recent_tokens=compaction_keep_recent,
+                )
+            except Exception as e:
+                # An otherwise successful turn should not exit non-zero because
+                # the follow-on summarization call failed.
+                sys.stdout.write(f"[compaction failed: {e}]\n")
+                result = None
             if result is not None:
                 new_history, summary_text, cut_idx = result
                 agent.history = new_history

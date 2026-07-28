@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
+
+_logger = logging.getLogger(__name__)
 
 
 class TextContent(BaseModel):
@@ -23,6 +26,10 @@ class ToolCall(BaseModel):
     id: str
     name: str
     arguments: dict[str, Any] = Field(default_factory=dict)
+    # Set when the provider's argument stream could not be parsed. Executing a
+    # call whose arguments are unknown is worse than failing it: a tool whose
+    # parameters all have defaults would silently run with them.
+    arguments_error: str | None = None
 
 
 AssistantContent = Annotated[TextContent | ToolCall, Field(discriminator="type")]
@@ -108,7 +115,24 @@ def _assistant_to_openai(m: AssistantMessage) -> dict[str, Any]:
 
 def _tool_result_to_openai(m: ToolResultMessage) -> dict[str, Any]:
     text = "".join(c.text for c in m.content if isinstance(c, TextContent))
+    if any(isinstance(c, ImageContent) for c in m.content):
+        # `ToolResultResult.content` permits images, but the tool role carries
+        # text only. Dropping them silently loses a hook's output with no trace.
+        _logger.warning(
+            "tool_result_image_dropped tool=%s id=%s", m.tool_name, m.tool_call_id
+        )
     return {"role": "tool", "tool_call_id": m.tool_call_id, "content": text}
+
+
+COMPACTION_PREFIX = (
+    "The conversation history before this point was compacted into the "
+    "following summary:\n\n<summary>\n"
+)
+COMPACTION_SUFFIX = "\n</summary>"
+
+
+def make_summary_message(summary_text: str) -> UserMessage:
+    return UserMessage(content=COMPACTION_PREFIX + summary_text + COMPACTION_SUFFIX)
 
 
 def to_openai_messages(messages: list[Message]) -> list[dict[str, Any]]:

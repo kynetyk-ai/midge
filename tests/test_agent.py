@@ -9,6 +9,7 @@ import pytest
 
 from midge.agent import (
     INTERRUPTED_MESSAGE,
+    MAX_TOOL_RESULT_CHARS,
     Agent,
     AgentEnd,
     AgentEvent,
@@ -527,3 +528,191 @@ async def test_cancel_only_closes_out_unfinished_tool_calls() -> None:
     assert set(results) == {"c1", "c2"}
     assert not results["c1"].is_error
     assert results["c2"].is_error
+
+
+async def test_reentrant_stream_is_rejected() -> None:
+    """Two concurrent turns would interleave appends into history — issue #33."""
+    client = Client()
+    started = asyncio.Event()
+
+    @tool
+    async def slow(x: str) -> str:
+        started.set()
+        await asyncio.sleep(30)
+        return "done"
+
+    registry = ToolRegistry()
+    registry.add(slow)
+    _install_turns(
+        client,
+        [
+            [
+                _chunk(tool_calls=[_tcd(index=0, id="c1", name="slow", arguments='{"x":"1"}')]),
+                _chunk(finish_reason="tool_calls"),
+            ]
+        ],
+    )
+    agent = Agent(client=client, model="gpt-4o", tools=registry)
+
+    async def run() -> None:
+        async for _ in agent.stream("first"):
+            pass
+
+    task = asyncio.create_task(run())
+    await started.wait()
+
+    with pytest.raises(RuntimeError, match="already running"):
+        async for _ in agent.stream("second"):
+            pass
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # And the guard releases, so the next turn works.
+    _install_turns(client, [[_chunk(content="ok"), _chunk(finish_reason="stop")]])
+    await agent.run("third")
+
+
+async def test_truncated_message_fails_tool_calls_unexecuted() -> None:
+    ran = False
+
+    @tool
+    async def touch(path: str = "/tmp/x") -> str:
+        nonlocal ran
+        ran = True
+        return "ran"
+
+    registry = ToolRegistry()
+    registry.add(touch)
+    client = Client()
+    _install_turns(
+        client,
+        [
+            [
+                _chunk(tool_calls=[_tcd(index=0, id="t1", name="touch", arguments='{"pa')]),
+                _chunk(finish_reason="length"),
+            ]
+        ],
+    )
+    agent = Agent(client=client, model="gpt-4o", tools=registry)
+    await _collect(agent, "go")
+
+    assert ran is False
+    result = agent.history[-1]
+    assert isinstance(result, ToolResultMessage)
+    assert result.is_error
+    assert result.tool_call_id == "t1"
+
+
+async def test_unparseable_tool_arguments_are_not_executed() -> None:
+    ran = False
+
+    @tool
+    async def maybe(path: str = "default") -> str:
+        nonlocal ran
+        ran = True
+        return "ran"
+
+    registry = ToolRegistry()
+    registry.add(maybe)
+    client = Client()
+    _install_turns(
+        client,
+        [
+            [
+                _chunk(tool_calls=[_tcd(index=0, id="m1", name="maybe", arguments='{"path": "trunc')]),
+                _chunk(finish_reason="tool_calls"),
+            ],
+            [_chunk(content="ok"), _chunk(finish_reason="stop")],
+        ],
+    )
+    agent = Agent(client=client, model="gpt-4o", tools=registry)
+    await _collect(agent, "go")
+
+    # A tool whose params all have defaults would otherwise silently run.
+    assert ran is False
+    results = [m for m in agent.history if isinstance(m, ToolResultMessage)]
+    assert len(results) == 1
+    assert results[0].is_error
+    assert isinstance(results[0].content[0], TextContent)
+    assert "could not be parsed" in results[0].content[0].text
+
+
+async def test_oversized_tool_result_is_truncated() -> None:
+    @tool
+    async def big(n: int = 0) -> str:
+        return "x" * (MAX_TOOL_RESULT_CHARS + 5_000)
+
+    registry = ToolRegistry()
+    registry.add(big)
+    client = Client()
+    _install_turns(
+        client,
+        [
+            [
+                _chunk(tool_calls=[_tcd(index=0, id="b1", name="big", arguments="{}")]),
+                _chunk(finish_reason="tool_calls"),
+            ],
+            [_chunk(content="ok"), _chunk(finish_reason="stop")],
+        ],
+    )
+    agent = Agent(client=client, model="gpt-4o", tools=registry)
+    await _collect(agent, "go")
+
+    result = next(m for m in agent.history if isinstance(m, ToolResultMessage))
+    assert isinstance(result.content[0], TextContent)
+    text = result.content[0].text
+    assert len(text) < MAX_TOOL_RESULT_CHARS + 200
+    assert "truncated" in text
+
+
+async def test_generator_exit_closes_out_tool_calls() -> None:
+    """Breaking out of the stream must not orphan an in-flight tool call."""
+    started = asyncio.Event()
+
+    @tool
+    async def slow(x: str) -> str:
+        started.set()
+        await asyncio.sleep(30)
+        return "done"
+
+    registry = ToolRegistry()
+    registry.add(slow)
+    client = Client()
+    _install_turns(
+        client,
+        [
+            [
+                _chunk(tool_calls=[_tcd(index=0, id="g1", name="slow", arguments='{"x":"1"}')]),
+                _chunk(finish_reason="tool_calls"),
+            ]
+        ],
+    )
+    agent = Agent(client=client, model="gpt-4o", tools=registry)
+
+    async def consume() -> None:
+        async for ev in agent.stream("go"):
+            if isinstance(ev, ToolExecutionStart):
+                break
+
+    task = asyncio.create_task(consume())
+    await task
+    # Force finalization of the abandoned generator.
+    for _ in range(3):
+        await asyncio.sleep(0)
+    import gc
+
+    gc.collect()
+    for _ in range(3):
+        await asyncio.sleep(0)
+
+    wire = to_openai_messages(agent.history)
+    requested = {
+        tc["id"]
+        for m in wire
+        if m.get("role") == "assistant"
+        for tc in (m.get("tool_calls") or [])
+    }
+    answered = {m["tool_call_id"] for m in wire if m.get("role") == "tool"}
+    assert requested == answered

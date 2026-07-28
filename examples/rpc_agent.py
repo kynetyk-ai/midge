@@ -27,6 +27,8 @@ from midge.client import Client
 from midge.extensions import BUILTIN_TOOL_DIRS, load_extensions
 from midge.rpc import RpcServer
 
+_READ_LIMIT = 16 * 1024 * 1024
+
 BASE_SYSTEM_PROMPT = (
     "You are a coding assistant. "
     "Use the available tools to inspect and modify files. Keep responses concise."
@@ -64,7 +66,9 @@ async def amain(extension_dirs: list[Path]) -> int:
     )
 
     loop = asyncio.get_running_loop()
-    reader = asyncio.StreamReader()
+    # The default 64 KiB limit turns a large pasted prompt into a
+    # ValueError that escapes `serve()` and kills the server.
+    reader = asyncio.StreamReader(limit=_READ_LIMIT)
     protocol = asyncio.StreamReaderProtocol(reader)
     await loop.connect_read_pipe(lambda: protocol, sys.stdin)
 

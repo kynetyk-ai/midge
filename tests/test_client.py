@@ -246,7 +246,7 @@ async def test_error_during_stream_emits_error_event() -> None:
 
     assert isinstance(events[-1], Error)
     assert events[-1].message.stop_reason == "error"
-    assert events[-1].message.error_message == "network died"
+    assert events[-1].message.error_message == "RuntimeError: network died"
 
 
 async def test_cancelled_during_stream_emits_aborted_and_reraises() -> None:

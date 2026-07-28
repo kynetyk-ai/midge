@@ -25,6 +25,7 @@ are undefined.
 from __future__ import annotations
 
 import json
+import logging
 from datetime import UTC, datetime
 from io import TextIOBase
 from pathlib import Path
@@ -32,9 +33,12 @@ from typing import IO, Any, Literal
 
 from pydantic import BaseModel, TypeAdapter
 
-from midge.messages import Message
+from midge.messages import Message, make_summary_message
 
 VERSION = 1
+
+
+_logger = logging.getLogger(__name__)
 
 
 class SessionHeader(BaseModel):
@@ -113,16 +117,33 @@ class Session:
         header = SessionHeader.model_validate(first)
 
         messages: list[Message] = []
-        for line in lines[1:]:
-            entry = json.loads(line)
+        for i, line in enumerate(lines[1:], start=1):
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                # `append` is write-then-flush, not atomic, so a crash mid-write
+                # leaves a partial final line. Dropping it recovers the session;
+                # a corrupt line anywhere else is real damage and still raises.
+                if i == len(lines) - 1:
+                    _logger.warning(
+                        "session_trailing_line_truncated path=%s line=%d", p, i + 1
+                    )
+                    break
+                raise
             entry_type = entry.get("type")
             if entry_type == "message":
                 msg = _MESSAGE_ADAPTER.validate_python(entry["data"])
                 messages.append(msg)
             elif entry_type == "compaction":
-                continue
+                # Skipping these replayed the pre-compaction history on resume,
+                # silently undoing the compaction. The record already carries
+                # everything needed to rebuild what the agent actually held.
+                messages = [
+                    make_summary_message(entry["summary"]),
+                    *messages[entry["cut_index"] :],
+                ]
             else:
-                continue
+                _logger.warning("session_unknown_entry_type type=%r path=%s", entry_type, p)
 
         f = p.open("a", encoding="utf-8")
         return cls(p, file=f, header=header, messages=messages)
@@ -162,6 +183,8 @@ class Session:
         }
         self._file.write(json.dumps(entry, ensure_ascii=False) + "\n")
         self._file.flush()
+        # Keep the in-memory view identical to what `load` would rebuild.
+        self.messages = [make_summary_message(summary), *self.messages[cut_index:]]
 
     def close(self) -> None:
         if not self._file.closed:

@@ -22,7 +22,7 @@ from collections.abc import Callable, Sequence
 
 from midge.client import Client, Error, TextDelta
 from midge.hooks import BeforeCompact, CompactResult, Hooks
-from midge.messages import Message, UserMessage
+from midge.messages import Message, UserMessage, make_summary_message
 
 SUMMARIZATION_SYSTEM_PROMPT = """You are a context summarization assistant. Your job is to produce a compact summary of a conversation history so the rest of the conversation can resume with full context but reduced token usage. Do not continue the conversation; only summarize.
 
@@ -56,11 +56,6 @@ SUMMARIZE_INSTRUCTION = (
     "described in your system instructions."
 )
 
-COMPACTION_PREFIX = (
-    "The conversation history before this point was compacted into the "
-    "following summary:\n\n<summary>\n"
-)
-COMPACTION_SUFFIX = "\n</summary>"
 
 
 CountTokensFn = Callable[[Sequence[Message]], int]
@@ -129,8 +124,13 @@ def find_cut_index(
     return best if best > 0 else 0
 
 
-def make_summary_message(summary_text: str) -> UserMessage:
-    return UserMessage(content=COMPACTION_PREFIX + summary_text + COMPACTION_SUFFIX)
+def _snap_to_user_boundary(history: Sequence[Message], idx: int) -> int:
+    """Move `idx` forward to the next `UserMessage`, or past the end if there
+    is none. Cutting anywhere else splits a tool call from its result."""
+    for i in range(max(idx, 0), len(history)):
+        if isinstance(history[i], UserMessage):
+            return i
+    return len(history)
 
 
 async def summarize(
@@ -200,7 +200,9 @@ async def compact(
             if res.cancel:
                 return None
             if res.cut_index is not None:
-                cut_idx = res.cut_index
+                # A hook index landing mid-sequence would put a tool result at
+                # the head of the new history, with nothing issuing its call.
+                cut_idx = _snap_to_user_boundary(history, res.cut_index)
                 if cut_idx <= 0 or cut_idx >= len(history):
                     return None
 

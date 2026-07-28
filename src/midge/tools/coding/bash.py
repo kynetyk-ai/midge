@@ -11,6 +11,7 @@ from midge.tools import tool
 _MAX_LINES = 2000
 _MAX_BYTES = 50_000
 _DEFAULT_TIMEOUT = 60
+_KILL_GRACE_S = 2.0
 
 
 @tool
@@ -35,20 +36,31 @@ async def bash(command: str, timeout: int | None = None) -> str:
     try:
         stdout_b, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
     except TimeoutError:
-        _kill_group(proc.pid)
-        await proc.wait()
+        await _terminate(proc)
         raise TimeoutError(f"Command timed out after {timeout_s}s") from None
     except asyncio.CancelledError:
-        _kill_group(proc.pid)
+        _kill_group(proc.pid, signal.SIGTERM)
         raise
 
     output = stdout_b.decode("utf-8", errors="replace")
     return _format_output(output, proc.returncode or 0)
 
 
-def _kill_group(pid: int) -> None:
+def _kill_group(pid: int, sig: int) -> None:
     with contextlib.suppress(ProcessLookupError):
-        os.killpg(pid, signal.SIGTERM)
+        os.killpg(pid, sig)
+
+
+async def _terminate(proc: asyncio.subprocess.Process) -> None:
+    """A child that ignores SIGTERM would otherwise hang the turn forever:
+    the old code awaited `proc.wait()` unbounded after a single SIGTERM."""
+    _kill_group(proc.pid, signal.SIGTERM)
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=_KILL_GRACE_S)
+    except TimeoutError:
+        _kill_group(proc.pid, signal.SIGKILL)
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(proc.wait(), timeout=_KILL_GRACE_S)
 
 
 def _format_output(output: str, returncode: int) -> str:

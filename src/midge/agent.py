@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -42,6 +43,13 @@ from midge.messages import (
 from midge.tools import ToolRegistry
 
 INTERRUPTED_MESSAGE = "Interrupted by user before the tool finished."
+TRUNCATED_MESSAGE = (
+    "Not executed: the assistant message hit the token limit, so this tool "
+    "call may be incomplete. Re-issue it if you still need it."
+)
+MAX_TOOL_RESULT_CHARS = 50_000
+
+_logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -82,8 +90,23 @@ class Agent:
         self.system_prompt = system_prompt
         self.hooks = hooks
         self.history: list[Message] = []
+        self._running = False
 
     async def stream(self, user_input: str | UserMessage) -> AsyncIterator[AgentEvent]:
+        # `history` is mutated in place throughout the turn. A second concurrent
+        # stream interleaves its appends with this one's, splitting tool calls
+        # from their results. Callers that want to start a new turn must cancel
+        # this one and await it first.
+        if self._running:
+            raise RuntimeError("Agent.stream is already running")
+        self._running = True
+        try:
+            async for ev in self._stream(user_input):
+                yield ev
+        finally:
+            self._running = False
+
+    async def _stream(self, user_input: str | UserMessage) -> AsyncIterator[AgentEvent]:
         user_msg = (
             user_input
             if isinstance(user_input, UserMessage)
@@ -160,6 +183,21 @@ class Agent:
             if not tool_calls:
                 break
 
+            # A message cut off at the token limit has tool calls the model
+            # never finished emitting. Running them is a guess; fail them all
+            # and let the model re-issue.
+            if partial.stop_reason == "length":
+                _logger.warning(
+                    "tool_calls_truncated count=%d model=%s", len(tool_calls), model
+                )
+                for tc in tool_calls:
+                    yield ToolExecutionStart(tool_call=tc)
+                    result = _tool_error(tc, TRUNCATED_MESSAGE)
+                    self.history.append(result)
+                    new_messages.append(result)
+                    yield ToolExecutionEnd(tool_call=tc, result=result)
+                break
+
             # The assistant message with these tool calls is already in `history`.
             # Providers reject any request where a `tool_call` has no matching
             # result, so an interrupt landing anywhere below would poison every
@@ -233,7 +271,10 @@ class Agent:
                     new_messages.append(result)
                     answered.add(tc.id)
                     yield ToolExecutionEnd(tool_call=tc, result=result)
-            except asyncio.CancelledError:
+            # BaseException, not Exception: `GeneratorExit` (any consumer that
+            # breaks out of the `async for`), `KeyboardInterrupt`, and a hook
+            # raising under `error_mode="raise"` all leave the same orphan.
+            except BaseException:
                 for tc in tool_calls:
                     if tc.id in answered:
                         continue
@@ -264,12 +305,16 @@ class Agent:
         return last_assistant
 
     async def _run_tool(self, tc: ToolCall) -> ToolResultMessage:
+        if tc.arguments_error is not None:
+            return _tool_error(
+                tc, f"Arguments could not be parsed: {tc.arguments_error}"
+            )
         try:
             result: Any = await self.tools.invoke(tc.name, tc.arguments)
             return ToolResultMessage(
                 tool_call_id=tc.id,
                 tool_name=tc.name,
-                content=[TextContent(text=str(result))],
+                content=[TextContent(text=_truncate(str(result)))],
                 is_error=False,
             )
         except KeyError:
@@ -279,7 +324,19 @@ class Agent:
         except asyncio.CancelledError:
             raise
         except Exception as e:
+            _logger.warning(
+                "tool_failed tool=%s id=%s error=%s", tc.name, tc.id, type(e).__name__
+            )
             return _tool_error(tc, f"Tool error: {type(e).__name__}: {e}")
+
+
+def _truncate(text: str) -> str:
+    """Built-in tools bound their own output; extension tools have no such
+    contract, and an unbounded result enters every later request."""
+    if len(text) <= MAX_TOOL_RESULT_CHARS:
+        return text
+    dropped = len(text) - MAX_TOOL_RESULT_CHARS
+    return text[:MAX_TOOL_RESULT_CHARS] + f"\n… [truncated {dropped} characters]"
 
 
 def _tool_error(tc: ToolCall, msg: str) -> ToolResultMessage:
