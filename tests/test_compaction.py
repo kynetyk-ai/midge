@@ -4,6 +4,8 @@ from collections.abc import Iterable
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
+import openai
 import pytest
 
 from midge.client import Client
@@ -227,6 +229,28 @@ async def test_summarize_empty_prefix_raises() -> None:
     client = Client()
     with pytest.raises(ValueError, match="empty prefix"):
         await summarize(client, "m", [])
+
+
+async def test_summarize_inherits_client_retry() -> None:
+    # summarize() calls Client.stream directly, bypassing Agent, so it picks up
+    # the provider retry for free. Locked in because it is easy to lose.
+    client = Client(retry_base_delay=0)
+    calls = [0]
+    turns = iter([[_chunk(content="## Goal\nx"), _chunk(finish_reason="stop")]])
+
+    async def create(**kwargs: Any) -> _FakeStream:
+        calls[0] += 1
+        if calls[0] == 1:
+            raise openai.APIConnectionError(request=httpx.Request("POST", "http://x"))
+        return _FakeStream(next(turns))
+
+    client._client = SimpleNamespace(  # type: ignore[assignment]
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+    )
+
+    text = await summarize(client, "m", [UserMessage(content="hi")])
+    assert calls[0] == 2
+    assert text == "## Goal\nx"
 
 
 async def test_summarize_empty_output_raises() -> None:

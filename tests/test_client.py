@@ -5,6 +5,8 @@ from collections.abc import AsyncIterator, Iterable
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
+import openai
 import pytest
 
 from midge.client import (
@@ -19,6 +21,7 @@ from midge.client import (
     ToolCallDelta,
     ToolCallEnd,
     ToolCallStart,
+    is_retryable,
 )
 from midge.messages import TextContent, ToolCall, UserMessage
 
@@ -74,6 +77,36 @@ def _install_fake_stream(client: Client, stream: _FakeStream) -> None:
 
     client._client = SimpleNamespace(  # type: ignore[assignment]
         chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+    )
+
+
+def _install_attempts(client: Client, attempts: list[Any]) -> list[int]:
+    """Install one outcome per attempt. An outcome is either a `_FakeStream`
+    to return or an exception to raise from `create`. Returns a single-element
+    list holding the call count."""
+    calls = [0]
+    queue = list(attempts)
+
+    async def create(**kwargs: Any) -> _FakeStream:
+        calls[0] += 1
+        outcome = queue.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    client._client = SimpleNamespace(  # type: ignore[assignment]
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+    )
+    return calls
+
+
+def _status_error(status: int) -> openai.APIStatusError:
+    return openai.APIStatusError(
+        f"status {status}",
+        response=httpx.Response(
+            status_code=status, request=httpx.Request("POST", "http://x/v1")
+        ),
+        body=None,
     )
 
 
@@ -286,6 +319,159 @@ async def test_partial_appears_in_every_event() -> None:
     ]
     first = partials[0]
     assert all(p is first for p in partials)
+
+
+def test_is_retryable_classification() -> None:
+    assert is_retryable(_status_error(429))
+    assert is_retryable(_status_error(500))
+    assert is_retryable(_status_error(503))
+    assert is_retryable(openai.APIConnectionError(request=httpx.Request("POST", "http://x")))
+    assert is_retryable(openai.APITimeoutError(request=httpx.Request("POST", "http://x")))
+
+    assert not is_retryable(_status_error(400))
+    assert not is_retryable(_status_error(401))
+    assert not is_retryable(_status_error(404))
+    assert not is_retryable(RuntimeError("boom"))
+
+
+async def test_sdk_retries_disabled() -> None:
+    # The SDK's own backoff sleep ignores cancellation, so the retry must be ours.
+    assert Client()._client.max_retries == 0
+
+
+async def test_retries_then_succeeds() -> None:
+    client = Client(retry_base_delay=0)
+    calls = _install_attempts(
+        client,
+        [
+            _status_error(503),
+            _status_error(429),
+            _FakeStream([_chunk(content="hi"), _chunk(finish_reason="stop")]),
+        ],
+    )
+
+    events = await _collect(
+        client.stream(messages=[UserMessage(content="x")], model="gpt-4o")
+    )
+
+    assert calls[0] == 3
+    done = events[-1]
+    assert isinstance(done, Done)
+    assert done.message.stop_reason == "stop"
+    assert isinstance(done.message.content[0], TextContent)
+    assert done.message.content[0].text == "hi"
+    # Exactly one StreamStart despite three attempts.
+    assert [type(e) for e in events].count(StreamStart) == 1
+
+
+async def test_retry_exhausted_emits_error() -> None:
+    client = Client(max_attempts=3, retry_base_delay=0)
+    calls = _install_attempts(client, [_status_error(500)] * 3)
+
+    events = await _collect(
+        client.stream(messages=[UserMessage(content="x")], model="gpt-4o")
+    )
+
+    assert calls[0] == 3
+    assert isinstance(events[-1], Error)
+    assert events[-1].message.stop_reason == "error"
+
+
+async def test_non_retryable_fails_on_first_attempt() -> None:
+    client = Client(retry_base_delay=0)
+    calls = _install_attempts(client, [_status_error(401)])
+
+    events = await _collect(
+        client.stream(messages=[UserMessage(content="x")], model="gpt-4o")
+    )
+
+    assert calls[0] == 1
+    assert isinstance(events[-1], Error)
+
+
+async def test_no_retry_once_content_has_been_yielded() -> None:
+    # A mid-stream drop after deltas escaped cannot be replayed: the consumer
+    # has already seen part of the response.
+    client = Client(retry_base_delay=0)
+    failing = _FakeStream([_chunk(content="hello")])
+    failing.fail_after(1, _status_error(503))
+    calls = _install_attempts(
+        client,
+        [failing, _FakeStream([_chunk(content="second"), _chunk(finish_reason="stop")])],
+    )
+
+    events = await _collect(
+        client.stream(messages=[UserMessage(content="x")], model="gpt-4o")
+    )
+
+    assert calls[0] == 1
+    assert isinstance(events[-1], Error)
+    assert isinstance(events[-1].message.content[0], TextContent)
+    assert events[-1].message.content[0].text == "hello"
+
+
+async def test_retry_discards_partial_state_from_failed_attempt() -> None:
+    # The first attempt buffers a tool call but dies before any event escapes,
+    # so the retry must not inherit it.
+    class _DropBeforeYield(_FakeStream):
+        async def __anext__(self) -> Any:
+            raise _status_error(503)
+
+    client = Client(retry_base_delay=0)
+    _install_attempts(
+        client,
+        [
+            _DropBeforeYield([]),
+            _FakeStream(
+                [
+                    _chunk(tool_calls=[_tcd(index=0, id="c1", name="read", arguments='{"path":"a"}')]),
+                    _chunk(finish_reason="tool_calls"),
+                ]
+            ),
+        ],
+    )
+
+    events = await _collect(
+        client.stream(messages=[UserMessage(content="x")], model="gpt-4o")
+    )
+
+    done = events[-1]
+    assert isinstance(done, Done)
+    assert len(done.message.content) == 1
+    tc = done.message.content[0]
+    assert isinstance(tc, ToolCall)
+    assert tc.id == "c1"
+    # Still the object handed out by StreamStart.
+    assert done.message is events[0].partial
+
+
+async def test_cancellation_during_retry_backoff_propagates() -> None:
+    # The whole reason the backoff sleep is ours rather than the SDK's: the
+    # SDK's sleep ignores cancellation, so Ctrl+C during it would do nothing.
+    client = Client(retry_base_delay=3600)
+    calls = _install_attempts(client, [_status_error(503), _status_error(503)])
+    collected: list[StreamEvent] = []
+
+    async def run() -> None:
+        async for ev in client.stream(messages=[UserMessage(content="x")], model="gpt-4o"):
+            collected.append(ev)
+
+    task = asyncio.create_task(run())
+    for _ in range(10):
+        await asyncio.sleep(0)
+
+    # Parked in the backoff: the first attempt is spent, the second not started.
+    assert calls[0] == 1
+    assert not task.done()
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        async with asyncio.timeout(1):
+            await task
+
+    assert calls[0] == 1
+    # Cancelled between attempts, so nothing beyond StreamStart was emitted.
+    assert [type(e) for e in collected] == [StreamStart]
 
 
 async def test_invalid_tool_call_arguments_become_empty_dict() -> None:
