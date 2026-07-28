@@ -8,22 +8,24 @@ import pytest
 
 from midge.client import Client
 from midge.compaction import (
-    COMPACTION_PREFIX,
-    COMPACTION_SUFFIX,
     compact,
     count_tokens,
     find_cut_index,
-    make_summary_message,
     needs_compaction,
     summarize,
 )
+from midge.hooks import CompactResult, Hooks
 from midge.messages import (
+    COMPACTION_PREFIX,
+    COMPACTION_SUFFIX,
     AssistantMessage,
     Message,
     TextContent,
     ToolCall,
     ToolResultMessage,
     UserMessage,
+    make_summary_message,
+    to_openai_messages,
 )
 
 
@@ -316,3 +318,40 @@ async def test_compact_propagates_summarize_failure() -> None:
             model="m",
             keep_recent_tokens=one_turn + 5,
         )
+
+
+async def test_hook_cut_index_snaps_to_user_boundary() -> None:
+    """An arbitrary hook index could split a tool call from its result — issue #33."""
+    history: list[Message] = [
+        UserMessage(content="one"),
+        AssistantMessage(
+            content=[ToolCall(id="t1", name="read", arguments={})], stop_reason="tool_use"
+        ),
+        ToolResultMessage(tool_call_id="t1", tool_name="read", content=[TextContent(text="x")]),
+        UserMessage(content="two"),
+        AssistantMessage(content=[TextContent(text="done")], stop_reason="stop"),
+    ]
+
+    hooks = Hooks()
+    # cut_index=2 lands on the tool result, splitting it from its call.
+    hooks.on("before_compact", lambda ev, ctx: CompactResult(cut_index=2))
+
+    client = Client()
+    _install_turns(client, [[_chunk(content="SUMMARY"), _chunk(finish_reason="stop")]])
+
+    result = await compact(
+        history, client=client, model="gpt-4o", keep_recent_tokens=10, hooks=hooks
+    )
+    assert result is not None
+    new_history, _, cut_idx = result
+    assert cut_idx == 3
+    assert isinstance(new_history[1], UserMessage)
+    wire = to_openai_messages(new_history)
+    answered = {m["tool_call_id"] for m in wire if m.get("role") == "tool"}
+    requested = {
+        tc["id"]
+        for m in wire
+        if m.get("role") == "assistant"
+        for tc in (m.get("tool_calls") or [])
+    }
+    assert requested == answered

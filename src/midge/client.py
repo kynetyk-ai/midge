@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -17,6 +18,8 @@ from midge.messages import (
     ToolCall,
     to_openai_messages,
 )
+
+_logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -226,8 +229,16 @@ class Client:
                 buf = tool_arg_buffers[idx]
                 try:
                     tc.arguments = json.loads(buf) if buf else {}
-                except json.JSONDecodeError:
+                except json.JSONDecodeError as e:
                     tc.arguments = {}
+                    tc.arguments_error = str(e)
+                    _logger.warning(
+                        "tool_call_args_unparseable tool=%s id=%s error=%s buf=%.200r",
+                        tc.name,
+                        tc.id,
+                        e,
+                        buf,
+                    )
                 yield ToolCallEnd(
                     content_index=content_idx,
                     tool_call=tc,
@@ -243,6 +254,9 @@ class Client:
             yield Error(message=partial)
             raise
         except Exception as e:
+            # `str(e)` is all the caller gets; without this the type and
+            # traceback are gone and there is nowhere else to look.
+            _logger.exception("provider_stream_failed model=%s", model)
             partial.stop_reason = "error"
-            partial.error_message = str(e)
+            partial.error_message = f"{type(e).__name__}: {e}"
             yield Error(message=partial)
