@@ -18,6 +18,8 @@ suitable for daily use".
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import logging
 from typing import Any, ClassVar
 
 from textual import on
@@ -26,7 +28,7 @@ from textual.binding import Binding, BindingType
 from textual.containers import VerticalScroll
 from textual.message import Message
 from textual.widgets import Footer, Header, Static, TextArea
-from textual.worker import Worker, WorkerState
+from textual.worker import Worker, WorkerCancelled, WorkerFailed, WorkerState
 
 from midge.agent import Agent, AgentEnd, ToolExecutionEnd, ToolExecutionStart
 from midge.client import (
@@ -40,6 +42,8 @@ from midge.client import (
 from midge.compaction import compact, needs_compaction
 from midge.messages import TextContent, ToolCall
 from midge.persistence import Session
+
+_logger = logging.getLogger(__name__)
 
 
 class _SubmitTextArea(TextArea):
@@ -163,7 +167,15 @@ class PiApp(App[None]):
             log.mount(StatusLine(f"[resumed: {len(self.agent.history)} prior messages]"))
 
     @on(_SubmitTextArea.Submitted)
-    def _on_submit(self, message: _SubmitTextArea.Submitted) -> None:
+    async def _on_submit(self, message: _SubmitTextArea.Submitted) -> None:
+        # `exclusive=True` cancels the previous worker but does not wait for it.
+        # Its teardown still appends tool results, so starting the next turn
+        # immediately interleaves two writers into `Agent.history`.
+        prev = self._current_worker
+        if prev is not None and prev.state is WorkerState.RUNNING:
+            prev.cancel()
+            with contextlib.suppress(WorkerCancelled, WorkerFailed):
+                await prev.wait()
         self._current_worker = self.run_worker(
             self._run_turn(message.value),
             exclusive=True,
@@ -177,6 +189,10 @@ class PiApp(App[None]):
         self._current_assistant = None
         self._tool_bubbles = {}
 
+        # `new_messages` never reaches us if the turn is cancelled, so persist
+        # the interrupted turn from the history tail instead.
+        mark = len(self.agent.history)
+
         try:
             async for ev in self.agent.stream(prompt):
                 self._handle_event(ev, log)
@@ -184,6 +200,8 @@ class PiApp(App[None]):
                 if isinstance(ev, AgentEnd) and self.session is not None:
                     self.session.append_many(ev.new_messages)
         except asyncio.CancelledError:
+            if self.session is not None:
+                self.session.append_many(self.agent.history[mark:])
             await log.mount(StatusLine("[interrupted]"))
             log.scroll_end(animate=False)
             raise
@@ -202,6 +220,7 @@ class PiApp(App[None]):
                     hooks=self.agent.hooks,
                 )
             except Exception as e:
+                _logger.exception("compaction_failed")
                 await log.mount(StatusLine(f"[compaction failed: {e}]"))
                 return
             if result is not None:
@@ -256,6 +275,18 @@ class PiApp(App[None]):
             bubble.update(f"⚙ {ev.tool_call.name} → [{tag}] {preview}")
         elif isinstance(ev, AgentEnd):
             self._current_assistant = None
+
+    @on(Worker.StateChanged)
+    def _on_worker_state(self, event: Worker.StateChanged) -> None:
+        # `exit_on_error=False` otherwise swallows the exception into Textual's
+        # internal log and the turn just stops mid-render with no explanation.
+        if event.state is not WorkerState.ERROR:
+            return
+        err = event.worker.error
+        _logger.error("tui_turn_failed error=%s", type(err).__name__, exc_info=err)
+        log = self.query_one("#log", VerticalScroll)
+        log.mount(StatusLine(f"[turn failed: {type(err).__name__}: {err}]"))
+        log.scroll_end(animate=False)
 
     def action_interrupt(self) -> None:
         worker = self._current_worker

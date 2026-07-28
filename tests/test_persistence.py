@@ -205,3 +205,56 @@ def test_unicode_round_trip(tmp_path: Path) -> None:
     loaded = Session.load(p)
     assert loaded.messages[0].content == "héllo 🚀 中文"
     loaded.close()
+
+
+def test_resume_preserves_compaction(tmp_path: Path) -> None:
+    """Skipping compaction records replayed the pre-compaction history — issue #33."""
+    p = tmp_path / "s.jsonl"
+    s = Session.new(p, model="gpt-4o")
+    for i in range(6):
+        s.append(UserMessage(content=f"m{i}"))
+    s.append_compaction(summary="## Goal\nstuff", cut_index=4)
+    s.append(UserMessage(content="after"))
+    s.close()
+
+    loaded = Session.load(p)
+    contents = [m.content for m in loaded.messages]
+    assert len(loaded.messages) == 4
+    assert isinstance(contents[0], str) and "<summary>" in contents[0]
+    assert contents[1:] == ["m4", "m5", "after"]
+
+
+def test_append_compaction_updates_in_memory_view(tmp_path: Path) -> None:
+    p = tmp_path / "s.jsonl"
+    s = Session.new(p, model="gpt-4o")
+    for i in range(4):
+        s.append(UserMessage(content=f"m{i}"))
+    s.append_compaction(summary="sum", cut_index=2)
+    s.close()
+
+    assert [m.content for m in Session.load(p).messages] == [m.content for m in s.messages]
+
+
+def test_truncated_trailing_line_is_tolerated(tmp_path: Path) -> None:
+    p = tmp_path / "s.jsonl"
+    s = Session.new(p, model="gpt-4o")
+    s.append(UserMessage(content="kept"))
+    s.close()
+    with p.open("a", encoding="utf-8") as f:
+        f.write('{"type":"message","data":{"role":"user","con')
+
+    loaded = Session.load(p)
+    assert [m.content for m in loaded.messages] == ["kept"]
+
+
+def test_corrupt_line_that_is_not_last_still_raises(tmp_path: Path) -> None:
+    p = tmp_path / "s.jsonl"
+    s = Session.new(p, model="gpt-4o")
+    s.append(UserMessage(content="a"))
+    s.close()
+    with p.open("a", encoding="utf-8") as f:
+        f.write("{not json\n")
+        f.write('{"type":"message","data":{"role":"user","content":"b"}}\n')
+
+    with pytest.raises(json.JSONDecodeError):
+        Session.load(p)
