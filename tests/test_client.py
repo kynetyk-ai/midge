@@ -442,7 +442,9 @@ async def test_retry_discards_partial_state_from_failed_attempt() -> None:
     assert isinstance(tc, ToolCall)
     assert tc.id == "c1"
     # Still the object handed out by StreamStart.
-    assert done.message is events[0].partial
+    start = events[0]
+    assert isinstance(start, StreamStart)
+    assert done.message is start.partial
 
 
 async def test_cancellation_during_retry_backoff_propagates() -> None:
