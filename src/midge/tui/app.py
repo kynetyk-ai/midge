@@ -177,6 +177,10 @@ class PiApp(App[None]):
         self._current_assistant = None
         self._tool_bubbles = {}
 
+        # `new_messages` never reaches us if the turn is cancelled, so persist
+        # the interrupted turn from the history tail instead.
+        mark = len(self.agent.history)
+
         try:
             async for ev in self.agent.stream(prompt):
                 self._handle_event(ev, log)
@@ -184,6 +188,8 @@ class PiApp(App[None]):
                 if isinstance(ev, AgentEnd) and self.session is not None:
                     self.session.append_many(ev.new_messages)
         except asyncio.CancelledError:
+            if self.session is not None:
+                self.session.append_many(self.agent.history[mark:])
             await log.mount(StatusLine("[interrupted]"))
             log.scroll_end(animate=False)
             raise

@@ -126,6 +126,11 @@ async def amain(
     if session is not None:
         agent.history = list(session.messages)
 
+    # `new_messages` never reaches us if the turn is interrupted, so persist the
+    # partial turn from the history tail instead.
+    mark = len(agent.history)
+    interrupted = False
+
     try:
         async for ev in agent.stream(prompt):
             if isinstance(ev, TextDelta):
@@ -166,28 +171,35 @@ async def amain(
                     f"[compacted: {cut_idx} messages summarized; "
                     f"history is now {len(new_history)} messages]\n"
                 )
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        interrupted = True
+        if session is not None:
+            session.append_many(agent.history[mark:])
+        sys.stdout.write("\n[interrupted]\n")
     finally:
         if session is not None:
             session.close()
 
-    if export_html_path is not None:
-        export_html_path.write_text(
-            export_html(
-                agent.history,
-                title=f"midge · {prompt[:60]}",
-                model=agent.model,
-            ),
-            encoding="utf-8",
-        )
-        sys.stdout.write(f"[exported HTML transcript to {export_html_path}]\n")
+        if export_html_path is not None:
+            export_html_path.write_text(
+                export_html(
+                    agent.history,
+                    title=f"midge · {prompt[:60]}",
+                    model=agent.model,
+                ),
+                encoding="utf-8",
+            )
+            sys.stdout.write(f"[exported HTML transcript to {export_html_path}]\n")
 
-    return 0
+    return 130 if interrupted else 0
 
 
 def main() -> None:
     args = _parse_args(sys.argv[1:])
-    sys.exit(
-        asyncio.run(
+    # `asyncio.run` cancels the task on Ctrl+C (handled inside `amain`) and then
+    # re-raises; swallow it here so the CLI exits without a traceback.
+    try:
+        code = asyncio.run(
             amain(
                 " ".join(args.prompt),
                 list(args.extension_dir),
@@ -197,7 +209,9 @@ def main() -> None:
                 compaction_keep_recent=args.compaction_keep_recent,
             )
         )
-    )
+    except KeyboardInterrupt:
+        code = 130
+    sys.exit(code)
 
 
 if __name__ == "__main__":

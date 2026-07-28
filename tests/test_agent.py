@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterable
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from midge.agent import (
+    INTERRUPTED_MESSAGE,
     Agent,
     AgentEnd,
     AgentEvent,
@@ -17,6 +21,7 @@ from midge.messages import (
     TextContent,
     ToolResultMessage,
     UserMessage,
+    to_openai_messages,
 )
 from midge.tools import ToolRegistry, tool
 
@@ -407,3 +412,118 @@ async def test_user_message_can_be_passed_directly() -> None:
     await agent.run(user)
 
     assert agent.history[0] is user
+
+
+async def test_cancel_during_tool_execution_closes_out_tool_calls() -> None:
+    """An unanswered tool call makes every later turn unusable — see issue #27."""
+    started = asyncio.Event()
+
+    @tool
+    async def slow(x: str) -> str:
+        started.set()
+        await asyncio.sleep(30)
+        return "done"
+
+    registry = ToolRegistry()
+    registry.add(slow)
+
+    client = Client()
+    _install_turns(
+        client,
+        [
+            [
+                _chunk(
+                    tool_calls=[
+                        _tcd(index=0, id="c1", name="slow", arguments='{"x":"1"}')
+                    ]
+                ),
+                _chunk(finish_reason="tool_calls"),
+            ]
+        ],
+    )
+    agent = Agent(client=client, model="gpt-4o", tools=registry)
+
+    async def run() -> None:
+        async for _ in agent.stream("go"):
+            pass
+
+    task = asyncio.create_task(run())
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    result = agent.history[-1]
+    assert isinstance(result, ToolResultMessage)
+    assert result.tool_call_id == "c1"
+    assert result.is_error
+    assert isinstance(result.content[0], TextContent)
+    assert result.content[0].text == INTERRUPTED_MESSAGE
+
+    # The next request must carry a `tool` message for every `tool_call` id.
+    captured = _install_turns(
+        client, [[_chunk(content="hi"), _chunk(finish_reason="stop")]]
+    )
+    await agent.run("next")
+    sent = to_openai_messages(agent.history[:-1])
+    answered = {m["tool_call_id"] for m in sent if m.get("role") == "tool"}
+    requested = {
+        tc["id"]
+        for m in sent
+        if m.get("role") == "assistant"
+        for tc in (m.get("tool_calls") or [])
+    }
+    assert requested and requested == answered
+    assert captured
+
+
+async def test_cancel_only_closes_out_unfinished_tool_calls() -> None:
+    started = asyncio.Event()
+
+    @tool
+    async def fast(x: str) -> str:
+        return "quick"
+
+    @tool
+    async def slow(x: str) -> str:
+        started.set()
+        await asyncio.sleep(30)
+        return "done"
+
+    registry = ToolRegistry()
+    registry.add(fast)
+    registry.add(slow)
+
+    client = Client()
+    _install_turns(
+        client,
+        [
+            [
+                _chunk(
+                    tool_calls=[
+                        _tcd(index=0, id="c1", name="fast", arguments='{"x":"1"}'),
+                        _tcd(index=1, id="c2", name="slow", arguments='{"x":"2"}'),
+                    ]
+                ),
+                _chunk(finish_reason="tool_calls"),
+            ]
+        ],
+    )
+    agent = Agent(client=client, model="gpt-4o", tools=registry)
+
+    async def run() -> None:
+        async for _ in agent.stream("go"):
+            pass
+
+    task = asyncio.create_task(run())
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    results = {
+        m.tool_call_id: m for m in agent.history if isinstance(m, ToolResultMessage)
+    }
+    assert set(results) == {"c1", "c2"}
+    assert not results["c1"].is_error
+    assert results["c2"].is_error
