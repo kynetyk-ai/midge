@@ -112,12 +112,27 @@ def _tool_result_to_openai(m: ToolResultMessage) -> dict[str, Any]:
 
 
 def to_openai_messages(messages: list[Message]) -> list[dict[str, Any]]:
+    """Render history into an OpenAI payload, dropping what a provider rejects.
+
+    History is allowed to record turns that failed; the wire format is not.
+    Repairing here rather than at the append site keeps the failure visible in
+    the session log, the HTML export, and the event stream, while making this
+    the single boundary every request passes through — so damage from the loop,
+    a hook, compaction, or a resumed session is normalized the same way.
+    """
     out: list[dict[str, Any]] = []
+    issued: set[str] = set()
     for m in messages:
         if isinstance(m, UserMessage):
             out.append(_user_to_openai(m))
         elif isinstance(m, AssistantMessage):
+            # A failed turn produced either tool calls that never ran or no
+            # content at all. Both are rejected on the next request, and the
+            # rejection outlives the session because history is persisted.
+            if m.stop_reason in ("error", "aborted"):
+                continue
+            issued.update(c.id for c in m.content if isinstance(c, ToolCall))
             out.append(_assistant_to_openai(m))
-        else:
+        elif m.tool_call_id in issued:
             out.append(_tool_result_to_openai(m))
     return out

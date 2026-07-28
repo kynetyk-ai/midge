@@ -154,13 +154,17 @@ def test_to_openai_assistant_multiple_tool_calls_preserves_order() -> None:
 
 
 def test_to_openai_tool_result_text() -> None:
-    [out] = to_openai_messages(
+    _, out = to_openai_messages(
         [
+            AssistantMessage(
+                content=[ToolCall(id="call_1", name="read", arguments={})],
+                stop_reason="tool_use",
+            ),
             ToolResultMessage(
                 tool_call_id="call_1",
                 tool_name="read",
                 content=[TextContent(text="file contents")],
-            )
+            ),
         ]
     )
     assert out == {"role": "tool", "tool_call_id": "call_1", "content": "file contents"}
@@ -181,3 +185,90 @@ def test_assistant_message_can_be_mutated_in_place() -> None:
     assert m.content[0].text == "hello"
     assert isinstance(m.content[1], ToolCall)
     assert m.stop_reason == "tool_use"
+
+
+def test_to_openai_drops_error_turn_with_orphaned_tool_call() -> None:
+    """A stream that dies mid-tool-call must not poison later requests — issue #33."""
+    wire = to_openai_messages(
+        [
+            UserMessage(content="write the file"),
+            AssistantMessage(
+                content=[ToolCall(id="w1", name="write", arguments={})],
+                stop_reason="error",
+                error_message="connection reset by peer",
+            ),
+            UserMessage(content="are you there?"),
+        ]
+    )
+    assert [m["role"] for m in wire] == ["user", "user"]
+    assert not any(m.get("tool_calls") for m in wire)
+
+
+def test_to_openai_drops_content_less_error_turn() -> None:
+    """A pre-delta failure would otherwise serialize as content=None with no tool_calls."""
+    wire = to_openai_messages(
+        [
+            UserMessage(content="hi"),
+            AssistantMessage(content=[], stop_reason="error", error_message="429"),
+            UserMessage(content="retry"),
+        ]
+    )
+    assert all(m["role"] == "user" for m in wire)
+    assert not any(m.get("content") is None for m in wire)
+
+
+def test_to_openai_drops_aborted_turn() -> None:
+    wire = to_openai_messages(
+        [
+            UserMessage(content="hi"),
+            AssistantMessage(content=[], stop_reason="aborted", error_message="cancelled"),
+        ]
+    )
+    assert [m["role"] for m in wire] == ["user"]
+
+
+def test_to_openai_drops_tool_result_whose_call_was_dropped() -> None:
+    """Dropping the issuing assistant must not leave a tool message behind it."""
+    wire = to_openai_messages(
+        [
+            UserMessage(content="go"),
+            AssistantMessage(
+                content=[ToolCall(id="x1", name="bash", arguments={})],
+                stop_reason="aborted",
+            ),
+            ToolResultMessage(
+                tool_call_id="x1",
+                tool_name="bash",
+                content=[TextContent(text="Interrupted")],
+                is_error=True,
+            ),
+        ]
+    )
+    assert [m["role"] for m in wire] == ["user"]
+
+
+def test_to_openai_keeps_successful_tool_sequences() -> None:
+    wire = to_openai_messages(
+        [
+            UserMessage(content="go"),
+            AssistantMessage(
+                content=[ToolCall(id="ok1", name="read", arguments={})],
+                stop_reason="tool_use",
+            ),
+            ToolResultMessage(
+                tool_call_id="ok1",
+                tool_name="read",
+                content=[TextContent(text="data")],
+            ),
+            AssistantMessage(content=[TextContent(text="done")], stop_reason="stop"),
+        ]
+    )
+    assert [m["role"] for m in wire] == ["user", "assistant", "tool", "assistant"]
+    requested = {
+        tc["id"]
+        for m in wire
+        if m.get("role") == "assistant"
+        for tc in (m.get("tool_calls") or [])
+    }
+    answered = {m["tool_call_id"] for m in wire if m.get("role") == "tool"}
+    assert requested == answered == {"ok1"}
