@@ -218,7 +218,7 @@ class Hooks:
     def on(
         self,
         type: Literal["session_start", "session_end"],
-        handler: Callable[..., CancelResult | None | Awaitable[CancelResult | None]],
+        handler: Callable[..., CancelResult | Awaitable[CancelResult | None] | None],
         *,
         source: str | None = ...,
     ) -> Unsubscribe: ...
@@ -226,7 +226,7 @@ class Hooks:
     def on(
         self,
         type: Literal["turn_start"],
-        handler: Callable[..., TurnStartResult | None | Awaitable[TurnStartResult | None]],
+        handler: Callable[..., TurnStartResult | Awaitable[TurnStartResult | None] | None],
         *,
         source: str | None = ...,
     ) -> Unsubscribe: ...
@@ -234,7 +234,7 @@ class Hooks:
     def on(
         self,
         type: Literal["context"],
-        handler: Callable[..., ContextResult | None | Awaitable[ContextResult | None]],
+        handler: Callable[..., ContextResult | Awaitable[ContextResult | None] | None],
         *,
         source: str | None = ...,
     ) -> Unsubscribe: ...
@@ -243,7 +243,7 @@ class Hooks:
         self,
         type: Literal["before_provider_request"],
         handler: Callable[
-            ..., ProviderRequestResult | None | Awaitable[ProviderRequestResult | None]
+            ..., ProviderRequestResult | Awaitable[ProviderRequestResult | None] | None
         ],
         *,
         source: str | None = ...,
@@ -253,7 +253,7 @@ class Hooks:
         self,
         type: Literal["after_provider_response"],
         handler: Callable[
-            ..., ProviderResponseResult | None | Awaitable[ProviderResponseResult | None]
+            ..., ProviderResponseResult | Awaitable[ProviderResponseResult | None] | None
         ],
         *,
         source: str | None = ...,
@@ -262,7 +262,7 @@ class Hooks:
     def on(
         self,
         type: Literal["tool_call"],
-        handler: Callable[..., ToolCallResult | None | Awaitable[ToolCallResult | None]],
+        handler: Callable[..., ToolCallResult | Awaitable[ToolCallResult | None] | None],
         *,
         source: str | None = ...,
     ) -> Unsubscribe: ...
@@ -270,7 +270,7 @@ class Hooks:
     def on(
         self,
         type: Literal["tool_result"],
-        handler: Callable[..., ToolResultResult | None | Awaitable[ToolResultResult | None]],
+        handler: Callable[..., ToolResultResult | Awaitable[ToolResultResult | None] | None],
         *,
         source: str | None = ...,
     ) -> Unsubscribe: ...
@@ -278,7 +278,7 @@ class Hooks:
     def on(
         self,
         type: Literal["before_compact"],
-        handler: Callable[..., CompactResult | None | Awaitable[CompactResult | None]],
+        handler: Callable[..., CompactResult | Awaitable[CompactResult | None] | None],
         *,
         source: str | None = ...,
     ) -> Unsubscribe: ...
