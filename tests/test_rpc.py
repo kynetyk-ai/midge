@@ -646,25 +646,64 @@ async def test_set_system_prompt_rejects_non_string() -> None:
     await task
 
 
-async def test_new_session_clears_history() -> None:
-    client = Client()
-    _install_turns(client, [[_chunk(content="hi"), _chunk(finish_reason="stop")]])
-    agent = Agent(client=client, model="m")
+async def test_new_session_requires_a_path() -> None:
+    """Without one there would be no new session, only a silent end to
+    persistence — which is what `clear_context` is for."""
+    agent = Agent(client=Client(), model="m")
     _server, inbox, outbox, task = _start_server(agent)
-
-    await _run_to_completion(inbox, outbox)
-    assert len(agent.history) == 2
 
     resp = await _command(inbox, outbox, {"id": "n", "type": "new_session"})
 
-    assert resp["success"] is True
-    assert resp["data"] == {"session": None}
-    assert agent.history == []
+    assert resp["success"] is False
+    assert "path" in resp["error"]
     inbox.close()
     await task
 
 
-async def test_clear_context_is_an_alias_for_new_session() -> None:
+async def test_clear_context_clears_history_and_keeps_recording(tmp_path: Path) -> None:
+    path = tmp_path / "s.jsonl"
+    session = Session.new(path, model="m")
+    client = Client()
+    _install_turns(
+        client,
+        [
+            [_chunk(content="first"), _chunk(finish_reason="stop")],
+            [_chunk(content="second"), _chunk(finish_reason="stop")],
+        ],
+    )
+    agent = Agent(client=client, model="m")
+    server = RpcServer(agent, session=session)
+    inbox, outbox = _Inbox(), _Outbox()
+    task = asyncio.create_task(server.serve(read_line=inbox.read_line, write=outbox.write))
+
+    await _run_to_completion(inbox, outbox, "before")
+    session.append_many(agent.history)
+
+    resp = await _command(inbox, outbox, {"id": "c", "type": "clear_context"})
+
+    assert resp["success"] is True
+    assert resp["data"]["cleared"] == 2
+    assert agent.history == []
+    # The log stays open — clearing changes what the model sees, not what was
+    # written, and persistence must not silently stop.
+    assert resp["data"]["session"] == str(path)
+    assert server.session is session
+
+    outbox.lines.clear()
+    await _run_to_completion(inbox, outbox, "after")
+    session.append_many(agent.history)
+    inbox.close()
+    await task
+    session.close()
+
+    # Everything is still on disk, including what was cleared.
+    restored = Session.load(path).messages
+    assert [type(m).__name__ for m in restored].count("UserMessage") == 2
+    assert any("before" in str(m.content) for m in restored)
+    assert any("after" in str(m.content) for m in restored)
+
+
+async def test_clear_context_without_a_session_is_fine() -> None:
     client = Client()
     _install_turns(client, [[_chunk(content="hi"), _chunk(finish_reason="stop")]])
     agent = Agent(client=client, model="m")
@@ -674,12 +713,13 @@ async def test_clear_context_is_an_alias_for_new_session() -> None:
     resp = await _command(inbox, outbox, {"id": "c", "type": "clear_context"})
 
     assert resp["success"] is True
+    assert resp["data"] == {"cleared": 2, "session": None}
     assert agent.history == []
     inbox.close()
     await task
 
 
-async def test_new_session_opens_a_file_when_given_a_path(tmp_path: Path) -> None:
+async def test_new_session_opens_a_fresh_log(tmp_path: Path) -> None:
     agent = Agent(client=Client(), model="m")
     _server, inbox, outbox, task = _start_server(agent)
 
@@ -732,3 +772,52 @@ async def test_export_html_renders_pre_compaction_messages(tmp_path: Path) -> No
     inbox.close()
     await task
     session.close()
+
+
+async def test_new_session_header_stores_the_base_not_the_composed_prompt(
+    tmp_path: Path,
+) -> None:
+    """A resume reads the header back as the durable base and re-appends the
+    generated half itself, so storing the composed string would duplicate the
+    skills catalogue every time."""
+    agent = Agent(client=Client(), model="m")
+    _server, inbox, outbox, task = _server_with_composed_prompt(agent)
+    assert CATALOGUE in (agent.system_prompt or "")
+
+    path = tmp_path / "fresh.jsonl"
+    await _command(inbox, outbox, {"id": "n", "type": "new_session", "path": str(path)})
+
+    header = Session.load(path).header
+    assert header.system_prompt == "You are a coding assistant."
+    assert CATALOGUE not in (header.system_prompt or "")
+    inbox.close()
+    await task
+
+
+async def test_failed_new_session_leaves_state_untouched(tmp_path: Path) -> None:
+    """Reporting failure from a state it already destroyed is worse than
+    failing: the caller has lost the history and the log either way."""
+    taken = tmp_path / "taken.jsonl"
+    Session.new(taken, model="m").close()
+
+    live = Session.new(tmp_path / "live.jsonl", model="m")
+    client = Client()
+    _install_turns(client, [[_chunk(content="hi"), _chunk(finish_reason="stop")]])
+    agent = Agent(client=client, model="m")
+    server = RpcServer(agent, session=live)
+    inbox, outbox = _Inbox(), _Outbox()
+    task = asyncio.create_task(server.serve(read_line=inbox.read_line, write=outbox.write))
+
+    await _run_to_completion(inbox, outbox)
+    assert len(agent.history) == 2
+
+    resp = await _command(
+        inbox, outbox, {"id": "n", "type": "new_session", "path": str(taken)}
+    )
+
+    assert resp["success"] is False
+    assert len(agent.history) == 2, "history was wiped by a call that failed"
+    assert server.session is live, "the log was closed by a call that failed"
+    inbox.close()
+    await task
+    live.close()

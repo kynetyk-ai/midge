@@ -223,7 +223,9 @@ class RpcServer:
                 await self._handle_export_html(cmd_id, cmd)
             case "compact":
                 await self._handle_compact(cmd_id)
-            case "new_session" | "clear_context":
+            case "clear_context":
+                await self._handle_clear_context(cmd_id)
+            case "new_session":
                 await self._handle_new_session(cmd_id, cmd)
             case _:
                 _logger.warning("rpc_command_unknown type=%r", cmd_type)
@@ -417,32 +419,65 @@ class RpcServer:
             },
         )
 
+    async def _handle_clear_context(self, cmd_id: str | None) -> None:
+        """Forget the conversation; keep recording to the same log.
+
+        Runtime-only, deliberately. The session file is an append-only record of
+        what happened, so it keeps every message and a resume of that file
+        restores them — clearing changes what the model sees now, not what was
+        written. Use `new_session` to start a fresh log.
+        """
+        cleared = len(self.agent.history)
+        self.agent.history = []
+        _logger.info("rpc_context_cleared messages=%d", cleared)
+        await self._respond(
+            cmd_id,
+            "clear_context",
+            success=True,
+            data={
+                "cleared": cleared,
+                "session": str(self.session.path) if self.session is not None else None,
+            },
+        )
+
     async def _handle_new_session(self, cmd_id: str | None, cmd: dict[str, Any]) -> None:
+        """Close the current log and start a fresh one. `path` is required —
+        without it there would be no new session, only a silent end to
+        persistence, which is what `clear_context` is for."""
         raw_path = cmd.get("path")
-        if raw_path is not None and not isinstance(raw_path, str):
+        if not isinstance(raw_path, str) or not raw_path:
             await self._respond(
-                cmd_id, "new_session", success=False, error="`path` must be a string"
+                cmd_id,
+                "new_session",
+                success=False,
+                error="`path` is required and must be a non-empty string",
             )
+            return
+
+        # Open the new log *before* touching anything, so a failure here leaves
+        # the server exactly as it was rather than reporting an error from a
+        # state it has already half-destroyed.
+        try:
+            opened = Session.new(
+                Path(raw_path),
+                model=self.agent.model,
+                # The base, not the composed prompt: the header is what a resume
+                # reads back as `durable`, and cli.py re-appends the generated
+                # half itself. Storing the composed string would duplicate the
+                # skills catalogue on every resume.
+                system_prompt=self._base_prompt or None,
+            )
+        except (OSError, FileExistsError) as e:
+            await self._respond(cmd_id, "new_session", success=False, error=str(e))
             return
 
         self.agent.history = []
         if self.session is not None:
             self.session.close()
-            self.session = None
-        if raw_path:
-            try:
-                self.session = Session.new(
-                    Path(raw_path),
-                    model=self.agent.model,
-                    system_prompt=self.agent.system_prompt,
-                )
-            except (OSError, FileExistsError) as e:
-                await self._respond(cmd_id, "new_session", success=False, error=str(e))
-                return
-        _logger.info("rpc_new_session path=%s", raw_path or "-")
+        self.session = opened
+        _logger.info("rpc_new_session path=%s", raw_path)
         await self._respond(
-            cmd_id, "new_session", success=True,
-            data={"session": str(self.session.path) if self.session is not None else None},
+            cmd_id, "new_session", success=True, data={"session": str(opened.path)}
         )
 
     async def _handle_abort(self, cmd_id: str | None) -> None:
