@@ -173,6 +173,56 @@ errors reach whoever queued it rather than surfacing mid-run with nothing to
 attribute them to. midge has no command layer yet; the rule is written down so
 the future one obeys it.
 
+## Enumerating commands
+
+`get_commands` answers "what can a user invoke, and how", and executes nothing.
+It is a **projection, not an invention**: built-ins come from the dispatch
+table, skills from directories on disk. That is what makes it safe to ship
+before a consumer exists — the failure mode is awkward field names, not a wrong
+feature, and nothing depends on it yet.
+
+Each entry carries four things:
+
+- `invoke` — how to transmit. `command` means send `{"type": name, …}`;
+  `prompt` means put text in a `prompt`/`steer`/`follow_up` message.
+- `parameters` — JSON Schema, the same shape `Tool.schema()` produces. **Empty
+  `properties` is the select-and-fire signal**, so a consumer learns arity from
+  the data rather than a separate flag. A client can build a form from this and
+  drive a command it knows nothing else about.
+- `description` — the label.
+- `source_info` — provenance; skills only, since they load from four default
+  directories plus `--skill-dir` and "which one is this?" is a real question.
+
+`parameters` means slightly different things per `invoke`: for a command the
+properties are keys in the request object; for a prompt the single property is
+free text appended after the name (`/skill:deploy to staging`). A
+prompt-invoked command takes at most one argument, which is what keeps that
+unambiguous — a source needing more wants a real answer, not a cleverer reading
+of this one.
+
+**Deliberately absent: any notion of danger.** `clear_context`, `new_session`
+and `abort` all discard or interrupt something, but whether that warrants a
+confirmation is consumer policy — a misclick in a terminal and one in a shared
+channel are different risks, and the server does not know which it is talking
+to. No UI concepts in the response.
+
+**What is listed.** The server has an opinion about what is a user-facing
+action: `abort`, `compact`, `clear_context`, `new_session`, `export_html`,
+`set_model`, `set_system_prompt`, plus every loaded skill as `skill:<name>`.
+Out: `prompt`, `steer` and `follow_up`, which *are* the interaction rather than
+menu items, and the `get_*` family, which a client reads to render itself.
+
+Skills are listed regardless of `disable-model-invocation` — hiding one from the
+model's catalogue is exactly the case where an explicit command is the only way
+to reach it.
+
+`/skill:name [args]` is expanded server-side into the `<skill …>` envelope, at
+**enqueue** time for `steer` and `follow_up`. That is the rule stated above: a
+bad name then fails in the response to whoever queued it rather than surfacing
+mid-run, and what gets delivered is frozen at the moment the user asked for it.
+An unknown name is an error, not literal text — pi passes it through because it
+has a text-expansion path where that makes sense; midge does not.
+
 ## Errors
 
 - **Parse error** on inbound: emit `{"type": "response", "command": "parse", "success": false, "error": "..."}`. Don't include an `id` because we couldn't parse it.

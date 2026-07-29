@@ -13,7 +13,9 @@ Stdout is the protocol; stderr is for diagnostics. Call `claim_stdout()` before
 anything else can write, so a stray `print()` anywhere in the process lands on
 stderr instead of corrupting the stream.
 
-Inbound subset (Phase 2): prompt, abort, get_messages.
+Inbound: prompt, steer, follow_up, abort, and a set of state and control
+commands `get_commands` enumerates for clients that would rather discover the
+surface than hardcode it.
 Commands are dispatched serially; a `prompt` returns its response immediately
 after preflight and runs the agent in a background task while the dispatch
 loop continues reading stdin (so `abort` can interrupt).
@@ -28,9 +30,12 @@ import json
 import logging
 import signal
 import sys
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from midge.agent import (
     Agent,
@@ -55,6 +60,7 @@ from midge.compaction import compact
 from midge.messages import AssistantMessage, TextContent, ToolCall, UserMessage
 from midge.persistence import Session, read_transcript
 from midge.session import export_html
+from midge.skills import Skill, skill_message
 
 _logger = logging.getLogger(__name__)
 
@@ -161,6 +167,67 @@ def event_to_wire(ev: Any) -> dict[str, Any] | None:
     return None
 
 
+class _CommandParams(BaseModel):
+    """Base for built-in command schemas.
+
+    `extra="forbid"` so the generated schema carries `additionalProperties:
+    false`, matching what `Tool.schema()` produces — a consumer that can render
+    a tool call can render a command with no second convention to learn.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class _SetModelParams(_CommandParams):
+    model: str = Field(description="Provider model id, e.g. gpt-4o")
+
+
+class _SetSystemPromptParams(_CommandParams):
+    prompt: str = Field(
+        description="Replaces the durable base prompt; the generated half is re-appended"
+    )
+
+
+class _NewSessionParams(_CommandParams):
+    path: str = Field(description="Path for the new session log")
+
+
+class _ExportHtmlParams(_CommandParams):
+    output_path: str | None = Field(
+        default=None, description="Where to write; defaults to the session path with .html"
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class BuiltinCommand:
+    name: str
+    description: str
+    params: type[BaseModel] | None = None
+
+
+# The server does get an opinion about what is a user-facing action rather than
+# protocol plumbing. Out: `prompt`, `steer` and `follow_up`, which *are* the
+# interaction — a UI picks between them by policy when the user hits enter — and
+# the `get_*` family, which a client reads to render itself rather than offering
+# to a user. `abort` is in: leaving it out assumed every consumer has an escape
+# key, and a chat bot does not.
+BUILTIN_COMMANDS: tuple[BuiltinCommand, ...] = (
+    BuiltinCommand("abort", "Stop the run in flight and discard anything queued"),
+    BuiltinCommand("compact", "Summarize older turns to reclaim context"),
+    BuiltinCommand("clear_context", "Forget the conversation; keep recording to the same log"),
+    BuiltinCommand("new_session", "Close the current log and start a fresh one", _NewSessionParams),
+    BuiltinCommand("export_html", "Write an HTML transcript of the session", _ExportHtmlParams),
+    BuiltinCommand("set_model", "Switch the model used for subsequent turns", _SetModelParams),
+    BuiltinCommand(
+        "set_system_prompt", "Replace the agent's base system prompt", _SetSystemPromptParams
+    ),
+)
+
+_NO_PARAMS: dict[str, Any] = {"type": "object", "properties": {}, "additionalProperties": False}
+
+SKILL_COMMAND_PREFIX = "/skill:"
+
+
 class RpcServer:
     def __init__(
         self,
@@ -170,6 +237,7 @@ class RpcServer:
         compaction_keep_recent: int = 20_000,
         base_prompt: str | None = None,
         prompt_suffix: str = "",
+        skills: Sequence[Skill] | None = None,
     ) -> None:
         self.agent = agent
         # `client` and `model` come off the agent; `session` is what the export
@@ -182,6 +250,7 @@ class RpcServer:
         # change the base without silently deleting the catalogue.
         self._base_prompt = base_prompt if base_prompt is not None else (agent.system_prompt or "")
         self._prompt_suffix = prompt_suffix
+        self._skills: Sequence[Skill] = skills or ()
         # The queue is shared with the agent: it drains steering at its own
         # boundaries, the server drains follow-ups once a run is done.
         self.steering = agent.steering if agent.steering is not None else SteeringQueue()
@@ -245,6 +314,8 @@ class RpcServer:
                 await self._handle_queue(cmd_id, cmd, "steer")
             case "follow_up":
                 await self._handle_queue(cmd_id, cmd, "follow_up")
+            case "get_commands":
+                await self._handle_get_commands(cmd_id)
             case "get_messages":
                 await self._handle_get_messages(cmd_id)
             case "get_state":
@@ -284,18 +355,23 @@ class RpcServer:
                 error="`message` is required and must be a string",
             )
             return
+        try:
+            resolved = self._expand_command(message)
+        except (KeyError, OSError) as e:
+            await self._respond(cmd_id, "prompt", success=False, error=str(e))
+            return
         # A prompt arriving mid-run is queued rather than refused, but the
         # response still says which happened: the client should not have to
         # infer it from whether events follow.
         if self._current_run is not None and not self._current_run.done():
-            self.steering.follow_up(message)
+            self.steering.follow_up(resolved)
             await self._emit_queue_update()
             await self._respond(
                 cmd_id, "prompt", success=True, data={"accepted": "queued"}
             )
             return
         await self._respond(cmd_id, "prompt", success=True, data={"accepted": "started"})
-        self._current_run = asyncio.create_task(self._run_until_settled(message))
+        self._current_run = asyncio.create_task(self._run_until_settled(resolved))
 
     async def _emit_queue_update(self) -> None:
         await self._emit({"type": "queue_update", **self.steering.snapshot()})
@@ -310,15 +386,20 @@ class RpcServer:
                 error="`message` is required and must be a non-empty string",
             )
             return
+        try:
+            resolved = self._expand_command(message)
+        except (KeyError, OSError) as e:
+            await self._respond(cmd_id, kind, success=False, error=str(e))
+            return
         if kind == "steer":
-            queue_id = self.steering.steer(message)
+            queue_id = self.steering.steer(resolved)
         else:
-            queue_id = self.steering.follow_up(message)
+            queue_id = self.steering.follow_up(resolved)
         await self._emit_queue_update()
         _logger.info("rpc_queued kind=%s id=%s", kind, queue_id)
         await self._respond(cmd_id, kind, success=True, data={"queue_id": queue_id})
 
-    async def _run_until_settled(self, message: str) -> None:
+    async def _run_until_settled(self, message: str | UserMessage) -> None:
         """Run, then keep running while follow-ups are waiting.
 
         `agent_end` means one run finished, and a follow-up starts another, so
@@ -364,6 +445,81 @@ class RpcServer:
                 await self._emit(
                     {"type": "error", "message": str(e), "stop_reason": "error"}
                 )
+
+    async def _handle_get_commands(self, cmd_id: str | None) -> None:
+        """Everything a user can invoke, and how to invoke it.
+
+        Read-only; executes nothing. A projection of what already exists —
+        built-ins from the dispatch table, skills from disk — rather than a new
+        concept, which is what makes it safe to ship before any consumer does.
+
+        `invoke` says how to transmit: `command` means send `{"type": name, …}`,
+        `prompt` means put the text in a prompt/steer/follow_up message.
+        `parameters` is JSON Schema in the same shape `Tool.schema()` produces,
+        so an empty `properties` is the "select and fire" signal. Note it means
+        slightly different things per `invoke`: for a command the properties are
+        keys in the request object; for a prompt the single property is free
+        text appended after the name. A prompt-invoked command takes at most one
+        argument, which is what keeps that unambiguous.
+
+        Deliberately absent: any notion of whether an entry is dangerous enough
+        to confirm. That is a consumer policy — a misclick in a terminal and one
+        in a shared channel are not the same risk — and the server cannot know
+        which it is talking to.
+        """
+        commands: list[dict[str, Any]] = [
+            {
+                "name": c.name,
+                "source": "builtin",
+                "invoke": "command",
+                "description": c.description,
+                "parameters": c.params.model_json_schema() if c.params else dict(_NO_PARAMS),
+            }
+            for c in BUILTIN_COMMANDS
+        ]
+        # Listed regardless of `model_invocable`: hiding a skill from the model's
+        # catalogue is exactly the case where an explicit command is the only
+        # way to reach it.
+        commands.extend(
+            {
+                "name": f"skill:{s.name}",
+                "source": "skill",
+                "invoke": "prompt",
+                "description": s.description,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "instructions": {
+                            "type": "string",
+                            "description": "Extra guidance appended to the skill",
+                        }
+                    },
+                    "additionalProperties": False,
+                },
+                "source_info": {"path": str(s.path)},
+            }
+            for s in self._skills
+        )
+        await self._respond(cmd_id, "get_commands", success=True, data={"commands": commands})
+
+    def _expand_command(self, text: str) -> str | UserMessage:
+        """Resolve `/skill:name [args]` to a real message, or pass text through.
+
+        Done at enqueue rather than delivery, which is the rule `SteeringQueue`
+        already states: whatever is queued must already be a plain message, so a
+        bad name fails in the response to whoever queued it instead of surfacing
+        mid-run with nothing to attribute it to. It also freezes what gets sent
+        at the moment the user asked for it, so editing the SKILL.md in between
+        changes nothing.
+        """
+        if not text.startswith(SKILL_COMMAND_PREFIX):
+            return text
+        rest = text[len(SKILL_COMMAND_PREFIX) :]
+        name, _, args = rest.partition(" ")
+        # Raises KeyError for an unknown name rather than passing the text
+        # through as pi does: midge has no text-expansion path where a literal
+        # `/skill:typo` would make sense, so it is a caller bug.
+        return skill_message(self._skills, name, args.strip() or None)
 
     async def _handle_get_state(self, cmd_id: str | None) -> None:
         # Deliberately excludes the system prompt: composed from the base, every
