@@ -23,9 +23,16 @@ The user does not work in TypeScript and wants a codebase they can read, modify,
 | Built-in LLM-callable tools (`read`, `bash`, …) | `src/midge/tools/coding/` | `packages/coding-agent/src/core/tools/` |
 | Loading user `.py` files that register tools | `src/midge/extensions.py`, `--extension-dir` | `src/core/extensions/` |
 | `SKILL.md` — the [Agent Skills standard](https://agentskills.io/specification) | `src/midge/skills.py`, `--skill-dir` | `src/core/skills.ts` |
+| A nested agent the model delegates to | `src/midge/subagents.py`, `@subagent` → a `spawn_*` tool | **no equivalent** (an example extension only) |
 
 The word **skill** means the `SKILL.md` standard and nothing else. Do not use it for tools or
 extensions.
+
+A **subagent** is delegation — the model calls a `spawn_<name>` tool that runs a nested agent and
+returns its result. Do not confuse it with supervision (an external orchestrator driving several
+midge *processes*), which was considered and declined in #32. Sub-agents are declared in `.py`
+files where the function signature is the tool schema and the return value is the child's opening
+message, so the model chooses inputs but never the child's prompt, tools, or model.
 
 ## Tooling and conventions
 
@@ -67,6 +74,7 @@ src/midge/            # the harness package
 src/midge/tools/      # @tool decorator + built-in coding tools
 src/midge/extensions.py  # the loader for tool directories
 src/midge/skills.py   # SKILL.md discovery + the system-prompt catalogue
+src/midge/subagents.py # @subagent → spawn_* tools that run nested agents
 src/midge/logs.py     # logging configuration (entrypoints only)
 src/midge/hooks.py    # lifecycle events + handler registry
 tests/              # pytest tests

@@ -26,9 +26,11 @@ from pathlib import Path
 from midge.agent import Agent
 from midge.client import Client
 from midge.extensions import BUILTIN_TOOL_DIRS, load_extensions
+from midge.hooks import Hooks
 from midge.logs import configure as configure_logging
 from midge.logs import provider_host
 from midge.rpc import RpcServer
+from midge.subagents import bind_subagents
 
 # Not `__name__`: run as `-m`, that is "__main__", which sits outside the
 # `midge` logger tree and so never picks up the configured level.
@@ -59,7 +61,13 @@ async def amain(extension_dirs: list[Path]) -> int:
     # Default handler: stderr. Stdout is the protocol here, so nothing may ever
     # be written to it but framed JSON.
     configure_logging()
-    registry, prompt_addition = load_extensions([*BUILTIN_TOOL_DIRS, *extension_dirs])
+    # Without a Hooks object an extension's `register_hooks` never runs, so a
+    # tool-approval policy loaded here would be silently inert — and a
+    # sub-agent inherits whatever the parent has.
+    hooks = Hooks()
+    registry, prompt_addition = load_extensions(
+        [*BUILTIN_TOOL_DIRS, *extension_dirs], hooks=hooks
+    )
     full_prompt = BASE_SYSTEM_PROMPT
     if prompt_addition:
         full_prompt += "\n\n" + prompt_addition
@@ -76,11 +84,13 @@ async def amain(extension_dirs: list[Path]) -> int:
         api_key=os.getenv("OPENAI_API_KEY"),
         base_url=base_url,
     )
+    bind_subagents(registry, client=client, model=model, hooks=hooks)
     agent = Agent(
         client=client,
         model=model,
         tools=registry,
         system_prompt=full_prompt,
+        hooks=hooks,
     )
 
     loop = asyncio.get_running_loop()
