@@ -82,6 +82,33 @@ class SubagentRuntime:
     max_depth: int = DEFAULT_MAX_DEPTH
 
 
+# A child inherits tool policy and nothing else. `tool_call` and `tool_result`
+# must apply recursively or delegation is a way around an approval policy. The
+# rest are dropped because they were written with the parent's conversation in
+# mind: a `turn_start` handler that sets `system_prompt` would silently replace
+# the child's specialised prompt, and a `before_provider_request` handler that
+# sets `tools` would advertise the child tools its registry will then refuse.
+INHERITED_EVENTS = frozenset({"tool_call", "tool_result"})
+
+
+class _ChildHooks(Hooks):
+    """The parent's hooks, narrowed to what a nested agent should inherit.
+
+    Filtering in `emit` rather than at registration covers `observe()` handlers
+    too — they see every event that gets emitted, so an audit observer still
+    sees the child's tool calls.
+    """
+
+    def __init__(self, parent: Hooks) -> None:
+        super().__init__(parent.context)
+        self._parent = parent
+
+    async def emit(self, event: Any) -> Any | None:
+        if event.type not in INHERITED_EVENTS:
+            return None
+        return await self._parent.emit(event)
+
+
 class SubagentTool(Tool):
     """A tool whose function composes the child's opening message rather than
     doing the work. `invoke` runs the nested agent and returns its final text.
@@ -232,10 +259,9 @@ async def _run(
         model=spec.model or runtime.model,
         tools=_child_registry(spec, runtime),
         system_prompt=spec.prompt,
-        # Shared with the parent on purpose: without this an approval policy
-        # that blocks a tool call would not apply to a delegated one, and
-        # delegation would be a way around it.
-        hooks=runtime.hooks,
+        # Tool policy is inherited so a blocked call stays blocked when it is
+        # delegated; everything else is dropped. See `INHERITED_EVENTS`.
+        hooks=_ChildHooks(runtime.hooks) if runtime.hooks is not None else None,
     )
 
     # Queueing behind the concurrency limit should not leave an empty

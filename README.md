@@ -170,8 +170,10 @@ files costs the main conversation one paragraph. With `--session`, the child's o
 sibling transcript named for the tool call that spawned it, so the delegated work stays
 inspectable and unambiguously linked.
 
-Sub-agents share the parent's hooks, so an approval policy applies to delegated calls too. Nesting
-is capped by depth, and a child only gets `spawn_*` tools if its allowlist names them.
+A sub-agent inherits the parent's **tool policy** — an approval hook that blocks a command blocks it
+when delegated too — but not the parent's prompt- or request-shaping hooks, which would otherwise
+silently override the child's own system prompt. Nesting is capped by depth, and a child only gets
+`spawn_*` tools if its allowlist names them.
 
 See `examples/subagent_extension/` and [`notes/subagents.md`](./notes/subagents.md).
 

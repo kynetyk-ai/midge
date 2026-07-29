@@ -13,7 +13,7 @@ from pydantic import ValidationError
 
 from midge.agent import Agent
 from midge.client import Client
-from midge.hooks import Hooks, ToolCallResult
+from midge.hooks import Hooks, ProviderRequestResult, ToolCallResult, TurnStartResult
 from midge.messages import AssistantMessage, TextContent, ToolCall, UserMessage
 from midge.persistence import Session
 from midge.subagents import (
@@ -387,6 +387,97 @@ async def test_parent_policy_applies_to_the_child() -> None:
     await registry.invoke("spawn_explore", {"question": "q"}, call_id="c1")
 
     assert blocked == ["read"]
+
+
+async def test_child_tool_results_reach_the_parent_policy() -> None:
+    seen: list[str] = []
+    hooks = Hooks()
+    hooks.on("tool_result", lambda e, c: seen.append(e.tool_call.name))
+
+    registry, _ = _bound(
+        _explorer(),
+        turns=[
+            [
+                _chunk(tool_calls=[_tcd(index=0, id="t1", name="read", arguments='{"path":"x"}')]),
+                _chunk(finish_reason="tool_calls"),
+            ],
+            _says("done"),
+        ],
+        hooks=hooks,
+    )
+    await registry.invoke("spawn_explore", {"question": "q"}, call_id="c1")
+    assert seen == ["read"]
+
+
+async def test_observers_still_see_the_child_tool_calls() -> None:
+    """`approve.py` audits via observe(); narrowing must not blind it."""
+    seen: list[str] = []
+
+    def audit(event: Any, ctx: Any) -> None:
+        if event.type == "tool_call":
+            seen.append(event.tool_call.name)
+
+    hooks = Hooks()
+    hooks.observe(audit)
+
+    registry, _ = _bound(
+        _explorer(),
+        turns=[
+            [
+                _chunk(tool_calls=[_tcd(index=0, id="t1", name="read", arguments='{"path":"x"}')]),
+                _chunk(finish_reason="tool_calls"),
+            ],
+            _says("done"),
+        ],
+        hooks=hooks,
+    )
+    await registry.invoke("spawn_explore", {"question": "q"}, call_id="c1")
+    assert seen == ["read"]
+
+
+async def test_parent_turn_start_cannot_replace_the_child_prompt() -> None:
+    """The child's prompt is the whole point of specialising it — a handler
+    written for the parent conversation must not silently override it."""
+    hooks = Hooks()
+    hooks.on("turn_start", lambda e, c: TurnStartResult(system_prompt="PARENT-OVERRIDE"))
+
+    registry, client = _bound(_explorer(), turns=[_says("ok")], hooks=hooks)
+    captured = _install(client, [_says("ok")])
+    await registry.invoke("spawn_explore", {"question": "q"}, call_id="c1")
+
+    assert captured[0]["messages"][0]["content"] == PROMPT
+
+
+async def test_parent_request_hook_cannot_relabel_the_child_tools() -> None:
+    hooks = Hooks()
+    hooks.on(
+        "before_provider_request",
+        lambda e, c: ProviderRequestResult(
+            tools=[{"name": "write", "description": "w", "parameters": {}}]
+        ),
+    )
+
+    registry, client = _bound(_explorer(), turns=[_says("ok")], hooks=hooks)
+    captured = _install(client, [_says("ok")])
+    await registry.invoke("spawn_explore", {"question": "q"}, call_id="c1")
+
+    names = {t["function"]["name"] for t in captured[0]["tools"]}
+    assert names == {"read"}
+
+
+async def test_parent_turn_hooks_still_fire_for_the_parent() -> None:
+    """Narrowing applies to the child only; the parent keeps every event."""
+    fired: list[str] = []
+    hooks = Hooks()
+    hooks.on("turn_start", lambda e, c: fired.append("turn_start"))
+    hooks.on("turn_end", lambda e, c: fired.append("turn_end"))
+
+    client = Client()
+    _install(client, [_says("hi")])
+    agent = Agent(client=client, model="m", tools=ToolRegistry([read]), hooks=hooks)
+    await agent.run("hello")
+
+    assert fired == ["turn_start", "turn_end"]
 
 
 # ---- transcripts ----

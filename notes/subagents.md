@@ -73,16 +73,38 @@ alternative. Rejected for now — it changes the contract for every existing too
 to serve one caller. The one field that *was* added, `call_id`, went in because
 the transcript linkage genuinely needs it, not on principle.
 
-## Hooks are shared with the parent
+## A child inherits tool policy and nothing else
 
-Deliberate, and the reason is security: without it, `approval_extension`'s
-denylist would not apply to a delegated `bash` call, and delegation would be a
-way around the policy. There is a test asserting this exact regression.
+`INHERITED_EVENTS = {"tool_call", "tool_result"}`. Those two must apply
+recursively or delegation is a way around an approval policy — there is a
+mutation-checked test for that regression. The other events are dropped.
 
-The cost is that `turn_start`/`turn_end` fire once per child turn *inside* the
-parent's turn, and a `turn_start` handler that overrides `system_prompt` would
-clobber the child's. Nothing in-repo does that. If it ever bites, the fix is a
-filtered proxy that forwards only `tool_call`/`tool_result`.
+Sharing everything was the first cut, and it is wrong. A hook handler is
+written with the parent's conversation in mind and has no idea a child exists,
+so the request-shaping events do real damage when they reach one:
+
+- **`turn_start`** can set `system_prompt`, which silently replaces the child's
+  specialised prompt. This is the one that actually bites: the override takes
+  effect, nothing errors, and the sub-agent quietly stops being a sub-agent.
+- **`before_provider_request`** can set `tools`, which changes what the child is
+  *told* it has. Worth being precise about the blast radius: this is
+  misinformation, not access. The registry gates execution independently, so a
+  child that tries a tool outside its allowlist gets `Tool 'x' not found`. A
+  parent hook can lie to a child; it cannot give a child tools.
+- `context` and `after_provider_response` rewrite messages, and a handler
+  assuming "the" conversation would be operating on the wrong one.
+- `message_end` and `turn_end` cannot change behaviour but would interleave
+  nondeterministically and double any turn counting.
+
+Three events never reach a child regardless — `session_start`, `session_end`
+and `before_compact` are fired by entrypoints and `compaction.compact()`, not
+by `Agent`.
+
+The filter lives in `_ChildHooks.emit` rather than at registration so it covers
+`observe()` handlers too. Those see every emitted event, and since `tool_call`
+still passes, an audit observer like `approval_extension`'s still records the
+child's tool calls — narrowing the policy surface does not blind the audit
+trail.
 
 ## Bounds
 
