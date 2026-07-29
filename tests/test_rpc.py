@@ -13,7 +13,7 @@ from midge.client import Client
 from midge.extensions import load_extensions
 from midge.hooks import Hooks, ToolCallEvent, ToolCallResult
 from midge.messages import AssistantMessage, TextContent, ToolCall, UserMessage
-from midge.persistence import Session
+from midge.persistence import Session, read_transcript
 from midge.rpc import RpcServer, event_to_wire
 from midge.skills import Skill, load_skills, skills_prompt
 from midge.tools import ToolRegistry, tool
@@ -448,6 +448,7 @@ async def test_get_state_reports_model_and_counts() -> None:
         "model": "gpt-4o",
         "streaming": False,
         "session": None,
+        "session_name": None,
         "messages": 2,
     }
     inbox.close()
@@ -705,10 +706,14 @@ async def test_clear_context_clears_history_and_keeps_recording(tmp_path: Path) 
     await task
     session.close()
 
-    # Everything is still on disk, including what was cleared.
+    # Everything is still on disk — the file is the record of what happened, so
+    # the export still shows the cleared turns.
+    _, entries = read_transcript(path)
+    assert any("before" in str(getattr(e, "content", "")) for e in entries)
+
+    # But a resume honours the clear: only what came after it is replayed.
     restored = Session.load(path).messages
-    assert [type(m).__name__ for m in restored].count("UserMessage") == 2
-    assert any("before" in str(m.content) for m in restored)
+    assert not any("before" in str(m.content) for m in restored)
     assert any("after" in str(m.content) for m in restored)
 
 
@@ -1840,3 +1845,118 @@ async def test_a_subagent_still_runs_after_a_reload(tmp_path: Path) -> None:
     assert "child says hi" in str(result)
     inbox.close()
     await task
+
+
+# ---- session naming ----
+
+
+def _session_server(
+    agent: Agent, session: Session | None
+) -> tuple[RpcServer, _Inbox, _Outbox, asyncio.Task[None]]:
+    server = RpcServer(agent, session=session)
+    inbox, outbox = _Inbox(), _Outbox()
+    task = asyncio.create_task(server.serve(read_line=inbox.read_line, write=outbox.write))
+    return server, inbox, outbox, task
+
+
+async def test_set_session_name_persists_and_is_reported(tmp_path: Path) -> None:
+    path = tmp_path / "s.jsonl"
+    session = Session.new(path, model="m")
+    agent = Agent(client=Client(), model="m")
+    _server, inbox, outbox, task = _session_server(agent, session)
+
+    resp = await _command(
+        inbox, outbox, {"id": "n", "type": "set_session_name", "name": "auth refactor"}
+    )
+    assert resp["success"] is True
+    state = await _command(inbox, outbox, {"id": "s", "type": "get_state"})
+    assert state["data"]["session_name"] == "auth refactor"
+
+    inbox.close()
+    await task
+    session.close()
+
+    assert Session.load(path).name == "auth refactor"
+
+
+async def test_set_session_name_flattens_newlines(tmp_path: Path) -> None:
+    """A newline would split one record across two JSONL lines and corrupt the
+    file, so it is stripped rather than rejected."""
+    path = tmp_path / "s.jsonl"
+    session = Session.new(path, model="m")
+    agent = Agent(client=Client(), model="m")
+    _server, inbox, outbox, task = _session_server(agent, session)
+
+    resp = await _command(
+        inbox, outbox, {"id": "n", "type": "set_session_name", "name": "a\nb\tc"}
+    )
+
+    assert resp["data"]["name"] == "a b c"
+    inbox.close()
+    await task
+    session.close()
+    assert len(path.read_text().strip().splitlines()) == 2
+
+
+async def test_set_session_name_without_a_session_fails() -> None:
+    agent = Agent(client=Client(), model="m")
+    _server, inbox, outbox, task = _start_server(agent)
+
+    resp = await _command(inbox, outbox, {"id": "n", "type": "set_session_name", "name": "x"})
+
+    assert resp["success"] is False
+    inbox.close()
+    await task
+
+
+async def test_an_empty_session_name_is_rejected(tmp_path: Path) -> None:
+    session = Session.new(tmp_path / "s.jsonl", model="m")
+    agent = Agent(client=Client(), model="m")
+    _server, inbox, outbox, task = _session_server(agent, session)
+
+    resp = await _command(inbox, outbox, {"id": "n", "type": "set_session_name", "name": "   "})
+
+    assert resp["success"] is False
+    inbox.close()
+    await task
+    session.close()
+
+
+async def test_export_html_titles_the_page_with_the_session_name(tmp_path: Path) -> None:
+    path = tmp_path / "s.jsonl"
+    session = Session.new(path, model="m")
+    session.append(UserMessage(content="hi"))
+    agent = Agent(client=Client(), model="m")
+    _server, inbox, outbox, task = _session_server(agent, session)
+
+    await _command(inbox, outbox, {"id": "n", "type": "set_session_name", "name": "auth refactor"})
+    out = tmp_path / "t.html"
+    resp = await _command(
+        inbox, outbox, {"id": "e", "type": "export_html", "output_path": str(out)}
+    )
+
+    assert resp["success"] is True
+    assert "auth refactor" in out.read_text(encoding="utf-8")
+    inbox.close()
+    await task
+    session.close()
+
+
+async def test_set_session_name_is_enumerated_and_round_trips(tmp_path: Path) -> None:
+    """Drive it purely from its own schema, with nothing about the command
+    hardcoded — the property `get_commands` exists to provide."""
+    path = tmp_path / "s.jsonl"
+    session = Session.new(path, model="m")
+    agent = Agent(client=Client(), model="m")
+    _server, inbox, outbox, task = _session_server(agent, session)
+
+    entry = next(c for c in await _commands(inbox, outbox) if c["name"] == "set_session_name")
+    schema = entry["parameters"]
+    filled = {k: "from the schema" for k in schema["required"]}
+    resp = await _command(inbox, outbox, {"id": "x", "type": entry["name"], **filled})
+
+    assert resp["success"] is True
+    inbox.close()
+    await task
+    session.close()
+    assert Session.load(path).name == "from the schema"

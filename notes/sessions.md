@@ -126,3 +126,65 @@ Tests:
 - Append after load works (we can resume a session).
 
 `examples/coding_agent.py` gains `--session PATH`. If the path doesn't exist, create new; if it exists, load + resume.
+
+## Update (#49) — markers, and why the header is still never rewritten
+
+Two entry types were added: `session_info` (a name) and `clear` (discard
+`cut_index` messages). The table above says we skip `SessionInfoEntry` because
+"`name` field on the header is enough" — that turned out to be exactly wrong,
+and for a reason worth recording.
+
+**A header field would mean rewriting line 1.** The append-only invariant is not
+a style preference: `read_transcript` recovers a crash mid-write by dropping a
+partial *final* line, and that is only sound because nothing earlier is ever
+rewritten. Renaming in place would trade a working recovery path for a field.
+
+`pi` does not rewrite either, and it is worth being precise about how far that
+goes: a rename is an appended `session_info` entry
+(`packages/agent/src/harness/session/session.ts:326`), and even a *branch move*
+is an appended `leaf` entry (`jsonl-storage.ts:258`). Everything mutable is a
+record; current state is a replay, last write wins. `CompactionRecord` was
+already that shape here — the generalisation was free.
+
+So the name lives only in `session_info` records, never on `SessionHeader`.
+Having both would raise the question of which wins.
+
+### `clear` is compaction minus the summary
+
+```python
+# compaction: [make_summary_message(summary), *messages[cut_index:]]
+# clear:      messages[cut_index:]
+```
+
+`fold_compactions` became `fold_history` because it no longer folds only
+compactions. `session_name()` is deliberately a *separate* pure function rather
+than a second return value — the two answer different questions.
+
+The messages stay in the file. A clear changes what a resume replays, not what
+happened, so `export_html` still renders the discarded turns with a divider
+where the clear was.
+
+### VERSION 2, and why reads accept 1
+
+The two records differ in how badly an old build mishandles them.
+`read_transcript` warns and skips an unknown entry type, so skipping a
+`session_info` loses a name — harmless. Skipping a `clear` **restores messages
+the user deliberately discarded**, which is the failure worth refusing outright.
+
+Hence the version check is now asymmetric: `version > VERSION` fails,
+`version < VERSION` loads. An older file still resumes because this build
+understands every entry type it can hold; a newer file is declined by a build
+that would misread it. That asymmetry is the whole job of the version number,
+and the original note's "hard fail on mismatch, no migration code" was too
+blunt in one direction.
+
+### Still not done: the tree
+
+`fork` / `clone` / `switch_session` / `get_tree` need entry ids, a `parentId` on
+every entry, and an appended leaf pointer — plus compaction's positional
+`cut_index` would have to become an entry id, and `fold_history` would become a
+path walk. Markers are the half that needs none of that.
+
+Note also that `parent_session` / `parent_tool_call_id` on sub-agent headers
+(#44) is a *cross-file* relation. A within-file tree would sit beside it, not
+subsume it.

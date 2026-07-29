@@ -14,7 +14,13 @@ from midge.messages import (
     Usage,
     UserMessage,
 )
-from midge.persistence import VERSION, Session, SessionHeader
+from midge.persistence import (
+    VERSION,
+    ClearRecord,
+    Session,
+    SessionHeader,
+    read_transcript,
+)
 
 
 def test_new_session_writes_header(tmp_path: Path) -> None:
@@ -297,3 +303,154 @@ def test_sessions_without_usage_still_load(tmp_path: Path) -> None:
     restored = Session.load(path).messages[0]
     assert isinstance(restored, AssistantMessage)
     assert restored.usage is None
+
+
+# ---- markers: clear and session_info ----
+
+
+def _messages(path: Path) -> list[str]:
+    return [str(m.content) for m in Session.load(path).messages]
+
+
+def test_clear_survives_a_reload(tmp_path: Path) -> None:
+    """The point of the record. Without it the file replays everything and the
+    clear silently undoes itself on the next resume."""
+    p = tmp_path / "s.jsonl"
+    with Session.new(p, model="m") as s:
+        s.append(UserMessage(content="before"))
+        s.append_clear(cut_index=1)
+        s.append(UserMessage(content="after"))
+        assert [str(m.content) for m in s.messages] == ["after"]
+
+    assert _messages(p) == ["after"]
+
+
+def test_a_clear_keeps_the_tail_it_was_told_to_keep(tmp_path: Path) -> None:
+    p = tmp_path / "s.jsonl"
+    with Session.new(p, model="m") as s:
+        for i in range(4):
+            s.append(UserMessage(content=f"m{i}"))
+        s.append_clear(cut_index=2)
+
+    assert _messages(p) == ["m2", "m3"]
+
+
+def test_cleared_messages_are_still_in_the_file(tmp_path: Path) -> None:
+    """A clear changes what a resume replays, not what happened. `export_html`
+    reads the transcript, so the discarded turns stay visible there."""
+    p = tmp_path / "s.jsonl"
+    with Session.new(p, model="m") as s:
+        s.append(UserMessage(content="before"))
+        s.append_clear(cut_index=1)
+
+    _, entries = read_transcript(p)
+    assert any(isinstance(e, UserMessage) and e.content == "before" for e in entries)
+    assert any(isinstance(e, ClearRecord) for e in entries)
+
+
+def test_clear_then_compaction_summarizes_only_the_survivors(tmp_path: Path) -> None:
+    p = tmp_path / "s.jsonl"
+    with Session.new(p, model="m") as s:
+        s.append(UserMessage(content="old"))
+        s.append_clear(cut_index=1)
+        s.append(UserMessage(content="kept"))
+        s.append(UserMessage(content="also kept"))
+        s.append_compaction(summary="S", cut_index=1)
+
+    restored = _messages(p)
+    assert any("S" in m for m in restored)
+    assert not any("old" in m for m in restored)
+    assert any("also kept" in m for m in restored)
+
+
+def test_compaction_then_clear_leaves_nothing(tmp_path: Path) -> None:
+    p = tmp_path / "s.jsonl"
+    with Session.new(p, model="m") as s:
+        s.append(UserMessage(content="a"))
+        s.append(UserMessage(content="b"))
+        s.append_compaction(summary="S", cut_index=2)
+        s.append_clear(cut_index=len(s.messages))
+
+    assert _messages(p) == []
+
+
+def test_session_name_round_trips(tmp_path: Path) -> None:
+    p = tmp_path / "s.jsonl"
+    with Session.new(p, model="m") as s:
+        assert s.name is None
+        s.set_name("auth refactor")
+        assert s.name == "auth refactor"
+
+    assert Session.load(p).name == "auth refactor"
+
+
+def test_the_last_name_wins(tmp_path: Path) -> None:
+    """A rename is another appended record, not a rewrite of the first one."""
+    p = tmp_path / "s.jsonl"
+    with Session.new(p, model="m") as s:
+        s.set_name("first")
+        s.append(UserMessage(content="hi"))
+        s.set_name("second")
+
+    assert Session.load(p).name == "second"
+
+
+def test_a_name_does_not_become_a_message(tmp_path: Path) -> None:
+    p = tmp_path / "s.jsonl"
+    with Session.new(p, model="m") as s:
+        s.set_name("n")
+        s.append(UserMessage(content="hi"))
+
+    assert _messages(p) == ["hi"]
+
+
+def test_records_are_appended_without_rewriting_anything(tmp_path: Path) -> None:
+    """The invariant the whole design exists to preserve: a rename is not a
+    header rewrite. If anything before the tail changed, `read_transcript`'s
+    truncated-tail recovery would no longer be sound."""
+    p = tmp_path / "s.jsonl"
+    with Session.new(p, model="m") as s:
+        s.append(UserMessage(content="hi"))
+        before = p.read_bytes()
+        s.set_name("named")
+        s.append_clear(cut_index=1)
+        after = p.read_bytes()
+
+    assert after.startswith(before), "an earlier byte of the file changed"
+
+
+def test_a_truncated_marker_line_is_dropped_not_fatal(tmp_path: Path) -> None:
+    p = tmp_path / "s.jsonl"
+    with Session.new(p, model="m") as s:
+        s.append(UserMessage(content="hi"))
+    with p.open("a", encoding="utf-8") as f:
+        f.write('{"type":"clear","cut_ind')
+
+    assert _messages(p) == ["hi"]
+
+
+# ---- versioning ----
+
+
+def test_an_older_session_still_loads(tmp_path: Path) -> None:
+    """Bumping VERSION must not strand existing files: this build understands
+    every entry type a v1 file can hold."""
+    p = tmp_path / "old.jsonl"
+    p.write_text(
+        '{"type":"header","version":1,"created_at":"2026-01-01","model":"m"}\n'
+        '{"type":"message","data":{"role":"user","content":"hi"}}\n',
+        encoding="utf-8",
+    )
+    assert _messages(p) == ["hi"]
+
+
+def test_a_newer_session_is_rejected(tmp_path: Path) -> None:
+    """The asymmetry that justifies the bump. A build that would skip a `clear`
+    record must decline the file rather than silently restore cleared messages."""
+    p = tmp_path / "new.jsonl"
+    p.write_text(
+        f'{{"type":"header","version":{VERSION + 1},"created_at":"x","model":"m"}}\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="incompatible"):
+        Session.load(p)

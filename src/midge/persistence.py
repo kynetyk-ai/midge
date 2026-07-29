@@ -2,15 +2,22 @@
 
 File layout (one JSON object per line):
 
-    {"type":"header","version":1,"created_at":"...","model":"...","system_prompt":...}
+    {"type":"header","version":2,"created_at":"...","model":"...","system_prompt":...}
     {"type":"message","data":{...}}
-    {"type":"message","data":{...}}
+    {"type":"session_info","name":"auth refactor","timestamp":...}
     {"type":"compaction","summary":"...","cut_index":N,"timestamp":...}
+    {"type":"clear","cut_index":N,"timestamp":...}
     {"type":"message","data":{...}}
 
-The first line MUST be the header. Hard-fails on version mismatch — this is
-v1 of the format; if/when we change it we'll either bump and migrate, or
-write a new file.
+The first line MUST be the header. A file written by a *newer* build is
+rejected; an older one loads, because every entry type it can contain is still
+understood.
+
+Anything mutable is expressed as an appended record and replayed on load —
+last write wins. That is why renaming a session does not rewrite the header:
+a rewrite would break the invariant that makes truncated-tail recovery in
+`read_transcript` work, since a partial final line is only recoverable when
+nothing else is ever rewritten.
 
 A session is intentionally simple:
 - Linear history, no tree / branching / forks.
@@ -36,7 +43,11 @@ from pydantic import BaseModel, TypeAdapter
 
 from midge.messages import Message, make_summary_message
 
-VERSION = 1
+# 2 added the `clear` and `session_info` records. Bumped for `clear`
+# specifically: an older build skips an unknown entry type, and skipping a
+# clear silently restores messages the user cleared. Skipping a `session_info`
+# would only lose a name, which would not have justified this on its own.
+VERSION = 2
 
 
 _logger = logging.getLogger(__name__)
@@ -62,8 +73,33 @@ class CompactionRecord(BaseModel):
     timestamp: int = 0
 
 
-# What the file literally holds, before compactions are folded into history.
-TranscriptEntry = Message | CompactionRecord
+class ClearRecord(BaseModel):
+    """A compaction with no summary: drop `cut_index` messages, add nothing.
+
+    Written when the user discards context. The messages stay in the file — it
+    is the record of what happened — but a reload no longer replays them.
+    """
+
+    type: Literal["clear"] = "clear"
+    cut_index: int
+    timestamp: int = 0
+
+
+class SessionInfoRecord(BaseModel):
+    """A rename. The name lives here rather than on the header because the
+    header is written once and never rewritten; the last record wins."""
+
+    type: Literal["session_info"] = "session_info"
+    name: str
+    timestamp: int = 0
+
+
+# Everything that is not a message. Spelled as a plain union so it works with
+# `isinstance`, which the `Annotated` `Message` alias does not.
+SessionRecord = CompactionRecord | ClearRecord | SessionInfoRecord
+
+# What the file literally holds, before the records are folded into history.
+TranscriptEntry = Message | SessionRecord
 
 
 _MESSAGE_ADAPTER: TypeAdapter[Message] = TypeAdapter(Message)
@@ -90,10 +126,15 @@ def read_transcript(path: str | Path) -> tuple[SessionHeader, list[TranscriptEnt
         raise ValueError(
             f"First entry of {p} must be a 'header'; got type={first.get('type')!r}"
         )
-    if first.get("version") != VERSION:
+    # Only a *newer* file is rejected. An older one loads because this build
+    # still understands every entry type it can hold; refusing it would strand
+    # sessions for no gain. The asymmetry is the point of the version: a build
+    # that would misread a record must decline rather than guess.
+    version = first.get("version")
+    if not isinstance(version, int) or version > VERSION:
         raise ValueError(
-            f"Session version {first.get('version')} is incompatible "
-            f"with this build (expected {VERSION})."
+            f"Session version {version} is incompatible "
+            f"with this build (expected {VERSION} or older)."
         )
     header = SessionHeader.model_validate(first)
 
@@ -114,17 +155,22 @@ def read_transcript(path: str | Path) -> tuple[SessionHeader, list[TranscriptEnt
             entries.append(_MESSAGE_ADAPTER.validate_python(raw["data"]))
         elif entry_type == "compaction":
             entries.append(CompactionRecord.model_validate(raw))
+        elif entry_type == "clear":
+            entries.append(ClearRecord.model_validate(raw))
+        elif entry_type == "session_info":
+            entries.append(SessionInfoRecord.model_validate(raw))
         else:
             _logger.warning("session_unknown_entry_type type=%r path=%s", entry_type, p)
 
     return header, entries
 
 
-def fold_compactions(entries: Sequence[TranscriptEntry]) -> list[Message]:
-    """Replay compactions to rebuild the history the agent actually held.
+def fold_history(entries: Sequence[TranscriptEntry]) -> list[Message]:
+    """Replay the records to rebuild the history the agent actually held.
 
     Applying them rather than skipping them matters on resume: skipping replayed
-    the pre-compaction history and silently undid the compaction.
+    the pre-compaction history and silently undid the compaction, and would do
+    the same to a clear.
     """
     messages: list[Message] = []
     for entry in entries:
@@ -133,9 +179,21 @@ def fold_compactions(entries: Sequence[TranscriptEntry]) -> list[Message]:
                 make_summary_message(entry.summary),
                 *messages[entry.cut_index :],
             ]
+        elif isinstance(entry, ClearRecord):
+            messages = messages[entry.cut_index :]
+        elif isinstance(entry, SessionInfoRecord):
+            continue
         else:
             messages.append(entry)
     return messages
+
+
+def session_name(entries: Sequence[TranscriptEntry]) -> str | None:
+    """The most recent name, or None if the session was never named."""
+    for entry in reversed(entries):
+        if isinstance(entry, SessionInfoRecord):
+            return entry.name
+    return None
 
 
 class Session:
@@ -146,11 +204,13 @@ class Session:
         file: IO[str] | TextIOBase,
         header: SessionHeader,
         messages: list[Message],
+        name: str | None = None,
     ) -> None:
         self.path = path
         self._file = file
         self.header = header
         self.messages = messages
+        self.name = name
 
     @classmethod
     def new(
@@ -186,7 +246,13 @@ class Session:
         p = Path(path)
         header, entries = read_transcript(p)
         f = p.open("a", encoding="utf-8")
-        return cls(p, file=f, header=header, messages=fold_compactions(entries))
+        return cls(
+            p,
+            file=f,
+            header=header,
+            messages=fold_history(entries),
+            name=session_name(entries),
+        )
 
     @classmethod
     def open(
@@ -215,16 +281,30 @@ class Session:
             self.append(m)
 
     def append_compaction(self, *, summary: str, cut_index: int) -> None:
-        entry: dict[str, Any] = {
-            "type": "compaction",
-            "summary": summary,
-            "cut_index": cut_index,
-            "timestamp": int(datetime.now(UTC).timestamp() * 1000),
-        }
-        self._file.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        self._file.flush()
+        self._append_record({"type": "compaction", "summary": summary, "cut_index": cut_index})
         # Keep the in-memory view identical to what `load` would rebuild.
         self.messages = [make_summary_message(summary), *self.messages[cut_index:]]
+
+    def append_clear(self, *, cut_index: int) -> None:
+        """Record that `cut_index` messages were discarded from the front.
+
+        The messages stay in the file — it is the record of what happened, and
+        `export_html` still renders them. What changes is what a resume replays.
+        """
+        self._append_record({"type": "clear", "cut_index": cut_index})
+        self.messages = self.messages[cut_index:]
+
+    def set_name(self, name: str) -> None:
+        self._append_record({"type": "session_info", "name": name})
+        self.name = name
+
+    def _append_record(self, entry: dict[str, Any]) -> None:
+        stamped: dict[str, Any] = {
+            **entry,
+            "timestamp": int(datetime.now(UTC).timestamp() * 1000),
+        }
+        self._file.write(json.dumps(stamped, ensure_ascii=False) + "\n")
+        self._file.flush()
 
     def close(self) -> None:
         if not self._file.closed:
