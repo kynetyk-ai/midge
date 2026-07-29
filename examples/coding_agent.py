@@ -19,6 +19,7 @@ import argparse
 import asyncio
 import os
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 from midge.agent import Agent, AgentEnd, ToolExecutionEnd, ToolExecutionStart
@@ -26,7 +27,7 @@ from midge.client import Client, TextDelta
 from midge.compaction import compact, needs_compaction
 from midge.extensions import BUILTIN_TOOL_DIRS, load_extensions
 from midge.messages import TextContent
-from midge.persistence import Session
+from midge.persistence import Session, TranscriptEntry, read_transcript
 from midge.session import export_html
 
 BASE_SYSTEM_PROMPT = (
@@ -187,9 +188,14 @@ async def amain(
             session.close()
 
         if export_html_path is not None:
+            # `agent.history` is post-compaction; the session file still holds
+            # every message, so export from it whenever there is one.
+            entries: Sequence[TranscriptEntry] = agent.history
+            if session is not None:
+                entries = read_transcript(session.path)[1]
             export_html_path.write_text(
                 export_html(
-                    agent.history,
+                    entries,
                     title=f"midge · {prompt[:60]}",
                     model=agent.model,
                 ),

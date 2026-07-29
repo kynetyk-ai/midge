@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import html
 import json
+from collections.abc import Sequence
 from string import Template
 from typing import Any
 
@@ -25,12 +26,12 @@ from pygments.util import ClassNotFound
 from midge.messages import (
     AssistantMessage,
     ImageContent,
-    Message,
     TextContent,
     ToolCall,
     ToolResultMessage,
     UserMessage,
 )
+from midge.persistence import CompactionRecord, TranscriptEntry
 
 
 class _HighlightRenderer(mistune.HTMLRenderer):
@@ -76,6 +77,12 @@ header .meta { color: #666; font-size: 0.85rem; margin-top: 0.25rem; }
 .msg.tool-result.error { border-color: #d33; background: #fff5f5; }
 .msg.tool-result summary { cursor: pointer; font-family: ui-monospace, monospace;
                            font-size: 0.85rem; font-weight: 600; user-select: none; }
+.msg.compaction { background: #fffbe6; border-color: #e0d090; border-style: dashed; }
+.msg.compaction summary { cursor: pointer; font-size: 0.75rem; font-weight: 600;
+                          text-transform: uppercase; letter-spacing: 0.04em;
+                          color: #8a6d0b; user-select: none; }
+.error-message { color: #a00; font-size: 0.85rem; margin-top: 0.5rem;
+                 font-family: ui-monospace, monospace; white-space: pre-wrap; }
 .tool-output { background: #f0f0f0; padding: 0.5rem; border-radius: 4px;
                overflow-x: auto; font-size: 0.85rem; max-height: 30rem;
                overflow-y: auto; margin: 0.5rem 0 0; }
@@ -120,15 +127,22 @@ $body
 
 
 def export_html(
-    messages: list[Message],
+    entries: Sequence[TranscriptEntry],
     *,
     title: str = "midge session",
     model: str = "",
 ) -> str:
-    pygments_css = HtmlFormatter(cssclass="codehilite").get_style_defs(".codehilite")
-    body = "\n".join(_render(m) for m in messages)
+    """Render a transcript to a standalone HTML page.
 
-    meta = f"{len(messages)} message{'s' if len(messages) != 1 else ''}"
+    Prefer passing the full transcript from `persistence.read_transcript` over an
+    agent's live history: history is post-compaction, so exporting it discards
+    every message the compaction folded away.
+    """
+    pygments_css = HtmlFormatter(cssclass="codehilite").get_style_defs(".codehilite")
+    body = "\n".join(_render(e) for e in entries)
+
+    n = sum(1 for e in entries if not isinstance(e, CompactionRecord))
+    meta = f"{n} message{'s' if n != 1 else ''}"
     if model:
         meta = f"model: {html.escape(model)} · {meta}"
 
@@ -141,13 +155,15 @@ def export_html(
     )
 
 
-def _render(m: Message) -> str:
+def _render(m: TranscriptEntry) -> str:
     if isinstance(m, UserMessage):
         return _render_user(m)
     if isinstance(m, AssistantMessage):
         return _render_assistant(m)
     if isinstance(m, ToolResultMessage):
         return _render_tool_result(m)
+    if isinstance(m, CompactionRecord):
+        return _render_compaction(m)
     return ""
 
 
@@ -184,6 +200,10 @@ def _render_assistant(m: AssistantMessage) -> str:
                 f"</div>"
             )
     body = "\n".join(parts) or '<div class="text"><em>(empty)</em></div>'
+    if m.error_message:
+        # A provider failure before the first delta leaves content empty, so
+        # without this the only record of *why* the turn failed is the JSONL.
+        body += f'\n<div class="error-message">{html.escape(m.error_message)}</div>'
     role_label = "assistant"
     if m.stop_reason:
         role_label += f" · stop: {html.escape(m.stop_reason)}"
@@ -196,8 +216,13 @@ def _render_assistant(m: AssistantMessage) -> str:
 
 
 def _render_tool_result(m: ToolResultMessage) -> str:
-    text_parts = [c.text for c in m.content if isinstance(c, TextContent)]
-    text = "".join(text_parts)
+    text = "".join(c.text for c in m.content if isinstance(c, TextContent))
+    images = "".join(
+        f'<img src="data:{html.escape(c.mime_type, quote=True)};'
+        f'base64,{html.escape(c.data, quote=True)}" alt="">'
+        for c in m.content
+        if isinstance(c, ImageContent)
+    )
     error_class = " error" if m.is_error else ""
     label = m.tool_name or m.tool_call_id
     if m.is_error:
@@ -206,6 +231,16 @@ def _render_tool_result(m: ToolResultMessage) -> str:
         f'<details class="msg tool-result{error_class}">'
         f"<summary>{html.escape(label)}</summary>"
         f'<pre class="tool-output"><code>{html.escape(text)}</code></pre>'
+        f"{images}"
+        f"</details>"
+    )
+
+
+def _render_compaction(c: CompactionRecord) -> str:
+    return (
+        f'<details class="msg compaction">'
+        f"<summary>context compacted · {c.cut_index} messages summarized</summary>"
+        f"{_md(c.summary)}"
         f"</details>"
     )
 
