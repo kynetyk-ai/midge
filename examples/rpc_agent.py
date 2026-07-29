@@ -29,7 +29,7 @@ from midge.extensions import BUILTIN_TOOL_DIRS, load_extensions
 from midge.hooks import Hooks
 from midge.logs import configure as configure_logging
 from midge.logs import provider_host
-from midge.rpc import RpcServer
+from midge.rpc import RpcServer, claim_stdout
 from midge.subagents import bind_subagents
 
 # Not `__name__`: run as `-m`, that is "__main__", which sits outside the
@@ -58,8 +58,10 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 
 
 async def amain(extension_dirs: list[Path]) -> int:
-    # Default handler: stderr. Stdout is the protocol here, so nothing may ever
-    # be written to it but framed JSON.
+    # Before anything else can write: take fd 1 for the protocol and send
+    # everything else — including a stray print() from a tool or extension —
+    # to stderr.
+    stdout = claim_stdout()
     configure_logging()
     # Without a Hooks object an extension's `register_hooks` never runs, so a
     # tool-approval policy loaded here would be silently inert — and a
@@ -104,8 +106,8 @@ async def amain(extension_dirs: list[Path]) -> int:
         return await reader.readline()
 
     async def write(data: bytes) -> None:
-        sys.stdout.buffer.write(data)
-        sys.stdout.buffer.flush()
+        stdout.write(data)
+        stdout.flush()
 
     server = RpcServer(agent)
     await server.serve(read_line=read_line, write=write)

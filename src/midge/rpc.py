@@ -9,6 +9,10 @@ Two outbound shapes:
     - Async events streamed during a prompt run, uncorrelated:
       {"type": "assistant_text_delta" | "tool_call_start" | ... }
 
+Stdout is the protocol; stderr is for diagnostics. Call `claim_stdout()` before
+anything else can write, so a stray `print()` anywhere in the process lands on
+stderr instead of corrupting the stream.
+
 Inbound subset (Phase 2): prompt, abort, get_messages.
 Commands are dispatched serially; a `prompt` returns its response immediately
 after preflight and runs the agent in a background task while the dispatch
@@ -19,10 +23,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import io
 import json
 import logging
+import sys
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, BinaryIO
 
 from midge.agent import (
     Agent,
@@ -47,6 +53,38 @@ _logger = logging.getLogger(__name__)
 
 WriteFn = Callable[[bytes], Awaitable[None]]
 ReadLineFn = Callable[[], Awaitable[bytes]]
+
+_claimed_stdout: BinaryIO | None = None
+# The wrapper we displace is kept alive deliberately: dropping the last
+# reference to a TextIOWrapper closes the buffer underneath it, which here is
+# the fd carrying the protocol. In a real process `sys.__stdout__` happens to
+# hold one too, but relying on that is a footgun.
+_displaced_stdout: Any = None
+
+
+def claim_stdout() -> BinaryIO:
+    """Take fd 1 for the protocol and point `sys.stdout` at stderr.
+
+    Stdout is the wire here, so a single stray `print()` — from a tool, a hook,
+    a user extension, or a dependency — corrupts it. The corruption is quiet
+    rather than loud: the protocol writes through the buffered binary layer
+    while `print` goes through the text wrapper above it, so under a pipe the
+    stray text is block-buffered and surfaces at some arbitrary later point.
+    Individual frames stay intact; their ordering does not.
+
+    Returns the real stdout for the protocol writer to hold. Idempotent.
+    """
+    global _claimed_stdout, _displaced_stdout
+    if _claimed_stdout is not None:
+        return _claimed_stdout
+
+    _displaced_stdout = sys.stdout
+    real = sys.stdout.buffer
+    sys.stdout = io.TextIOWrapper(
+        sys.stderr.buffer, encoding=sys.stderr.encoding, errors="replace", line_buffering=True
+    )
+    _claimed_stdout = real
+    return real
 
 
 def event_to_wire(ev: Any) -> dict[str, Any] | None:
