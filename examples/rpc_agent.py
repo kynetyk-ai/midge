@@ -29,14 +29,12 @@ from midge.extensions import BUILTIN_TOOL_DIRS, load_extensions
 from midge.hooks import Hooks
 from midge.logs import configure as configure_logging
 from midge.logs import provider_host
-from midge.rpc import RpcServer
+from midge.rpc import RpcServer, serve_stdio
 from midge.subagents import bind_subagents
 
 # Not `__name__`: run as `-m`, that is "__main__", which sits outside the
 # `midge` logger tree and so never picks up the configured level.
 _logger = logging.getLogger("midge.examples.rpc_agent")
-
-_READ_LIMIT = 16 * 1024 * 1024
 
 BASE_SYSTEM_PROMPT = (
     "You are a coding assistant. "
@@ -58,8 +56,6 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 
 
 async def amain(extension_dirs: list[Path]) -> int:
-    # Default handler: stderr. Stdout is the protocol here, so nothing may ever
-    # be written to it but framed JSON.
     configure_logging()
     # Without a Hooks object an extension's `register_hooks` never runs, so a
     # tool-approval policy loaded here would be silently inert — and a
@@ -68,9 +64,7 @@ async def amain(extension_dirs: list[Path]) -> int:
     registry, prompt_addition = load_extensions(
         [*BUILTIN_TOOL_DIRS, *extension_dirs], hooks=hooks
     )
-    full_prompt = BASE_SYSTEM_PROMPT
-    if prompt_addition:
-        full_prompt += "\n\n" + prompt_addition
+    full_prompt = "\n\n".join(p for p in (BASE_SYSTEM_PROMPT, prompt_addition) if p)
 
     base_url = os.getenv("OPENAI_BASE_URL")
     model = os.getenv("MIDGE_MODEL", "gpt-4o-mini")
@@ -93,22 +87,17 @@ async def amain(extension_dirs: list[Path]) -> int:
         hooks=hooks,
     )
 
-    loop = asyncio.get_running_loop()
-    # The default 64 KiB limit turns a large pasted prompt into a
-    # ValueError that escapes `serve()` and kills the server.
-    reader = asyncio.StreamReader(limit=_READ_LIMIT)
-    protocol = asyncio.StreamReaderProtocol(reader)
-    await loop.connect_read_pipe(lambda: protocol, sys.stdin)
-
-    async def read_line() -> bytes:
-        return await reader.readline()
-
-    async def write(data: bytes) -> None:
-        sys.stdout.buffer.write(data)
-        sys.stdout.buffer.flush()
-
-    server = RpcServer(agent)
-    await server.serve(read_line=read_line, write=write)
+    # The halves are passed apart so `set_system_prompt` can change the base
+    # without deleting what the extensions contributed.
+    server = RpcServer(
+        agent,
+        session=None,
+        base_prompt=BASE_SYSTEM_PROMPT,
+        prompt_suffix=prompt_addition,
+    )
+    # Claims stdout for the protocol, installs SIGTERM/SIGHUP handlers, and
+    # reads stdin to EOF.
+    await serve_stdio(server)
     return 0
 
 

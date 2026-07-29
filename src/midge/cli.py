@@ -22,6 +22,7 @@ from midge.hooks import Hooks, SessionEnd, SessionStart
 from midge.logs import configure as configure_logging
 from midge.logs import provider_host
 from midge.persistence import Session
+from midge.rpc import RpcServer, serve_stdio
 from midge.skills import default_skill_dirs, load_skills, skills_prompt
 from midge.subagents import bind_subagents
 from midge.tui import run_tui, tui_log_handler
@@ -57,6 +58,14 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--rpc",
+        action="store_true",
+        help=(
+            "Serve the JSON-over-stdio RPC protocol instead of the TUI. Stdout "
+            "carries the protocol; diagnostics go to stderr."
+        ),
+    )
+    parser.add_argument(
         "--session",
         type=Path,
         metavar="PATH",
@@ -86,7 +95,9 @@ def main(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
     # Before `load_extensions`/`load_skills`, which are the two loudest
     # loaders — a handler installed after them loses every startup diagnostic.
-    configure_logging(tui_log_handler())
+    # The TUI needs a handler that resolves per record; RPC needs stderr,
+    # because a handler bound to stdout would corrupt the protocol.
+    configure_logging(None if args.rpc else tui_log_handler())
     hooks = Hooks()
     registry, prompt_addition = load_extensions(
         [*BUILTIN_TOOL_DIRS, *args.extension_dir], hooks=hooks
@@ -117,7 +128,8 @@ def main(argv: list[str] | None = None) -> None:
 
     base_url = os.getenv("OPENAI_BASE_URL")
     _logger.info(
-        "startup mode=tui model=%s provider=%s tools=%d skills=%d session=%s",
+        "startup mode=%s model=%s provider=%s tools=%d skills=%d session=%s",
+        "rpc" if args.rpc else "tui",
         model,
         provider_host(base_url),
         len(registry),
@@ -147,10 +159,34 @@ def main(argv: list[str] | None = None) -> None:
     if session is not None:
         agent.history = list(session.messages)
 
+    session_path = str(args.session) if args.session is not None else None
+
+    if args.rpc:
+        # RPC owns its loop, so the session bookends run inside it rather than
+        # in their own `asyncio.run` the way the TUI's do.
+        server = RpcServer(
+            agent,
+            session=session,
+            compaction_keep_recent=args.compaction_keep_recent,
+            base_prompt=durable,
+            prompt_suffix="\n\n".join(p for p in (prompt_addition, catalogue) if p),
+        )
+
+        async def _serve() -> None:
+            await hooks.emit(SessionStart(path=session_path))
+            try:
+                await serve_stdio(server)
+            finally:
+                if server.session is not None:
+                    server.session.close()
+                await hooks.emit(SessionEnd(path=session_path))
+
+        asyncio.run(_serve())
+        return
+
     # These bookend the TUI's own event loop, so they run in their own.
     # A handler that needs the running app's loop should use a turn-scoped
     # event instead.
-    session_path = str(args.session) if args.session is not None else None
     asyncio.run(hooks.emit(SessionStart(path=session_path)))
     try:
         run_tui(

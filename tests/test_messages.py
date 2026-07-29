@@ -5,6 +5,7 @@ import json
 from midge.messages import (
     AssistantMessage,
     ImageContent,
+    Message,
     TextContent,
     ToolCall,
     ToolResultMessage,
@@ -272,3 +273,50 @@ def test_to_openai_keeps_successful_tool_sequences() -> None:
     }
     answered = {m["tool_call_id"] for m in wire if m.get("role") == "tool"}
     assert requested == answered == {"ok1"}
+
+
+def test_user_message_never_splits_a_tool_group() -> None:
+    """The invariant a steering drain has to respect.
+
+    Providers reject a request where a `tool` message does not follow the
+    assistant message that issued its call, and `to_openai_messages` is a single
+    forward pass with no reordering — it will not repair a split. Nothing else
+    in the suite checks ordering; the tool-pairing tests compare id sets.
+    """
+    history: list[Message] = [
+        UserMessage(content="go"),
+        AssistantMessage(
+            content=[ToolCall(id="c1", name="a", arguments={})],
+            stop_reason="tool_use",
+        ),
+        ToolResultMessage(tool_call_id="c1", tool_name="a", content=[TextContent(text="ok")]),
+        # Injected at the loop edge — after every result, before the next turn.
+        UserMessage(content="steered"),
+        AssistantMessage(content=[TextContent(text="done")], stop_reason="stop"),
+    ]
+
+    roles = [m["role"] for m in to_openai_messages(history)]
+
+    assert roles == ["user", "assistant", "tool", "user", "assistant"]
+    for i, role in enumerate(roles):
+        if role == "tool":
+            assert roles[i - 1] in ("assistant", "tool")
+
+
+def test_a_split_tool_group_is_not_repaired() -> None:
+    """Pins the failure mode, so the guarantee above is understood as something
+    the drain point earns rather than something that happens to hold."""
+    history: list[Message] = [
+        AssistantMessage(
+            content=[ToolCall(id="c1", name="a", arguments={})],
+            stop_reason="tool_use",
+        ),
+        UserMessage(content="injected in the wrong place"),
+        ToolResultMessage(tool_call_id="c1", tool_name="a", content=[TextContent(text="ok")]),
+    ]
+
+    roles = [m["role"] for m in to_openai_messages(history)]
+
+    # The user message is passed straight through, leaving `tool` orphaned from
+    # its `tool_calls`. This is what the drain point exists to avoid.
+    assert roles == ["assistant", "user", "tool"]

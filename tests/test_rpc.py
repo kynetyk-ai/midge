@@ -3,11 +3,14 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Iterable
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 from midge.agent import Agent
 from midge.client import Client
+from midge.messages import AssistantMessage, TextContent, UserMessage
+from midge.persistence import Session
 from midge.rpc import RpcServer, event_to_wire
 from midge.tools import ToolRegistry, tool
 
@@ -47,15 +50,19 @@ class _FakeStream:
         return self._chunks.pop(0)
 
 
-def _install_turns(client: Client, turns: list[list[Any]]) -> None:
+def _install_turns(client: Client, turns: list[list[Any]]) -> list[dict[str, Any]]:
+    """Returns a list that accumulates each request's kwargs as turns run."""
     iterator = iter(turns)
+    captured: list[dict[str, Any]] = []
 
     async def create(**kwargs: Any) -> _FakeStream:
+        captured.append(kwargs)
         return _FakeStream(next(iterator))
 
     client._client = SimpleNamespace(  # type: ignore[assignment]
         chat=SimpleNamespace(completions=SimpleNamespace(create=create))
     )
+    return captured
 
 
 class _SlowStream:
@@ -281,27 +288,29 @@ async def test_prompt_missing_message_responds_failure() -> None:
     assert "message" in resp["error"]
 
 
-async def test_prompt_already_in_flight_rejected() -> None:
+async def test_prompt_in_flight_is_queued_not_rejected() -> None:
+    """Queueing replaced the hard rejection, but the response still says which
+    happened — a client should not infer it from whether events follow."""
     client = Client()
     gate = asyncio.Event()
-    _install_slow_stream(client, [_chunk(content="x")], gate)
+    _install_slow_stream(client, [_chunk(content="part")], gate)
     agent = Agent(client=client, model="m")
-    _, inbox, outbox, task = _start_server(agent)
+    _server, inbox, outbox, task = _start_server(agent)
 
-    await inbox.feed_text('{"id": "r1", "type": "prompt", "message": "first"}\n')
-    await _wait_for(
-        lambda: any(line.get("type") == "assistant_text_delta" for line in outbox.lines)
-    )
-    await inbox.feed_text('{"id": "r2", "type": "prompt", "message": "second"}\n')
-    await _wait_for(lambda: any(line.get("id") == "r2" for line in outbox.lines))
+    first = await _command(inbox, outbox, {"id": "p1", "type": "prompt", "message": "one"})
+    assert first["data"] == {"accepted": "started"}
+
+    await _wait_for(lambda: any(x.get("type") == "assistant_text_delta" for x in outbox.lines))
+    second = await _command(inbox, outbox, {"id": "p2", "type": "prompt", "message": "two"})
+
+    assert second["success"] is True
+    assert second["data"] == {"accepted": "queued"}
+    updates = [x for x in outbox.lines if x.get("type") == "queue_update"]
+    assert updates[-1]["follow_up"][0]["content"] == "two"
 
     gate.set()
     inbox.close()
     await task
-
-    resp = next(line for line in outbox.lines if line.get("id") == "r2")
-    assert resp["success"] is False
-    assert "already in flight" in resp["error"]
 
 
 async def test_no_id_means_no_id_in_response() -> None:
@@ -403,3 +412,680 @@ def test_event_to_wire_unicode_preserved() -> None:
     line = json.dumps(wire, ensure_ascii=False)
     assert "héllo" in line
     assert "🚀" in line
+
+
+# ---- state and control commands ----
+
+
+async def _run_to_completion(inbox: _Inbox, outbox: _Outbox, message: str = "hi") -> None:
+    await inbox.feed_text(json.dumps({"id": "p", "type": "prompt", "message": message}) + "\n")
+    await _wait_for(lambda: any(x.get("type") == "agent_end" for x in outbox.lines))
+
+
+async def _command(inbox: _Inbox, outbox: _Outbox, cmd: dict[str, Any]) -> dict[str, Any]:
+    await inbox.feed_text(json.dumps(cmd) + "\n")
+    await _wait_for(
+        lambda: any(x.get("type") == "response" and x.get("id") == cmd["id"] for x in outbox.lines)
+    )
+    return next(x for x in outbox.lines if x.get("type") == "response" and x.get("id") == cmd["id"])
+
+
+async def test_get_state_reports_model_and_counts() -> None:
+    client = Client()
+    _install_turns(client, [[_chunk(content="hi"), _chunk(finish_reason="stop")]])
+    agent = Agent(client=client, model="gpt-4o")
+    _server, inbox, outbox, task = _start_server(agent)
+
+    await _run_to_completion(inbox, outbox)
+    resp = await _command(inbox, outbox, {"id": "s", "type": "get_state"})
+
+    assert resp["success"] is True
+    assert resp["data"] == {
+        "model": "gpt-4o",
+        "streaming": False,
+        "session": None,
+        "messages": 2,
+    }
+    inbox.close()
+    await task
+
+
+async def test_get_state_reports_streaming_while_in_flight() -> None:
+    client = Client()
+    gate = asyncio.Event()
+    _install_slow_stream(client, [_chunk(content="part")], gate)
+    agent = Agent(client=client, model="m")
+    _server, inbox, outbox, task = _start_server(agent)
+
+    await inbox.feed_text('{"id":"p","type":"prompt","message":"hi"}\n')
+    await _wait_for(lambda: any(x.get("type") == "assistant_text_delta" for x in outbox.lines))
+    resp = await _command(inbox, outbox, {"id": "s", "type": "get_state"})
+
+    assert resp["data"]["streaming"] is True
+    gate.set()
+    inbox.close()
+    await task
+
+
+async def test_get_last_assistant_text() -> None:
+    client = Client()
+    _install_turns(client, [[_chunk(content="the answer"), _chunk(finish_reason="stop")]])
+    agent = Agent(client=client, model="m")
+    _server, inbox, outbox, task = _start_server(agent)
+
+    await _run_to_completion(inbox, outbox)
+    resp = await _command(inbox, outbox, {"id": "t", "type": "get_last_assistant_text"})
+
+    assert resp["data"] == {"text": "the answer"}
+    inbox.close()
+    await task
+
+
+async def test_get_last_assistant_text_null_when_empty() -> None:
+    agent = Agent(client=Client(), model="m")
+    _server, inbox, outbox, task = _start_server(agent)
+
+    resp = await _command(inbox, outbox, {"id": "t", "type": "get_last_assistant_text"})
+
+    assert resp["data"] == {"text": None}
+    inbox.close()
+    await task
+
+
+async def test_system_prompt_round_trips() -> None:
+    agent = Agent(client=Client(), model="m", system_prompt="original")
+    _server, inbox, outbox, task = _start_server(agent)
+
+    before = await _command(inbox, outbox, {"id": "g1", "type": "get_system_prompt"})
+    assert before["data"]["prompt"] == "original"
+    assert before["data"]["base"] == "original"
+
+    setr = await _command(
+        inbox, outbox, {"id": "s1", "type": "set_system_prompt", "prompt": "rewritten"}
+    )
+    assert setr["success"] is True
+
+    after = await _command(inbox, outbox, {"id": "g2", "type": "get_system_prompt"})
+    assert after["data"]["prompt"] == "rewritten"
+    assert agent.system_prompt == "rewritten"
+    inbox.close()
+    await task
+
+
+CATALOGUE = "<available_skills>\n  <skill><name>deploy</name></skill>\n</available_skills>"
+
+
+def _server_with_composed_prompt(agent: Agent) -> tuple[RpcServer, _Inbox, _Outbox, Any]:
+    server = RpcServer(agent, base_prompt="You are a coding assistant.", prompt_suffix=CATALOGUE)
+    agent.system_prompt = server._compose_prompt()
+    inbox, outbox = _Inbox(), _Outbox()
+    task = asyncio.create_task(server.serve(read_line=inbox.read_line, write=outbox.write))
+    return server, inbox, outbox, task
+
+
+async def test_set_system_prompt_keeps_the_generated_half() -> None:
+    """The composed prompt is base + extension contributions + skills
+    catalogue. Setting the base must not delete the rest — a client could not
+    put it back, since the composed string is undelimited and the catalogue
+    carries absolute paths."""
+    agent = Agent(client=Client(), model="m")
+    _server, inbox, outbox, task = _server_with_composed_prompt(agent)
+
+    assert CATALOGUE in (agent.system_prompt or "")
+
+    await _command(
+        inbox, outbox, {"id": "s", "type": "set_system_prompt", "prompt": "You are a lawyer."}
+    )
+
+    assert agent.system_prompt is not None
+    assert agent.system_prompt.startswith("You are a lawyer.")
+    assert CATALOGUE in agent.system_prompt, "the skills catalogue was dropped"
+    assert "coding assistant" not in agent.system_prompt
+    inbox.close()
+    await task
+
+
+async def test_get_system_prompt_separates_the_halves() -> None:
+    agent = Agent(client=Client(), model="m")
+    _server, inbox, outbox, task = _server_with_composed_prompt(agent)
+
+    resp = await _command(inbox, outbox, {"id": "g", "type": "get_system_prompt"})
+
+    # A client can see what it owns and what midge appends, without guessing
+    # where one ends and the other begins.
+    assert resp["data"]["base"] == "You are a coding assistant."
+    assert resp["data"]["appended"] == CATALOGUE
+    assert resp["data"]["prompt"] == agent.system_prompt
+    inbox.close()
+    await task
+
+
+async def test_set_system_prompt_takes_effect_on_the_next_turn_only() -> None:
+    """`_stream` snapshots the prompt outside its loop, so a mid-run change
+    must not alter the turn already in flight.
+
+    The tool blocks on a gate so the prompt is definitely changed *before* the
+    run's second provider call — without that the tool finishes first and the
+    test passes without exercising anything.
+    """
+    client = Client()
+    captured = _install_turns(
+        client,
+        [
+            [
+                _chunk(tool_calls=[_tcd(index=0, id="c1", name="wait", arguments="{}")]),
+                _chunk(finish_reason="tool_calls"),
+            ],
+            [_chunk(content="done"), _chunk(finish_reason="stop")],
+            [_chunk(content="second turn"), _chunk(finish_reason="stop")],
+        ],
+    )
+    release = asyncio.Event()
+
+    @tool
+    async def wait() -> str:
+        """Block until the test lets go."""
+        await release.wait()
+        return "released"
+
+    agent = Agent(client=client, model="m", tools=ToolRegistry([wait]), system_prompt="original")
+    _server, inbox, outbox, task = _start_server(agent)
+
+    await inbox.feed_text('{"id":"p","type":"prompt","message":"go"}\n')
+    await _wait_for(lambda: any(x.get("type") == "tool_execution_start" for x in outbox.lines))
+
+    await _command(inbox, outbox, {"id": "s", "type": "set_system_prompt", "prompt": "rewritten"})
+    assert agent.system_prompt == "rewritten"
+    assert len(captured) == 1, "the second provider call must not have happened yet"
+
+    release.set()
+    await _wait_for(lambda: any(x.get("type") == "agent_end" for x in outbox.lines))
+
+    # Both calls of the run in flight used the prompt it started with.
+    assert [c["messages"][0]["content"] for c in captured] == ["original", "original"]
+
+    outbox.lines.clear()
+    await _run_to_completion(inbox, outbox, "again")
+    assert captured[2]["messages"][0]["content"] == "rewritten"
+    inbox.close()
+    await task
+
+
+async def test_set_model_changes_the_model() -> None:
+    agent = Agent(client=Client(), model="old")
+    _server, inbox, outbox, task = _start_server(agent)
+
+    resp = await _command(inbox, outbox, {"id": "m", "type": "set_model", "model": "new"})
+
+    assert resp["success"] is True
+    assert agent.model == "new"
+    inbox.close()
+    await task
+
+
+async def test_set_model_rejects_non_string() -> None:
+    agent = Agent(client=Client(), model="old")
+    _server, inbox, outbox, task = _start_server(agent)
+
+    resp = await _command(inbox, outbox, {"id": "m", "type": "set_model", "model": 7})
+
+    assert resp["success"] is False
+    assert "model" in resp["error"]
+    assert agent.model == "old"
+    inbox.close()
+    await task
+
+
+async def test_set_system_prompt_rejects_non_string() -> None:
+    agent = Agent(client=Client(), model="m", system_prompt="keep")
+    _server, inbox, outbox, task = _start_server(agent)
+
+    resp = await _command(inbox, outbox, {"id": "s", "type": "set_system_prompt"})
+
+    assert resp["success"] is False
+    assert agent.system_prompt == "keep"
+    inbox.close()
+    await task
+
+
+async def test_new_session_requires_a_path() -> None:
+    """Without one there would be no new session, only a silent end to
+    persistence — which is what `clear_context` is for."""
+    agent = Agent(client=Client(), model="m")
+    _server, inbox, outbox, task = _start_server(agent)
+
+    resp = await _command(inbox, outbox, {"id": "n", "type": "new_session"})
+
+    assert resp["success"] is False
+    assert "path" in resp["error"]
+    inbox.close()
+    await task
+
+
+async def test_clear_context_clears_history_and_keeps_recording(tmp_path: Path) -> None:
+    path = tmp_path / "s.jsonl"
+    session = Session.new(path, model="m")
+    client = Client()
+    _install_turns(
+        client,
+        [
+            [_chunk(content="first"), _chunk(finish_reason="stop")],
+            [_chunk(content="second"), _chunk(finish_reason="stop")],
+        ],
+    )
+    agent = Agent(client=client, model="m")
+    server = RpcServer(agent, session=session)
+    inbox, outbox = _Inbox(), _Outbox()
+    task = asyncio.create_task(server.serve(read_line=inbox.read_line, write=outbox.write))
+
+    await _run_to_completion(inbox, outbox, "before")
+    session.append_many(agent.history)
+
+    resp = await _command(inbox, outbox, {"id": "c", "type": "clear_context"})
+
+    assert resp["success"] is True
+    assert resp["data"]["cleared"] == 2
+    assert agent.history == []
+    # The log stays open — clearing changes what the model sees, not what was
+    # written, and persistence must not silently stop.
+    assert resp["data"]["session"] == str(path)
+    assert server.session is session
+
+    outbox.lines.clear()
+    await _run_to_completion(inbox, outbox, "after")
+    session.append_many(agent.history)
+    inbox.close()
+    await task
+    session.close()
+
+    # Everything is still on disk, including what was cleared.
+    restored = Session.load(path).messages
+    assert [type(m).__name__ for m in restored].count("UserMessage") == 2
+    assert any("before" in str(m.content) for m in restored)
+    assert any("after" in str(m.content) for m in restored)
+
+
+async def test_clear_context_without_a_session_is_fine() -> None:
+    client = Client()
+    _install_turns(client, [[_chunk(content="hi"), _chunk(finish_reason="stop")]])
+    agent = Agent(client=client, model="m")
+    _server, inbox, outbox, task = _start_server(agent)
+
+    await _run_to_completion(inbox, outbox)
+    resp = await _command(inbox, outbox, {"id": "c", "type": "clear_context"})
+
+    assert resp["success"] is True
+    assert resp["data"] == {"cleared": 2, "session": None}
+    assert agent.history == []
+    inbox.close()
+    await task
+
+
+async def test_new_session_opens_a_fresh_log(tmp_path: Path) -> None:
+    agent = Agent(client=Client(), model="m")
+    _server, inbox, outbox, task = _start_server(agent)
+
+    path = tmp_path / "fresh.jsonl"
+    resp = await _command(
+        inbox, outbox, {"id": "n", "type": "new_session", "path": str(path)}
+    )
+
+    assert resp["data"] == {"session": str(path)}
+    assert path.exists()
+    inbox.close()
+    await task
+
+
+async def test_export_html_without_a_session_fails() -> None:
+    agent = Agent(client=Client(), model="m")
+    _server, inbox, outbox, task = _start_server(agent)
+
+    resp = await _command(inbox, outbox, {"id": "e", "type": "export_html"})
+
+    assert resp["success"] is False
+    assert "session" in resp["error"]
+    inbox.close()
+    await task
+
+
+async def test_export_html_renders_pre_compaction_messages(tmp_path: Path) -> None:
+    """Exports from the file, not `agent.history`, which compaction has pruned."""
+    path = tmp_path / "s.jsonl"
+    session = Session.new(path, model="m")
+    session.append(UserMessage(content="the original question"))
+    session.append(AssistantMessage(content=[TextContent(text="the original answer")]))
+    session.append_compaction(summary="they talked", cut_index=2)
+    session.append(UserMessage(content="a later question"))
+
+    agent = Agent(client=Client(), model="m")
+    agent.history = list(session.messages)
+    server = RpcServer(agent, session=session)
+    inbox, outbox = _Inbox(), _Outbox()
+    task = asyncio.create_task(server.serve(read_line=inbox.read_line, write=outbox.write))
+
+    resp = await _command(inbox, outbox, {"id": "e", "type": "export_html"})
+
+    assert resp["success"] is True
+    html = Path(resp["data"]["path"]).read_text(encoding="utf-8")
+    assert "the original question" in html
+    assert "the original answer" in html
+    assert "a later question" in html
+    assert "the original question" not in str(agent.history)
+    inbox.close()
+    await task
+    session.close()
+
+
+async def test_new_session_header_stores_the_base_not_the_composed_prompt(
+    tmp_path: Path,
+) -> None:
+    """A resume reads the header back as the durable base and re-appends the
+    generated half itself, so storing the composed string would duplicate the
+    skills catalogue every time."""
+    agent = Agent(client=Client(), model="m")
+    _server, inbox, outbox, task = _server_with_composed_prompt(agent)
+    assert CATALOGUE in (agent.system_prompt or "")
+
+    path = tmp_path / "fresh.jsonl"
+    await _command(inbox, outbox, {"id": "n", "type": "new_session", "path": str(path)})
+
+    header = Session.load(path).header
+    assert header.system_prompt == "You are a coding assistant."
+    assert CATALOGUE not in (header.system_prompt or "")
+    inbox.close()
+    await task
+
+
+async def test_failed_new_session_leaves_state_untouched(tmp_path: Path) -> None:
+    """Reporting failure from a state it already destroyed is worse than
+    failing: the caller has lost the history and the log either way."""
+    taken = tmp_path / "taken.jsonl"
+    Session.new(taken, model="m").close()
+
+    live = Session.new(tmp_path / "live.jsonl", model="m")
+    client = Client()
+    _install_turns(client, [[_chunk(content="hi"), _chunk(finish_reason="stop")]])
+    agent = Agent(client=client, model="m")
+    server = RpcServer(agent, session=live)
+    inbox, outbox = _Inbox(), _Outbox()
+    task = asyncio.create_task(server.serve(read_line=inbox.read_line, write=outbox.write))
+
+    await _run_to_completion(inbox, outbox)
+    assert len(agent.history) == 2
+
+    resp = await _command(
+        inbox, outbox, {"id": "n", "type": "new_session", "path": str(taken)}
+    )
+
+    assert resp["success"] is False
+    assert len(agent.history) == 2, "history was wiped by a call that failed"
+    assert server.session is live, "the log was closed by a call that failed"
+    inbox.close()
+    await task
+    live.close()
+
+
+# ---- protocol hygiene ----
+
+
+async def test_unterminated_final_line_is_still_dispatched() -> None:
+    """`readline()` returns buffered data without a newline at EOF, so a client
+    that forgets the trailing \\n still gets its command run."""
+    agent = Agent(client=Client(), model="m")
+    _server, inbox, outbox, task = _start_server(agent)
+
+    await inbox.feed_text('{"id":"r1","type":"get_state"}')  # no newline
+    inbox.close()
+    await task
+
+    responses = [x for x in outbox.lines if x.get("type") == "response"]
+    assert [r["id"] for r in responses] == ["r1"]
+    assert responses[0]["success"] is True
+
+
+async def test_blank_lines_are_skipped() -> None:
+    agent = Agent(client=Client(), model="m")
+    _server, inbox, outbox, task = _start_server(agent)
+
+    await inbox.feed_text("\n\n   \n")
+    await inbox.feed_text('{"id":"r1","type":"get_state"}\n')
+    inbox.close()
+    await task
+
+    assert [x["id"] for x in outbox.lines if x.get("type") == "response"] == ["r1"]
+
+
+async def test_crlf_is_tolerated() -> None:
+    agent = Agent(client=Client(), model="m")
+    _server, inbox, outbox, task = _start_server(agent)
+
+    await inbox.feed_text('{"id":"r1","type":"get_state"}\r\n')
+    inbox.close()
+    await task
+
+    assert [x["id"] for x in outbox.lines if x.get("type") == "response"] == ["r1"]
+
+
+async def test_non_object_json_is_a_parse_error() -> None:
+    agent = Agent(client=Client(), model="m")
+    _server, inbox, outbox, task = _start_server(agent)
+
+    await inbox.feed_text("[1, 2, 3]\n")
+    inbox.close()
+    await task
+
+    resp = outbox.lines[0]
+    assert resp["command"] == "parse"
+    assert resp["success"] is False
+    assert "JSON object" in resp["error"]
+
+
+async def test_eof_cancels_an_in_flight_run() -> None:
+    client = Client()
+    gate = asyncio.Event()
+    _install_slow_stream(client, [_chunk(content="part")], gate)
+    agent = Agent(client=client, model="m")
+    _server, inbox, outbox, task = _start_server(agent)
+
+    await inbox.feed_text('{"id":"p","type":"prompt","message":"hi"}\n')
+    await _wait_for(lambda: any(x.get("type") == "assistant_text_delta" for x in outbox.lines))
+
+    inbox.close()
+    await task  # `serve`'s finally cancels the run and awaits it
+
+    errors = [x for x in outbox.lines if x.get("type") == "error"]
+    assert [e["stop_reason"] for e in errors] == ["aborted"]
+
+
+# ---- steering, follow-up, settled ----
+
+
+def _tool_turn(call_id: str = "c1") -> list[Any]:
+    return [
+        _chunk(tool_calls=[_tcd(index=0, id=call_id, name="wait", arguments="{}")]),
+        _chunk(finish_reason="tool_calls"),
+    ]
+
+
+def _gated_tool(release: asyncio.Event) -> Any:
+    @tool
+    async def wait() -> str:
+        """Block until the test lets go."""
+        await release.wait()
+        return "released"
+
+    return wait
+
+
+async def test_steer_lands_in_the_next_provider_call_of_the_same_run() -> None:
+    client = Client()
+    captured = _install_turns(
+        client, [_tool_turn(), [_chunk(content="done"), _chunk(finish_reason="stop")]]
+    )
+    release = asyncio.Event()
+    agent = Agent(client=client, model="m", tools=ToolRegistry([_gated_tool(release)]))
+    _server, inbox, outbox, task = _start_server(agent)
+
+    await inbox.feed_text('{"id":"p","type":"prompt","message":"go"}\n')
+    await _wait_for(lambda: any(x.get("type") == "tool_execution_start" for x in outbox.lines))
+
+    resp = await _command(inbox, outbox, {"id": "s", "type": "steer", "message": "actually, stop"})
+    assert resp["success"] is True
+    assert resp["data"]["queue_id"]
+
+    release.set()
+    await _wait_for(lambda: any(x.get("type") == "agent_settled" for x in outbox.lines))
+
+    # The steer reached the second call of the *same* run.
+    roles = [m["role"] for m in captured[1]["messages"]]
+    contents = [str(m.get("content")) for m in captured[1]["messages"]]
+    assert "actually, stop" in contents[-1]
+    assert roles[-1] == "user"
+    inbox.close()
+    await task
+
+
+async def test_steer_never_splits_a_tool_group_on_the_wire() -> None:
+    """A user message between an assistant's tool_calls and its results is
+    rejected by providers, and `to_openai_messages` does not repair it."""
+    client = Client()
+    captured = _install_turns(
+        client, [_tool_turn(), [_chunk(content="done"), _chunk(finish_reason="stop")]]
+    )
+    release = asyncio.Event()
+    agent = Agent(client=client, model="m", tools=ToolRegistry([_gated_tool(release)]))
+    _server, inbox, outbox, task = _start_server(agent)
+
+    await inbox.feed_text('{"id":"p","type":"prompt","message":"go"}\n')
+    await _wait_for(lambda: any(x.get("type") == "tool_execution_start" for x in outbox.lines))
+    await _command(inbox, outbox, {"id": "s", "type": "steer", "message": "steered"})
+    release.set()
+    await _wait_for(lambda: any(x.get("type") == "agent_settled" for x in outbox.lines))
+
+    wire = captured[1]["messages"]
+    roles = [m["role"] for m in wire]
+
+    # Vacuously true if the steer never arrived, so assert it did first.
+    assert any("steered" in str(m.get("content")) for m in wire), "the steer was not delivered"
+    for i, role in enumerate(roles):
+        if role == "tool":
+            assert roles[i - 1] in ("assistant", "tool"), (
+                f"tool at {i} follows {roles[i - 1]}: {roles}"
+            )
+    inbox.close()
+    await task
+
+
+async def test_steer_rearms_a_turn_that_answered_in_text() -> None:
+    client = Client()
+    captured = _install_turns(
+        client,
+        [
+            [_chunk(content="first answer"), _chunk(finish_reason="stop")],
+            [_chunk(content="second answer"), _chunk(finish_reason="stop")],
+        ],
+    )
+    agent = Agent(client=client, model="m")
+    steering = agent.steering
+    _server, inbox, outbox, task = _start_server(agent)
+    assert steering is None  # the server supplies one
+
+    # Queue before the run starts: the pre-flight drain picks it up.
+    await _command(inbox, outbox, {"id": "s", "type": "steer", "message": "and also this"})
+    await inbox.feed_text('{"id":"p","type":"prompt","message":"go"}\n')
+    await _wait_for(lambda: any(x.get("type") == "agent_settled" for x in outbox.lines))
+
+    assert len(captured) == 1
+    assert "and also this" in str(captured[0]["messages"][-1]["content"])
+    inbox.close()
+    await task
+
+
+async def test_follow_up_runs_after_the_current_run() -> None:
+    client = Client()
+    captured = _install_turns(
+        client,
+        [
+            [_chunk(content="first"), _chunk(finish_reason="stop")],
+            [_chunk(content="second"), _chunk(finish_reason="stop")],
+        ],
+    )
+    agent = Agent(client=client, model="m")
+    _server, inbox, outbox, task = _start_server(agent)
+
+    await inbox.feed_text('{"id":"p","type":"prompt","message":"one"}\n')
+    await _command(inbox, outbox, {"id": "f", "type": "follow_up", "message": "two"})
+    await _wait_for(lambda: any(x.get("type") == "agent_settled" for x in outbox.lines))
+
+    ends = [x for x in outbox.lines if x.get("type") == "agent_end"]
+    settled = [x for x in outbox.lines if x.get("type") == "agent_settled"]
+    assert len(ends) == 2, "one agent_end per run"
+    assert len(settled) == 1, "one agent_settled per client prompt"
+    assert outbox.lines.index(settled[0]) > outbox.lines.index(ends[-1])
+    assert len(captured) == 2
+    inbox.close()
+    await task
+
+
+async def test_agent_settled_fires_when_the_run_errors() -> None:
+    client = Client()
+    _install_turns(client, [[_chunk(content=""), _chunk(finish_reason="content_filter")]])
+    agent = Agent(client=client, model="m")
+    _server, inbox, outbox, task = _start_server(agent)
+
+    await _run_to_completion(inbox, outbox)
+    await _wait_for(lambda: any(x.get("type") == "agent_settled" for x in outbox.lines))
+    inbox.close()
+    await task
+
+
+async def test_agent_settled_fires_when_aborted() -> None:
+    client = Client()
+    gate = asyncio.Event()
+    _install_slow_stream(client, [_chunk(content="part")], gate)
+    agent = Agent(client=client, model="m")
+    _server, inbox, outbox, task = _start_server(agent)
+
+    await inbox.feed_text('{"id":"p","type":"prompt","message":"hi"}\n')
+    await _wait_for(lambda: any(x.get("type") == "assistant_text_delta" for x in outbox.lines))
+    await _command(inbox, outbox, {"id": "a", "type": "abort"})
+    await _wait_for(lambda: any(x.get("type") == "agent_settled" for x in outbox.lines))
+
+    gate.set()
+    inbox.close()
+    await task
+
+
+async def test_abort_clears_the_queues() -> None:
+    """pi leaves them, so aborting silently starts a new run from what was
+    pending. "Stop" should mean stop."""
+    client = Client()
+    gate = asyncio.Event()
+    _install_slow_stream(client, [_chunk(content="part")], gate)
+    agent = Agent(client=client, model="m")
+    _server, inbox, outbox, task = _start_server(agent)
+
+    await inbox.feed_text('{"id":"p","type":"prompt","message":"hi"}\n')
+    await _wait_for(lambda: any(x.get("type") == "assistant_text_delta" for x in outbox.lines))
+    await _command(inbox, outbox, {"id": "f", "type": "follow_up", "message": "queued"})
+
+    resp = await _command(inbox, outbox, {"id": "a", "type": "abort"})
+
+    assert [d["content"] for d in resp["data"]["dropped"]] == ["queued"]
+    await _wait_for(lambda: any(x.get("type") == "agent_settled" for x in outbox.lines))
+    assert len([x for x in outbox.lines if x.get("type") == "agent_end"]) == 0
+    gate.set()
+    inbox.close()
+    await task
+
+
+async def test_steer_requires_a_message() -> None:
+    agent = Agent(client=Client(), model="m")
+    _server, inbox, outbox, task = _start_server(agent)
+
+    resp = await _command(inbox, outbox, {"id": "s", "type": "steer"})
+
+    assert resp["success"] is False
+    assert "message" in resp["error"]
+    inbox.close()
+    await task
