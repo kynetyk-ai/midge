@@ -4,11 +4,14 @@ Usage:
     poetry run python -m examples.coding_agent [options] "<prompt>"
 
 Options:
-    --extension-dir DIR       Add an extensions directory (repeatable).
+    --extension-dir DIR   Add an extensions directory (repeatable).
+    --skill-dir DIR       Add a SKILL.md skills directory (repeatable).
+    --skill NAME          Force a skill; the prompt becomes its instructions.
     --export-html PATH    Write HTML transcript on completion.
     --session PATH        Append turns to a JSONL session file. If the file
-                          exists, the agent resumes from it (re-using the
-                          model and system prompt from its header).
+                          exists, the agent resumes from it, re-using the model
+                          from its header. Tool and skill availability is
+                          recomposed from disk rather than restored.
 
 Env: OPENAI_API_KEY, OPENAI_BASE_URL, MIDGE_MODEL (default: gpt-4o-mini).
 """
@@ -26,9 +29,10 @@ from midge.agent import Agent, AgentEnd, ToolExecutionEnd, ToolExecutionStart
 from midge.client import Client, TextDelta
 from midge.compaction import compact, needs_compaction
 from midge.extensions import BUILTIN_TOOL_DIRS, load_extensions
-from midge.messages import TextContent
+from midge.messages import TextContent, UserMessage
 from midge.persistence import Session, TranscriptEntry, read_transcript
 from midge.session import export_html
+from midge.skills import default_skill_dirs, load_skills, skill_message, skills_prompt
 
 BASE_SYSTEM_PROMPT = (
     "You are a coding assistant working in a local repository. "
@@ -46,6 +50,25 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         default=[],
         metavar="DIR",
         help="Directory of extension .py files to load (repeatable).",
+    )
+    parser.add_argument(
+        "--skill-dir",
+        action="append",
+        type=Path,
+        default=[],
+        metavar="DIR",
+        help=(
+            "Directory of SKILL.md skills to load (repeatable). Searched before "
+            "the project and user defaults."
+        ),
+    )
+    parser.add_argument(
+        "--skill",
+        metavar="NAME",
+        help=(
+            "Force a skill instead of leaving the choice to the model: its body "
+            "is sent as the turn, with the prompt appended as instructions."
+        ),
     )
     parser.add_argument(
         "--export-html",
@@ -87,32 +110,41 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 async def amain(
     prompt: str,
     extension_dirs: list[Path],
+    skill_dirs: list[Path] | None = None,
+    force_skill: str | None = None,
     export_html_path: Path | None = None,
     session_path: Path | None = None,
     compaction_threshold: int | None = None,
     compaction_keep_recent: int = 20_000,
 ) -> int:
     registry, prompt_addition = load_extensions([*BUILTIN_TOOL_DIRS, *extension_dirs])
+    skills = load_skills([*(skill_dirs or []), *default_skill_dirs()])
+    catalogue = skills_prompt(skills) if "read" in registry else ""
+
+    user_input: str | UserMessage = prompt
+    if force_skill is not None:
+        try:
+            user_input = skill_message(skills, force_skill, prompt)
+        except KeyError:
+            available = ", ".join(sorted(s.name for s in skills)) or "none"
+            sys.stderr.write(f"No skill named {force_skill!r}. Available: {available}\n")
+            return 2
 
     session: Session | None = None
+    model = os.getenv("MIDGE_MODEL", "gpt-4o-mini")
+    durable = BASE_SYSTEM_PROMPT
+
     if session_path is not None:
         if session_path.exists():
             session = Session.load(session_path)
             model = session.header.model
-            full_prompt = session.header.system_prompt or ""
+            durable = session.header.system_prompt or BASE_SYSTEM_PROMPT
         else:
-            full_prompt = BASE_SYSTEM_PROMPT
-            if prompt_addition:
-                full_prompt += "\n\n" + prompt_addition
-            model = os.getenv("MIDGE_MODEL", "gpt-4o-mini")
-            session = Session.new(
-                session_path, model=model, system_prompt=full_prompt
-            )
-    else:
-        full_prompt = BASE_SYSTEM_PROMPT
-        if prompt_addition:
-            full_prompt += "\n\n" + prompt_addition
-        model = os.getenv("MIDGE_MODEL", "gpt-4o-mini")
+            session = Session.new(session_path, model=model, system_prompt=durable)
+
+    # See cli.py: tool and skill availability is recomposed every start rather
+    # than restored from the header, which froze at session creation.
+    full_prompt = "\n\n".join(p for p in (durable, prompt_addition, catalogue) if p)
 
     client = Client(
         api_key=os.getenv("OPENAI_API_KEY"),
@@ -133,7 +165,7 @@ async def amain(
     interrupted = False
 
     try:
-        async for ev in agent.stream(prompt):
+        async for ev in agent.stream(user_input):
             if isinstance(ev, TextDelta):
                 sys.stdout.write(ev.delta)
                 sys.stdout.flush()
@@ -215,6 +247,8 @@ def main() -> None:
             amain(
                 " ".join(args.prompt),
                 list(args.extension_dir),
+                skill_dirs=list(args.skill_dir),
+                force_skill=args.skill,
                 export_html_path=args.export_html,
                 session_path=args.session,
                 compaction_threshold=args.compaction_threshold,

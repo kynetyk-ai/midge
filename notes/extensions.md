@@ -8,8 +8,12 @@ Source:
 > **Terminology update.** This note was written during the original port, when midge called
 > its extension loader "skills". It now uses `pi-mono`'s vocabulary: **tools** are the
 > LLM-callable functions, **extensions** are the `.py` files that register them, and **skill**
-> is reserved for the `SKILL.md` standard, which midge does not implement. The design
-> decisions below are unchanged — only the words are. See the glossary in `CLAUDE.md`.
+> means the `SKILL.md` standard. The design decisions below are unchanged — only the words
+> are. See the glossary in `CLAUDE.md`.
+>
+> **The "not porting" list below is now out of date.** SKILL.md support landed in
+> `src/midge/skills.py`; see `notes/skills.md` for what was borrowed and what was dropped.
+> The list is kept as written because it records the reasoning at the time.
 
 ## Important: pi-mono splits "skills" from "extensions" — we are porting the latter, not the former
 
@@ -29,8 +33,8 @@ We are **not** porting:
 - gitignore-aware filesystem scanning
 - The `/skill:name args` slash-command syntax
 
-SKILL.md support is **deferred, not rejected** — it is purely additive and the `skills` name is
-kept free for it.
+SKILL.md support was **deferred, not rejected** — purely additive, with the `skills` name kept
+free for it. It has since been added; see `notes/skills.md`.
 
 ## Patterns we *do* borrow
 

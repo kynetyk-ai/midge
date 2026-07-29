@@ -9,6 +9,7 @@ The whole harness is roughly 2k LOC. The agent loop, OpenAI-compatible client, t
 - **Streaming agent loop** against any OpenAI-compatible endpoint (OpenAI, Azure, ollama, vLLM, LM Studio, llama.cpp's `server`, Together, Groq, Fireworks, OpenRouter, ...).
 - **`@tool` decorator** that turns an async Python function into an LLM-callable tool, with JSON Schema generated from its signature via Pydantic.
 - **Filesystem extension loader** — drop a `.py` file with `@tool`-decorated functions and an optional `SYSTEM_PROMPT` constant into a directory, point `--extension-dir` at it, and the agent picks up the new tools.
+- **Agent Skills** ([`SKILL.md`](https://agentskills.io/specification)) — drop a directory of markdown instructions in and point `--skill-dir` at it. Names and descriptions go in the system prompt; the agent opens the full file with `read` only when a task matches. No Python, no prompt edits, and directories written for other harnesses load as-is.
 - **Built-in coding tools**: `read`, `write`, `edit`, `bash`.
 - **Lifecycle hooks** — block or rewrite a tool call before it runs, transform context, patch results, observe every event. See [`notes/hooks.md`](./notes/hooks.md) and `examples/approval_extension/`.
 - **Textual TUI** for interactive use, plus a JSON-on-stdio RPC mode for embedding the agent in external tools.
@@ -53,7 +54,7 @@ MIDGE_MODEL=ibm/granite-3.2-8b \
 poetry run python -m examples.coding_agent --session run.jsonl --export-html run.html "summarize the README"
 ```
 
-`MIDGE_MODEL` defaults to `gpt-4o-mini`. Other flags: `--extension-dir DIR`, `--session PATH` (resumes if file exists), `--export-html PATH`, `--compaction-threshold N`.
+`MIDGE_MODEL` defaults to `gpt-4o-mini`. Other flags: `--extension-dir DIR`, `--skill-dir DIR`, `--skill NAME`, `--session PATH` (resumes if file exists), `--export-html PATH`, `--compaction-threshold N`.
 
 ### RPC (JSON-on-stdio)
 
@@ -73,6 +74,69 @@ poetry run python -m examples.notes_agent
 Same TUI, same agent, no coding tools — just `add_note`, `search_notes`, `read_note`, `list_notes`, `link_notes`. KB lives at `~/.midge-notes/kb.json` by default (override with `MIDGE_NOTES_KB`).
 
 ## Adapting to a new domain
+
+There are two levers, and they compose. **Extensions** add capabilities the agent
+did not have; **skills** teach it how to use the capabilities it already has.
+
+### Skills — markdown, no Python
+
+A skill is a directory with a `SKILL.md`: YAML frontmatter carrying a `name` and
+a `description`, then instructions. Anything else beside it is freeform.
+
+```
+my-skills/
+└── commit-message/
+    ├── SKILL.md
+    └── references/
+        └── style.md
+```
+
+```markdown
+---
+name: commit-message
+description: >-
+  Writes a git commit message for the staged changes, following the project's
+  conventions. Use when the user asks to commit or to describe a change.
+---
+
+# Commit message
+
+Run `git diff --cached` first. Read `references/style.md` for the full rules.
+```
+
+```bash
+poetry run python -m examples.coding_agent --skill-dir my-skills "commit this"
+```
+
+Only the name and description sit in the system prompt. The agent reads the full
+file with the `read` tool when a task matches its description, and resolves
+`references/style.md` against the skill's own directory — so a long reference
+document costs nothing until it is actually needed.
+
+Skills are also discovered from `./.midge/skills`, `./.agents/skills`,
+`~/.midge/skills` and `~/.agents/skills` without any flag. `--skill-dir` entries
+win a name collision, then project directories, then personal ones.
+
+Validation is lenient so directories written for other harnesses load unchanged —
+`--skill-dir ~/.claude/skills` works. A bad name or an over-long description
+warns and still loads; only a missing `description` is fatal, since it is the
+only thing the model sees before deciding whether to open the file.
+
+Models do not always take the hint. `--skill NAME` forces one: its body is sent
+as the turn and the prompt becomes the instructions.
+
+```bash
+poetry run python -m examples.coding_agent --skill-dir examples/skills \
+  --skill commit-message "keep it to one line"
+```
+
+Add `disable-model-invocation: true` to a skill's frontmatter to keep it out of
+the catalogue entirely, leaving `--skill` as the only way in.
+
+See `examples/skills/` for a worked example and [`notes/skills.md`](./notes/skills.md)
+for design rationale.
+
+### Extensions — new tools
 
 1. Write `.py` files with `@tool`-decorated async functions.
 2. Optionally add a module-level `SYSTEM_PROMPT` string to extend the agent's prompt.
@@ -95,6 +159,7 @@ src/midge/
 ├── session.py         # single-file HTML transcript exporter
 ├── rpc.py             # JSON-on-stdio RPC server
 ├── extensions.py      # load_extensions(dirs) → (ToolRegistry, prompt_addition)
+├── skills.py          # SKILL.md discovery + <available_skills> catalogue
 ├── hooks.py           # lifecycle events + handler registry
 ├── tui/app.py         # Textual TUI
 └── cli.py             # `midge` entrypoint
@@ -103,7 +168,8 @@ examples/
 ├── rpc_agent.py       # RPC server for external clients
 ├── notes_agent.py     # second-domain TUI demo
 ├── approval_extension/ # tool-approval hook demo
-└── notes_extension/   # the notes extension pack
+├── notes_extension/   # the notes extension pack
+└── skills/            # a worked SKILL.md example
 notes/                 # design rationale + patterns extracted from pi-mono
 tests/                 # pytest tests
 ```
