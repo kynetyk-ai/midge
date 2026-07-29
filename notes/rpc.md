@@ -42,7 +42,14 @@ Source:
 
 **No length-prefixing, no handshake.** The process spawns, immediately reads stdin, and writes events to stdout. Stderr is for human-readable diagnostics (logging) and is not part of the protocol.
 
-**No backpressure.** Clients must drain stdout fast or buffer it. Phase 2 doesn't add flow control.
+**Backpressure.** A pipe holds ~64 KiB and one ordinary answer is ~20 KiB of frames — every token is its own record — so roughly three answers fill it, and one `read` of a large file produces a single `tool_result` frame near 50 KiB. A client that stops draining is therefore normal, not exotic.
+
+Two things keep that from wedging the process:
+
+- **The writer drains rather than blocks.** `loop.connect_write_pipe` plus `StreamWriter.drain()`, so a full pipe suspends the writing coroutine instead of the event loop. A plain `file.write` blocks the loop, which stops the agent, every tool, *and* the stdin reader together — `abort` cannot arrive because it is read by the blocked loop, and the SIGTERM handler cannot run because it is queued on it. Only SIGKILL is left. Regular files fall back to blocking writes: asyncio refuses to wrap them, and a file has no reader to stall behind.
+- **Frames go through a bounded outbox** drained by one writer task, so the dispatch loop never awaits a write. Without that, a stalled write inside a command handler stops the loop from reading the next command — including `abort`.
+
+The queue is `OUTBOX_FRAMES` deep, about ten answers' worth: deep enough that a client pausing to render or collect garbage never stalls anything, shallow enough that a client which has genuinely died applies backpressure rather than exhausting memory. When it fills, the producer waits — which is the agent, since it emits nearly all the frames. That matches pi, which stalls its agent loop for the same reason: pausing beats dropping protocol frames or buffering without bound.
 
 ## Shape conventions
 
