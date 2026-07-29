@@ -29,6 +29,7 @@ from midge.agent import Agent, AgentEnd, ToolExecutionEnd, ToolExecutionStart
 from midge.client import Client, TextDelta
 from midge.compaction import compact, needs_compaction
 from midge.extensions import BUILTIN_TOOL_DIRS, load_extensions
+from midge.logs import configure as configure_logging
 from midge.messages import TextContent, UserMessage
 from midge.persistence import Session, TranscriptEntry, read_transcript
 from midge.session import export_html
@@ -117,6 +118,8 @@ async def amain(
     compaction_threshold: int | None = None,
     compaction_keep_recent: int = 20_000,
 ) -> int:
+    # Default handler: stderr. Stdout is the rendered transcript.
+    configure_logging()
     registry, prompt_addition = load_extensions([*BUILTIN_TOOL_DIRS, *extension_dirs])
     skills = load_skills([*(skill_dirs or []), *default_skill_dirs()])
     catalogue = skills_prompt(skills) if "read" in registry else ""

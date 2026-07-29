@@ -20,12 +20,14 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 from typing import Any, ClassVar
 
 from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import VerticalScroll
+from textual.logging import TextualHandler
 from textual.message import Message
 from textual.widgets import Footer, Header, Static, TextArea
 from textual.worker import Worker, WorkerCancelled, WorkerFailed, WorkerState
@@ -295,6 +297,19 @@ class PiApp(App[None]):
 
     def action_clear_input(self) -> None:
         self.query_one("#input", _SubmitTextArea).clear()
+
+
+def tui_log_handler() -> logging.Handler | None:
+    """A log handler safe to install before `App.run()`.
+
+    `logging.StreamHandler` binds `sys.stderr` at construction, so it writes
+    straight past Textual's `redirect_stderr` and shreds the display.
+    `TextualHandler` resolves the active app per record instead — but it routes
+    to the devtools console, visible only under `textual console`, so
+    `MIDGE_LOG_FILE` is the practical way to read these. `None` hands that case
+    back to `logs.configure`, which opens the file itself.
+    """
+    return None if os.getenv("MIDGE_LOG_FILE") else TextualHandler()
 
 
 def run_tui(

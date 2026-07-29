@@ -18,9 +18,10 @@ from midge.agent import Agent
 from midge.client import Client
 from midge.extensions import BUILTIN_TOOL_DIRS, load_extensions
 from midge.hooks import Hooks, SessionEnd, SessionStart
+from midge.logs import configure as configure_logging
 from midge.persistence import Session
 from midge.skills import default_skill_dirs, load_skills, skills_prompt
-from midge.tui import run_tui
+from midge.tui import run_tui, tui_log_handler
 
 BASE_SYSTEM_PROMPT = (
     "You are a coding assistant working in a local repository. "
@@ -78,6 +79,9 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
+    # Before `load_extensions`/`load_skills`, which are the two loudest
+    # loaders — a handler installed after them loses every startup diagnostic.
+    configure_logging(tui_log_handler())
     hooks = Hooks()
     registry, prompt_addition = load_extensions(
         [*BUILTIN_TOOL_DIRS, *args.extension_dir], hooks=hooks

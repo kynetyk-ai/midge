@@ -25,6 +25,7 @@ from pathlib import Path
 from midge.agent import Agent
 from midge.client import Client
 from midge.extensions import BUILTIN_TOOL_DIRS, load_extensions
+from midge.logs import configure as configure_logging
 from midge.rpc import RpcServer
 
 _READ_LIMIT = 16 * 1024 * 1024
@@ -49,6 +50,9 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 
 
 async def amain(extension_dirs: list[Path]) -> int:
+    # Default handler: stderr. Stdout is the protocol here, so nothing may ever
+    # be written to it but framed JSON.
+    configure_logging()
     registry, prompt_addition = load_extensions([*BUILTIN_TOOL_DIRS, *extension_dirs])
     full_prompt = BASE_SYSTEM_PROMPT
     if prompt_addition:
