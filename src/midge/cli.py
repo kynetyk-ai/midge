@@ -23,6 +23,7 @@ from midge.logs import configure as configure_logging
 from midge.logs import provider_host
 from midge.persistence import Session
 from midge.skills import default_skill_dirs, load_skills, skills_prompt
+from midge.subagents import bind_subagents
 from midge.tui import run_tui, tui_log_handler
 
 _logger = logging.getLogger(__name__)
@@ -126,6 +127,15 @@ def main(argv: list[str] | None = None) -> None:
     client = Client(
         api_key=os.getenv("OPENAI_API_KEY"),
         base_url=base_url,
+    )
+    # Tools cannot reach the calling agent, so any sub-agent tool an extension
+    # registered gets what it needs to run a child here. No-op without them.
+    bind_subagents(
+        registry,
+        client=client,
+        model=model,
+        hooks=hooks,
+        session_path=args.session,
     )
     agent = Agent(
         client=client,

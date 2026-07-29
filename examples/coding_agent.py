@@ -30,12 +30,14 @@ from midge.agent import Agent, AgentEnd, ToolExecutionEnd, ToolExecutionStart
 from midge.client import Client, TextDelta
 from midge.compaction import compact, needs_compaction
 from midge.extensions import BUILTIN_TOOL_DIRS, load_extensions
+from midge.hooks import Hooks
 from midge.logs import configure as configure_logging
 from midge.logs import provider_host
 from midge.messages import TextContent, UserMessage
 from midge.persistence import Session, TranscriptEntry, read_transcript
 from midge.session import export_html
 from midge.skills import default_skill_dirs, load_skills, skill_message, skills_prompt
+from midge.subagents import bind_subagents
 
 # Not `__name__`: run as `-m`, that is "__main__", which sits outside the
 # `midge` logger tree and so never picks up the configured level.
@@ -126,7 +128,13 @@ async def amain(
 ) -> int:
     # Default handler: stderr. Stdout is the rendered transcript.
     configure_logging()
-    registry, prompt_addition = load_extensions([*BUILTIN_TOOL_DIRS, *extension_dirs])
+    # Without a Hooks object an extension's `register_hooks` never runs, so a
+    # tool-approval policy loaded here would be silently inert — and a
+    # sub-agent inherits whatever the parent has.
+    hooks = Hooks()
+    registry, prompt_addition = load_extensions(
+        [*BUILTIN_TOOL_DIRS, *extension_dirs], hooks=hooks
+    )
     skills = load_skills([*(skill_dirs or []), *default_skill_dirs()])
     catalogue = skills_prompt(skills) if "read" in registry else ""
 
@@ -167,11 +175,13 @@ async def amain(
         api_key=os.getenv("OPENAI_API_KEY"),
         base_url=base_url,
     )
+    bind_subagents(registry, client=client, model=model, hooks=hooks, session_path=session_path)
     agent = Agent(
         client=client,
         model=model,
         tools=registry,
         system_prompt=full_prompt,
+        hooks=hooks,
     )
     if session is not None:
         agent.history = list(session.messages)

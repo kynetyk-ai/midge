@@ -35,7 +35,10 @@ class Tool:
             "parameters": self.params_model.model_json_schema(),
         }
 
-    async def invoke(self, arguments: dict[str, Any]) -> Any:
+    async def invoke(self, arguments: dict[str, Any], *, call_id: str | None = None) -> Any:
+        # `call_id` is the provider's id for this tool call. The base tool has no
+        # use for it; a subclass that produces its own artefacts uses it to tie
+        # them back to the exact turn that asked for them.
         validated = self.params_model.model_validate(arguments)
         kwargs = {f: getattr(validated, f) for f in self.params_model.model_fields}
         return await self.fn(**kwargs)
@@ -128,8 +131,10 @@ class ToolRegistry:
     def __len__(self) -> int:
         return len(self._tools)
 
-    async def invoke(self, name: str, arguments: dict[str, Any]) -> Any:
+    async def invoke(
+        self, name: str, arguments: dict[str, Any], *, call_id: str | None = None
+    ) -> Any:
         t = self._tools.get(name)
         if t is None:
             raise KeyError(f"Tool {name!r} not registered")
-        return await t.invoke(arguments)
+        return await t.invoke(arguments, call_id=call_id)

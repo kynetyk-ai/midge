@@ -48,6 +48,11 @@ class SessionHeader(BaseModel):
     created_at: str
     model: str
     system_prompt: str | None = None
+    # Set on a sub-agent transcript so a file found on its own says which turn
+    # of which conversation produced it. `parent_tool_call_id` is the same id
+    # that appears on the parent's ToolCall and its ToolResultMessage.
+    parent_session: str | None = None
+    parent_tool_call_id: str | None = None
 
 
 class CompactionRecord(BaseModel):
@@ -154,6 +159,8 @@ class Session:
         *,
         model: str,
         system_prompt: str | None = None,
+        parent_session: str | None = None,
+        parent_tool_call_id: str | None = None,
     ) -> Session:
         p = Path(path)
         if p.exists():
@@ -167,6 +174,8 @@ class Session:
             created_at=_now_iso(),
             model=model,
             system_prompt=system_prompt,
+            parent_session=parent_session,
+            parent_tool_call_id=parent_tool_call_id,
         )
         f.write(header.model_dump_json() + "\n")
         f.flush()

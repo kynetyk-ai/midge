@@ -320,7 +320,7 @@ class Agent:
         _logger.debug("tool_start tool=%s id=%s args=%s", tc.name, tc.id, payload(tc.arguments))
         started = time.monotonic()
         try:
-            result: Any = await self.tools.invoke(tc.name, tc.arguments)
+            result: Any = await self.tools.invoke(tc.name, tc.arguments, call_id=tc.id)
             text = _truncate(str(result))
             _logger.info(
                 "tool_ok tool=%s id=%s ms=%d chars=%d",
