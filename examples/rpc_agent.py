@@ -70,9 +70,7 @@ async def amain(extension_dirs: list[Path]) -> int:
     registry, prompt_addition = load_extensions(
         [*BUILTIN_TOOL_DIRS, *extension_dirs], hooks=hooks
     )
-    full_prompt = BASE_SYSTEM_PROMPT
-    if prompt_addition:
-        full_prompt += "\n\n" + prompt_addition
+    full_prompt = "\n\n".join(p for p in (BASE_SYSTEM_PROMPT, prompt_addition) if p)
 
     base_url = os.getenv("OPENAI_BASE_URL")
     model = os.getenv("MIDGE_MODEL", "gpt-4o-mini")
@@ -109,7 +107,14 @@ async def amain(extension_dirs: list[Path]) -> int:
         stdout.write(data)
         stdout.flush()
 
-    server = RpcServer(agent, session=None)
+    # The halves are passed apart so `set_system_prompt` can change the base
+    # without deleting what the extensions contributed.
+    server = RpcServer(
+        agent,
+        session=None,
+        base_prompt=BASE_SYSTEM_PROMPT,
+        prompt_suffix=prompt_addition,
+    )
     await server.serve(read_line=read_line, write=write)
     return 0
 

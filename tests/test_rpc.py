@@ -495,7 +495,8 @@ async def test_system_prompt_round_trips() -> None:
     _server, inbox, outbox, task = _start_server(agent)
 
     before = await _command(inbox, outbox, {"id": "g1", "type": "get_system_prompt"})
-    assert before["data"] == {"prompt": "original"}
+    assert before["data"]["prompt"] == "original"
+    assert before["data"]["base"] == "original"
 
     setr = await _command(
         inbox, outbox, {"id": "s1", "type": "set_system_prompt", "prompt": "rewritten"}
@@ -503,8 +504,56 @@ async def test_system_prompt_round_trips() -> None:
     assert setr["success"] is True
 
     after = await _command(inbox, outbox, {"id": "g2", "type": "get_system_prompt"})
-    assert after["data"] == {"prompt": "rewritten"}
+    assert after["data"]["prompt"] == "rewritten"
     assert agent.system_prompt == "rewritten"
+    inbox.close()
+    await task
+
+
+CATALOGUE = "<available_skills>\n  <skill><name>deploy</name></skill>\n</available_skills>"
+
+
+def _server_with_composed_prompt(agent: Agent) -> tuple[RpcServer, _Inbox, _Outbox, Any]:
+    server = RpcServer(agent, base_prompt="You are a coding assistant.", prompt_suffix=CATALOGUE)
+    agent.system_prompt = server._compose_prompt()
+    inbox, outbox = _Inbox(), _Outbox()
+    task = asyncio.create_task(server.serve(read_line=inbox.read_line, write=outbox.write))
+    return server, inbox, outbox, task
+
+
+async def test_set_system_prompt_keeps_the_generated_half() -> None:
+    """The composed prompt is base + extension contributions + skills
+    catalogue. Setting the base must not delete the rest — a client could not
+    put it back, since the composed string is undelimited and the catalogue
+    carries absolute paths."""
+    agent = Agent(client=Client(), model="m")
+    _server, inbox, outbox, task = _server_with_composed_prompt(agent)
+
+    assert CATALOGUE in (agent.system_prompt or "")
+
+    await _command(
+        inbox, outbox, {"id": "s", "type": "set_system_prompt", "prompt": "You are a lawyer."}
+    )
+
+    assert agent.system_prompt is not None
+    assert agent.system_prompt.startswith("You are a lawyer.")
+    assert CATALOGUE in agent.system_prompt, "the skills catalogue was dropped"
+    assert "coding assistant" not in agent.system_prompt
+    inbox.close()
+    await task
+
+
+async def test_get_system_prompt_separates_the_halves() -> None:
+    agent = Agent(client=Client(), model="m")
+    _server, inbox, outbox, task = _server_with_composed_prompt(agent)
+
+    resp = await _command(inbox, outbox, {"id": "g", "type": "get_system_prompt"})
+
+    # A client can see what it owns and what midge appends, without guessing
+    # where one ends and the other begins.
+    assert resp["data"]["base"] == "You are a coding assistant."
+    assert resp["data"]["appended"] == CATALOGUE
+    assert resp["data"]["prompt"] == agent.system_prompt
     inbox.close()
     await task
 

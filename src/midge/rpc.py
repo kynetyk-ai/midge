@@ -151,12 +151,20 @@ class RpcServer:
         *,
         session: Session | None = None,
         compaction_keep_recent: int = 20_000,
+        base_prompt: str | None = None,
+        prompt_suffix: str = "",
     ) -> None:
         self.agent = agent
         # `client` and `model` come off the agent; `session` is what the export
         # and persistence commands need and cannot reach otherwise.
         self.session = session
         self.compaction_keep_recent = compaction_keep_recent
+        # The agent's prompt is composed: a durable base the operator owns, then
+        # what midge generates — extension contributions and the skills
+        # catalogue. Keeping the halves apart is what lets `set_system_prompt`
+        # change the base without silently deleting the catalogue.
+        self._base_prompt = base_prompt if base_prompt is not None else (agent.system_prompt or "")
+        self._prompt_suffix = prompt_suffix
         self._current_run: asyncio.Task[None] | None = None
         self._write_lock = asyncio.Lock()
         self._write: WriteFn | None = None
@@ -297,12 +305,19 @@ class RpcServer:
             cmd_id, "get_last_assistant_text", success=True, data={"text": text}
         )
 
+    def _compose_prompt(self) -> str:
+        return "\n\n".join(p for p in (self._base_prompt, self._prompt_suffix) if p)
+
     async def _handle_get_system_prompt(self, cmd_id: str | None) -> None:
         await self._respond(
             cmd_id,
             "get_system_prompt",
             success=True,
-            data={"prompt": self.agent.system_prompt},
+            data={
+                "prompt": self.agent.system_prompt,
+                "base": self._base_prompt,
+                "appended": self._prompt_suffix,
+            },
         )
 
     async def _handle_set_system_prompt(self, cmd_id: str | None, cmd: dict[str, Any]) -> None:
@@ -315,12 +330,21 @@ class RpcServer:
                 error="`prompt` is required and must be a string",
             )
             return
-        # `_stream` snapshots the prompt once outside its turn loop, so a change
-        # mid-run lands on the next turn rather than corrupting the one in
-        # flight. It replaces the whole composed prompt — skills catalogue and
-        # extension contributions included — so callers should read, edit, set.
-        self.agent.system_prompt = prompt
-        _logger.info("rpc_system_prompt_set chars=%d", len(prompt))
+        # Sets the base only; the generated half is re-appended. Replacing the
+        # whole composed prompt would delete the skills catalogue and every
+        # extension's guidance, and a client could not put them back — the
+        # composed string is undelimited and the catalogue carries absolute
+        # paths, so it is not reconstructable off-machine.
+        #
+        # `_stream` snapshots the prompt once outside its turn loop, so this
+        # lands on the next turn rather than corrupting the one in flight.
+        self._base_prompt = prompt
+        self.agent.system_prompt = self._compose_prompt()
+        _logger.info(
+            "rpc_system_prompt_set base_chars=%d composed_chars=%d",
+            len(prompt),
+            len(self.agent.system_prompt or ""),
+        )
         await self._respond(cmd_id, "set_system_prompt", success=True)
 
     async def _handle_set_model(self, cmd_id: str | None, cmd: dict[str, Any]) -> None:
