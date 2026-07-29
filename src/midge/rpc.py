@@ -195,6 +195,10 @@ class _NewSessionParams(_CommandParams):
     path: str = Field(description="Path for the new session log")
 
 
+class _SessionNameParams(_CommandParams):
+    name: str = Field(description="Display name for the current session")
+
+
 class _ExportHtmlParams(_CommandParams):
     output_path: str | None = Field(
         default=None, description="Where to write; defaults to the session path with .html"
@@ -235,6 +239,9 @@ BUILTIN_COMMANDS: tuple[BuiltinCommand, ...] = (
     ),
     BuiltinCommand(
         "reload", "Re-scan skills and extensions from disk", _ReloadParams
+    ),
+    BuiltinCommand(
+        "set_session_name", "Give the current session a display name", _SessionNameParams
     ),
 )
 
@@ -364,6 +371,8 @@ class RpcServer:
                 await self._handle_new_session(cmd_id, cmd)
             case "reload":
                 await self._handle_reload(cmd_id, cmd)
+            case "set_session_name":
+                await self._handle_set_session_name(cmd_id, cmd)
             case _:
                 _logger.warning("rpc_command_unknown type=%r", cmd_type)
                 await self._respond(
@@ -561,6 +570,7 @@ class RpcServer:
                 "model": self.agent.model,
                 "streaming": self._current_run is not None and not self._current_run.done(),
                 "session": str(self.session.path) if self.session is not None else None,
+                "session_name": self.session.name if self.session is not None else None,
                 "messages": len(self.agent.history),
             },
         )
@@ -665,7 +675,12 @@ class RpcServer:
         _, entries = read_transcript(self.session.path)
         try:
             out.write_text(
-                export_html(entries, model=self.agent.model), encoding="utf-8"
+                export_html(
+                    entries,
+                    model=self.agent.model,
+                    **({"title": self.session.name} if self.session.name else {}),
+                ),
+                encoding="utf-8",
             )
         except OSError as e:
             await self._respond(cmd_id, "export_html", success=False, error=str(e))
@@ -703,13 +718,16 @@ class RpcServer:
     async def _handle_clear_context(self, cmd_id: str | None) -> None:
         """Forget the conversation; keep recording to the same log.
 
-        Runtime-only, deliberately. The session file is an append-only record of
-        what happened, so it keeps every message and a resume of that file
-        restores them — clearing changes what the model sees now, not what was
-        written. Use `new_session` to start a fresh log.
+        Durable. The messages stay in the file — it is the record of what
+        happened, and `export_html` still renders them — but a `clear` marker is
+        appended so a resume does not replay them. Clearing because a
+        conversation went sideways and finding it restored on the next resume
+        was the surprising behaviour. Use `new_session` for a fresh log.
         """
         cleared = len(self.agent.history)
         self.agent.history = []
+        if self.session is not None:
+            self.session.append_clear(cut_index=cleared)
         _logger.info("rpc_context_cleared messages=%d", cleared)
         await self._respond(
             cmd_id,
@@ -867,6 +885,37 @@ class RpcServer:
     def _reload_skills(self) -> None:
         assert self._skill_sources is not None
         self._skills = load_skills(self._skill_sources)
+
+    async def _handle_set_session_name(self, cmd_id: str | None, cmd: dict[str, Any]) -> None:
+        name = cmd.get("name")
+        if not isinstance(name, str) or not name.strip():
+            await self._respond(
+                cmd_id,
+                "set_session_name",
+                success=False,
+                error="`name` is required and must be a non-empty string",
+            )
+            return
+        if self.session is None:
+            await self._respond(
+                cmd_id,
+                "set_session_name",
+                success=False,
+                error="no session; a name needs a transcript on disk to live in",
+            )
+            return
+        # Newlines would split one record across two JSONL lines and corrupt the
+        # file, which is worth stripping rather than rejecting.
+        cleaned = " ".join(name.split())
+        try:
+            self.session.set_name(cleaned)
+        except OSError as e:
+            await self._respond(cmd_id, "set_session_name", success=False, error=str(e))
+            return
+        _logger.info("rpc_session_named name=%s", cleaned)
+        await self._respond(
+            cmd_id, "set_session_name", success=True, data={"name": cleaned}
+        )
 
     async def _handle_abort(self, cmd_id: str | None) -> None:
         if self._current_run is not None and not self._current_run.done():

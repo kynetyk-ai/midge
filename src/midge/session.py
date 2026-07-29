@@ -31,7 +31,7 @@ from midge.messages import (
     ToolResultMessage,
     UserMessage,
 )
-from midge.persistence import CompactionRecord, TranscriptEntry
+from midge.persistence import ClearRecord, CompactionRecord, SessionRecord, TranscriptEntry
 
 
 class _HighlightRenderer(mistune.HTMLRenderer):
@@ -141,7 +141,7 @@ def export_html(
     pygments_css = HtmlFormatter(cssclass="codehilite").get_style_defs(".codehilite")
     body = "\n".join(_render(e) for e in entries)
 
-    n = sum(1 for e in entries if not isinstance(e, CompactionRecord))
+    n = sum(1 for e in entries if not isinstance(e, SessionRecord))
     meta = f"{n} message{'s' if n != 1 else ''}"
     if model:
         meta = f"model: {html.escape(model)} · {meta}"
@@ -164,6 +164,10 @@ def _render(m: TranscriptEntry) -> str:
         return _render_tool_result(m)
     if isinstance(m, CompactionRecord):
         return _render_compaction(m)
+    if isinstance(m, ClearRecord):
+        return _render_clear(m)
+    # SessionInfoRecord renders as nothing: the name reaches the page as its
+    # title, and a rename is not something that happened *in* the transcript.
     return ""
 
 
@@ -233,6 +237,18 @@ def _render_tool_result(m: ToolResultMessage) -> str:
         f'<pre class="tool-output"><code>{html.escape(text)}</code></pre>'
         f"{images}"
         f"</details>"
+    )
+
+
+def _render_clear(c: ClearRecord) -> str:
+    # No <details>: unlike a compaction there is no summary to reveal, and the
+    # discarded messages are still rendered above rather than folded away.
+    n = c.cut_index
+    return (
+        f'<div class="msg compaction">'
+        f"<strong>context cleared</strong> · {n} message{'s' if n != 1 else ''} "
+        f"dropped from the agent's history"
+        f"</div>"
     )
 
 

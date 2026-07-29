@@ -35,6 +35,11 @@ Source:
 > the extension-UI channel, auto-retry and `bash` are all still out, for the
 > reasons in #30. Session naming needs a storage decision and is filed
 > separately.
+>
+> **Update (#49).** `set_session_name` shipped, and `clear_context` became
+> durable. The storage decision was that mutable state is an appended record
+> replayed on load, never a header rewrite — see `notes/sessions.md`. Fork /
+> clone / switch remain out; they need the entry tree, which markers do not.
 
 ## Wire format
 
@@ -208,8 +213,8 @@ to. No UI concepts in the response.
 
 **What is listed.** The server has an opinion about what is a user-facing
 action: `abort`, `compact`, `clear_context`, `new_session`, `export_html`,
-`set_model`, `set_system_prompt`, `reload`, plus every loaded skill as
-`skill:<name>`.
+`set_model`, `set_system_prompt`, `reload`, `set_session_name`, plus every
+loaded skill as `skill:<name>`.
 Out: `prompt`, `steer` and `follow_up`, which *are* the interaction rather than
 menu items, and the `get_*` family, which a client reads to render itself.
 

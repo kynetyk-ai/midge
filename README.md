@@ -14,7 +14,7 @@ The whole harness is roughly 2k LOC. The agent loop, OpenAI-compatible client, t
 - **Built-in coding tools**: `read`, `write`, `edit`, `bash`.
 - **Lifecycle hooks** — block or rewrite a tool call before it runs, transform context, patch results, observe every event. See [`notes/hooks.md`](./notes/hooks.md) and `examples/approval_extension/`.
 - **Textual TUI** for interactive use, plus a JSON-on-stdio RPC mode for embedding the agent in external tools.
-- **JSONL session save/resume** and a single-file HTML transcript exporter.
+- **JSONL session save/resume** and a single-file HTML transcript exporter. The format is append-only: a rename or a context clear is a record appended and replayed on load, never a rewrite, so a crash can only ever damage the final line.
 - **Context compaction** that summarizes old turns when a session gets long.
 - **Provider retry** with a cancellable backoff — rate limits, 5xx, and transport failures get a few attempts before the turn fails. Retries stop once the response has started streaming, so nothing the model already emitted is replayed.
 - **Retargetable** — `examples/notes_agent.py` demonstrates a non-coding domain (personal-knowledge KB) running on the same harness with no core changes.

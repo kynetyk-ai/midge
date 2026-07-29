@@ -9,7 +9,13 @@ from midge.messages import (
     ToolResultMessage,
     UserMessage,
 )
-from midge.persistence import CompactionRecord, Session, read_transcript
+from midge.persistence import (
+    ClearRecord,
+    CompactionRecord,
+    Session,
+    SessionInfoRecord,
+    read_transcript,
+)
 from midge.session import export_html
 
 
@@ -320,3 +326,24 @@ def test_full_loop_session_round_trip() -> None:
     assert "a.py" in out and "b.py" in out
     assert "<strong>2 files</strong>" in out
     assert "4 messages" in out
+
+
+def test_a_clear_renders_as_a_divider_and_is_not_a_message() -> None:
+    out = export_html(
+        [
+            UserMessage(content="before"),
+            ClearRecord(cut_index=1),
+            UserMessage(content="after"),
+        ]
+    )
+    assert "context cleared" in out
+    # The discarded turn is still shown: the transcript is the record of what
+    # happened, and only a resume honours the clear.
+    assert "before" in out
+    assert "2 messages" in out, "the clear record was counted as a message"
+
+
+def test_a_session_name_record_renders_as_nothing() -> None:
+    out = export_html([SessionInfoRecord(name="auth refactor"), UserMessage(content="hi")])
+    assert "auth refactor" not in out
+    assert "1 message" in out
