@@ -13,6 +13,7 @@ from midge.compaction import (
     compact,
     count_tokens,
     find_cut_index,
+    measure_context,
     needs_compaction,
     summarize,
 )
@@ -25,6 +26,7 @@ from midge.messages import (
     TextContent,
     ToolCall,
     ToolResultMessage,
+    Usage,
     UserMessage,
     make_summary_message,
     to_openai_messages,
@@ -379,3 +381,83 @@ async def test_hook_cut_index_snaps_to_user_boundary() -> None:
         for tc in (m.get("tool_calls") or [])
     }
     assert requested == answered
+
+
+# ---- measure_context ----
+
+
+def _assistant(text: str, *, usage: Usage | None = None, stop: str = "stop") -> AssistantMessage:
+    return AssistantMessage(
+        content=[TextContent(text=text)],
+        stop_reason=stop,  # type: ignore[arg-type]
+        usage=usage,
+    )
+
+
+def test_measure_context_falls_back_to_the_estimator() -> None:
+    history: list[Message] = [UserMessage(content="hi"), _assistant("hello")]
+    assert measure_context(history) == count_tokens(history)
+
+
+def test_measure_context_prefers_reported_usage() -> None:
+    # The estimator would return a much larger number for this history; the
+    # provider's own count wins.
+    history: list[Message] = [
+        UserMessage(content="x" * 4000),
+        _assistant("ok", usage=Usage(input=300, output=12)),
+    ]
+    assert count_tokens(history) > 1000
+    assert measure_context(history) == 312
+
+
+def test_measure_context_estimates_only_the_tail() -> None:
+    tail: list[Message] = [UserMessage(content="y" * 400)]
+    history: list[Message] = [
+        UserMessage(content="x" * 4000),
+        _assistant("ok", usage=Usage(input=300, output=12)),
+        *tail,
+    ]
+    assert measure_context(history) == 312 + count_tokens(tail)
+
+
+def test_measure_context_ignores_failed_and_aborted_turns() -> None:
+    # Their counts describe a request that never completed.
+    history: list[Message] = [
+        UserMessage(content="a"),
+        _assistant("ok", usage=Usage(input=300, output=12)),
+        UserMessage(content="b"),
+        _assistant("", usage=Usage(input=99_999, output=0), stop="error"),
+        _assistant("", usage=Usage(input=88_888, output=0), stop="aborted"),
+    ]
+    tail = history[2:]
+    assert measure_context(history) == 312 + count_tokens(tail)
+
+
+def test_measure_context_uses_the_most_recent_usage() -> None:
+    history: list[Message] = [
+        UserMessage(content="a"),
+        _assistant("one", usage=Usage(input=100, output=5)),
+        UserMessage(content="b"),
+        _assistant("two", usage=Usage(input=400, output=9)),
+    ]
+    assert measure_context(history) == 409
+
+
+def test_needs_compaction_uses_reported_usage() -> None:
+    # bytes/4 over this history is far above 500; the provider says otherwise,
+    # and compaction destroys history, so the real number decides.
+    history: list[Message] = [
+        UserMessage(content="x" * 8000),
+        _assistant("ok", usage=Usage(input=400, output=10)),
+    ]
+    assert count_tokens(history) > 500
+    assert needs_compaction(history, threshold_tokens=500) is False
+    assert needs_compaction(history, threshold_tokens=300) is True
+
+
+def test_needs_compaction_respects_an_explicit_counter() -> None:
+    history: list[Message] = [
+        UserMessage(content="hi"),
+        _assistant("ok", usage=Usage(input=1, output=1)),
+    ]
+    assert needs_compaction(history, threshold_tokens=10, count_tokens_fn=lambda _: 999) is True

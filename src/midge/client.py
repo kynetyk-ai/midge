@@ -17,6 +17,7 @@ from midge.messages import (
     StopReason,
     TextContent,
     ToolCall,
+    Usage,
     to_openai_messages,
 )
 
@@ -108,6 +109,18 @@ _FINISH_REASON_TO_STOP_REASON: dict[str, StopReason] = {
 }
 
 
+def _to_usage(raw: Any) -> Usage | None:
+    """Map the provider's usage block, tolerating servers that omit fields."""
+    if raw is None:
+        return None
+    details = getattr(raw, "prompt_tokens_details", None)
+    return Usage(
+        input=getattr(raw, "prompt_tokens", 0) or 0,
+        output=getattr(raw, "completion_tokens", 0) or 0,
+        cached=getattr(details, "cached_tokens", 0) or 0,
+    )
+
+
 def _map_finish_reason(finish_reason: str | None) -> StopReason:
     if finish_reason is None:
         return "stop"
@@ -142,6 +155,7 @@ class Client:
         base_url: str | None = None,
         max_attempts: int = 3,
         retry_base_delay: float = 0.5,
+        include_usage: bool | None = None,
     ) -> None:
         self._client = openai.AsyncOpenAI(
             api_key=api_key or os.getenv("OPENAI_API_KEY") or "not-needed",
@@ -152,6 +166,14 @@ class Client:
         )
         self._max_attempts = max(1, max_attempts)
         self._retry_base_delay = retry_base_delay
+        # Support for `stream_options` varies across OpenAI-compatible servers
+        # and a server that rejects it fails the whole turn with a 400, so this
+        # needs an escape hatch that does not require editing code.
+        self._include_usage = (
+            include_usage
+            if include_usage is not None
+            else os.getenv("MIDGE_INCLUDE_USAGE", "1") not in ("0", "false", "no")
+        )
 
     async def stream(
         self,
@@ -176,6 +198,8 @@ class Client:
             "stream": True,
             **kwargs,
         }
+        if self._include_usage:
+            create_kwargs.setdefault("stream_options", {"include_usage": True})
         oai_tools = _tools_to_openai(tools)
         if oai_tools:
             create_kwargs["tools"] = oai_tools
@@ -201,11 +225,18 @@ class Client:
             tool_idx_map: dict[int, int] = {}
             tool_arg_buffers: dict[int, str] = {}
             finish_reason: str | None = None
+            partial.usage = None
 
             try:
                 stream = await self._client.chat.completions.create(**create_kwargs)
 
                 async for chunk in stream:
+                    # Usage rides a final chunk whose `choices` is empty, so it
+                    # has to be read before the guard below — that `continue` is
+                    # exactly what used to throw it away.
+                    usage = _to_usage(getattr(chunk, "usage", None))
+                    if usage is not None:
+                        partial.usage = usage
                     if not chunk.choices:
                         continue
                     choice = chunk.choices[0]
@@ -295,6 +326,15 @@ class Client:
                     len(partial.content),
                     attempt,
                 )
+                if partial.usage is not None:
+                    u = partial.usage
+                    _logger.info(
+                        "provider_usage model=%s input=%d output=%d cached=%d",
+                        model,
+                        u.input,
+                        u.output,
+                        u.cached,
+                    )
                 if attempt:
                     _logger.info("provider_recovered model=%s attempts=%d", model, attempt + 1)
                 yield Done(message=partial)

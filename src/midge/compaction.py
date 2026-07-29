@@ -24,7 +24,13 @@ from collections.abc import Callable, Sequence
 from midge.client import Client, Error, TextDelta
 from midge.hooks import BeforeCompact, CompactResult, Hooks
 from midge.logs import payload
-from midge.messages import Message, UserMessage, make_summary_message
+from midge.messages import (
+    AssistantMessage,
+    Message,
+    Usage,
+    UserMessage,
+    make_summary_message,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -80,13 +86,50 @@ def count_tokens(messages: Sequence[Message]) -> int:
     return len(payload.encode("utf-8")) // 4
 
 
+def measure_context(
+    history: Sequence[Message],
+    *,
+    count_tokens_fn: CountTokensFn = count_tokens,
+) -> int:
+    """Size the context, preferring the provider's own count over the estimator.
+
+    The last successful assistant turn carries `usage`, whose `input` counted
+    everything the provider was sent — system prompt included — and whose
+    `output` is that message. Anything appended since is estimated. So the bulk
+    of the number is exact and only the short tail is guesswork, where before
+    the whole thing was a bytes/4 proxy that the docstring above admits runs
+    high.
+
+    This matters because compaction destroys history: the trigger should not
+    fire on an inflated number.
+    """
+    anchor = _last_measured(history)
+    if anchor is None:
+        return count_tokens_fn(history)
+    idx, usage = anchor
+    return usage.input + usage.output + count_tokens_fn(history[idx + 1 :])
+
+
+def _last_measured(history: Sequence[Message]) -> tuple[int, Usage] | None:
+    for i in range(len(history) - 1, -1, -1):
+        m = history[i]
+        if not isinstance(m, AssistantMessage) or m.usage is None:
+            continue
+        # A failed or cancelled turn's counts describe a request that never
+        # completed, so sizing the context from them acts on a stale number.
+        if m.stop_reason in ("error", "aborted"):
+            continue
+        return i, m.usage
+    return None
+
+
 def needs_compaction(
     history: Sequence[Message],
     *,
     threshold_tokens: int,
     count_tokens_fn: CountTokensFn = count_tokens,
 ) -> bool:
-    return count_tokens_fn(history) > threshold_tokens
+    return measure_context(history, count_tokens_fn=count_tokens_fn) > threshold_tokens
 
 
 def find_cut_index(
@@ -106,6 +149,10 @@ def find_cut_index(
 
     If even the suffix from the latest UserMessage exceeds the budget, that
     suffix is kept anyway — we never drop the most recent turn.
+
+    Unlike `measure_context` this stays on the estimator: `usage` reports whole
+    prefixes, and choosing a cut needs per-suffix measurement it cannot give.
+    Over-estimating here is the safe direction — it keeps less, never more.
     """
     if not history:
         return 0

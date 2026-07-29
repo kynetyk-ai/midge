@@ -11,6 +11,7 @@ from midge.messages import (
     TextContent,
     ToolCall,
     ToolResultMessage,
+    Usage,
     UserMessage,
 )
 from midge.persistence import VERSION, Session, SessionHeader
@@ -258,3 +259,41 @@ def test_corrupt_line_that_is_not_last_still_raises(tmp_path: Path) -> None:
 
     with pytest.raises(json.JSONDecodeError):
         Session.load(p)
+
+
+def test_usage_round_trips_through_the_session_file(tmp_path: Path) -> None:
+    """Pydantic carries `usage` into the JSONL with no persistence changes —
+    the signal that `AssistantMessage` was the right seam for it."""
+    path = tmp_path / "s.jsonl"
+    with Session.new(path, model="m") as session:
+        session.append(
+            AssistantMessage(
+                content=[TextContent(text="hi")],
+                stop_reason="stop",
+                usage=Usage(input=1200, output=35, cached=1024),
+            )
+        )
+
+    assert '"usage"' in path.read_text(encoding="utf-8")
+
+    restored = Session.load(path).messages[0]
+    assert isinstance(restored, AssistantMessage)
+    assert restored.usage is not None
+    assert (restored.usage.input, restored.usage.output, restored.usage.cached) == (
+        1200,
+        35,
+        1024,
+    )
+
+
+def test_sessions_without_usage_still_load(tmp_path: Path) -> None:
+    # Files written before usage capture existed must keep working.
+    path = tmp_path / "old.jsonl"
+    path.write_text(
+        '{"type":"header","version":1,"created_at":"2026-01-01","model":"m"}\n'
+        '{"type":"message","data":{"role":"assistant","content":[],"stop_reason":"stop"}}\n',
+        encoding="utf-8",
+    )
+    restored = Session.load(path).messages[0]
+    assert isinstance(restored, AssistantMessage)
+    assert restored.usage is None

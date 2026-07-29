@@ -49,12 +49,27 @@ class UserMessage(BaseModel):
     timestamp: int = Field(default_factory=_now_ms)
 
 
+class Usage(BaseModel):
+    """Token counts as the provider reported them.
+
+    No `total` — it is `input + output`, and storing a derivable number invites
+    the two disagreeing. No cost, either: that needs a price table, which goes
+    stale silently. Cost is a fold over the session file with whatever prices
+    the reader trusts at the time they ask.
+    """
+
+    input: int = 0
+    output: int = 0
+    cached: int = 0
+
+
 class AssistantMessage(BaseModel):
     role: Literal["assistant"] = "assistant"
     content: list[AssistantContent] = Field(default_factory=list)
     model: str = ""
     stop_reason: StopReason | None = None
     error_message: str | None = None
+    usage: Usage | None = None
     extra: dict[str, Any] = Field(default_factory=dict)
     timestamp: int = Field(default_factory=_now_ms)
 
