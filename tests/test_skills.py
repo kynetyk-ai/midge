@@ -109,7 +109,7 @@ def test_missing_source_warns_and_continues(
         skills = load_skills([tmp_path / "nope", tmp_path])
 
     assert [s.name for s in skills] == ["deploy"]
-    assert any("not found" in r.getMessage() for r in caplog.records)
+    assert any("skill_source_not_found" in r.getMessage() for r in caplog.records)
 
 
 def test_explicit_markdown_file_source(tmp_path: Path) -> None:
@@ -125,7 +125,7 @@ def test_non_markdown_file_source_warns(
     junk.write_text("hi", encoding="utf-8")
     with caplog.at_level(logging.WARNING, logger="midge.skills"):
         assert load_skills([junk]) == []
-    assert any("not a markdown file" in r.getMessage() for r in caplog.records)
+    assert any("skill_source_not_markdown" in r.getMessage() for r in caplog.records)
 
 
 def test_broken_symlink_is_skipped(tmp_path: Path) -> None:
@@ -146,7 +146,7 @@ def test_symlinked_duplicate_dedupes_without_a_collision_warning(
         skills = load_skills([real, link])
 
     assert len(skills) == 1
-    assert not any("shadowed" in r.getMessage() for r in caplog.records)
+    assert not any("skill_name_shadowed" in r.getMessage() for r in caplog.records)
 
 
 def test_first_source_wins_a_name_collision(
@@ -159,7 +159,9 @@ def test_first_source_wins_a_name_collision(
         (skill,) = load_skills([tmp_path / "first", tmp_path / "second"])
 
     assert skill.path == (tmp_path / "first" / "deploy" / "SKILL.md").resolve()
-    warning = next(r.getMessage() for r in caplog.records if "shadowed" in r.getMessage())
+    warning = next(
+        r.getMessage() for r in caplog.records if "skill_name_shadowed" in r.getMessage()
+    )
     assert "second" in warning and "first" in warning
 
 
@@ -169,7 +171,7 @@ def test_missing_description_is_skipped(
     write_skill(tmp_path / "deploy", frontmatter="name: deploy")
     with caplog.at_level(logging.WARNING, logger="midge.skills"):
         assert load_skills([tmp_path]) == []
-    assert any("description is required" in r.getMessage() for r in caplog.records)
+    assert any("skill_description_missing" in r.getMessage() for r in caplog.records)
 
 
 def test_blank_description_is_skipped(tmp_path: Path) -> None:
@@ -183,7 +185,7 @@ def test_no_frontmatter_is_skipped(tmp_path: Path, caplog: pytest.LogCaptureFixt
     (d / "SKILL.md").write_text("# Just markdown\n", encoding="utf-8")
     with caplog.at_level(logging.WARNING, logger="midge.skills"):
         assert load_skills([tmp_path]) == []
-    assert any("frontmatter" in r.getMessage() for r in caplog.records)
+    assert any("skill_frontmatter_missing" in r.getMessage() for r in caplog.records)
 
 
 def test_malformed_yaml_is_skipped_and_siblings_still_load(
@@ -197,7 +199,7 @@ def test_malformed_yaml_is_skipped_and_siblings_still_load(
         skills = load_skills([tmp_path])
 
     assert [s.name for s in skills] == ["good"]
-    assert any("invalid frontmatter" in r.getMessage() for r in caplog.records)
+    assert any("skill_frontmatter_invalid" in r.getMessage() for r in caplog.records)
 
 
 def test_long_description_warns_but_loads(
@@ -206,17 +208,18 @@ def test_long_description_warns_but_loads(
     write_skill(tmp_path / "deploy", frontmatter="name: deploy\ndescription: " + "x" * 1100)
     with caplog.at_level(logging.WARNING, logger="midge.skills"):
         assert len(load_skills([tmp_path])) == 1
-    assert any("description is 1100 chars" in r.getMessage() for r in caplog.records)
+    assert any("skill_description_too_long" in r.getMessage() and "chars=1100" in r.getMessage()
+               for r in caplog.records)
 
 
 @pytest.mark.parametrize(
     ("name", "fragment"),
     [
-        ("x" * 70, "name is 70 chars"),
-        ("Deploy_Thing", "lowercase"),
-        ("-deploy", "hyphen"),
-        ("deploy-", "hyphen"),
-        ("deploy--now", "consecutive hyphens"),
+        ("x" * 70, "skill_name_too_long"),
+        ("Deploy_Thing", "skill_name_bad_charset"),
+        ("-deploy", "skill_name_edge_hyphen"),
+        ("deploy-", "skill_name_edge_hyphen"),
+        ("deploy--now", "skill_name_double_hyphen"),
     ],
 )
 def test_bad_names_warn_but_load(
@@ -237,7 +240,7 @@ def test_non_string_name_falls_back(tmp_path: Path, caplog: pytest.LogCaptureFix
         (skill,) = load_skills([tmp_path])
 
     assert skill.name == "toggles"
-    assert any("not a string" in r.getMessage() for r in caplog.records)
+    assert any("skill_name_not_a_string" in r.getMessage() for r in caplog.records)
 
 
 def test_unknown_frontmatter_keys_are_ignored(

@@ -25,6 +25,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from urllib.parse import urlsplit
 
 DEFAULT_PAYLOAD_CHARS = 2000
 _FORMAT = "%(asctime)s %(levelname)-7s %(name)s %(message)s"
@@ -87,6 +88,19 @@ class _Payload:
         return f"{text[:cap]}… (truncated, {len(text) - cap} chars)"
 
 
+def provider_host(base_url: str | None) -> str:
+    """The loggable part of a `base_url` — its hostname and nothing else.
+
+    A base_url can carry credentials in userinfo (`https://user:pw@host/v1`) or
+    a query string, so the whole string is never safe to log. Always route a
+    base_url through this; never log an api_key at all, at any level.
+    """
+    if not base_url:
+        return "default"
+    host = urlsplit(base_url).hostname
+    return host or "invalid"
+
+
 def payload(value: object) -> _Payload:
     """Wrap a DEBUG-only payload so it is truncated and rendered lazily.
 
@@ -122,4 +136,4 @@ def _level(var: str) -> tuple[int, str | None]:
     return resolved, None
 
 
-__all__ = ["DEFAULT_PAYLOAD_CHARS", "configure", "payload"]
+__all__ = ["DEFAULT_PAYLOAD_CHARS", "configure", "payload", "provider_host"]

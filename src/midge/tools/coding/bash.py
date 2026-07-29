@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import os
 import signal
 import tempfile
 
+from midge.logs import payload
 from midge.tools import tool
+
+_logger = logging.getLogger(__name__)
 
 _MAX_LINES = 2000
 _MAX_BYTES = 50_000
@@ -24,6 +28,7 @@ async def bash(command: str, timeout: int | None = None) -> str:
         timeout: max seconds to wait (default 60)
     """
     timeout_s = timeout if timeout is not None else _DEFAULT_TIMEOUT
+    _logger.debug("bash_exec timeout=%d command=%s", timeout_s, payload(command))
     proc = await asyncio.create_subprocess_exec(
         "/bin/bash",
         "-c",
@@ -36,9 +41,11 @@ async def bash(command: str, timeout: int | None = None) -> str:
     try:
         stdout_b, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
     except TimeoutError:
+        _logger.warning("bash_timeout pid=%d timeout=%d", proc.pid, timeout_s)
         await _terminate(proc)
         raise TimeoutError(f"Command timed out after {timeout_s}s") from None
     except asyncio.CancelledError:
+        _logger.info("bash_cancelled pid=%d", proc.pid)
         _kill_group(proc.pid, signal.SIGTERM)
         raise
 
@@ -58,9 +65,14 @@ async def _terminate(proc: asyncio.subprocess.Process) -> None:
     try:
         await asyncio.wait_for(proc.wait(), timeout=_KILL_GRACE_S)
     except TimeoutError:
+        _logger.warning("bash_sigkill_escalated pid=%d grace=%.1f", proc.pid, _KILL_GRACE_S)
         _kill_group(proc.pid, signal.SIGKILL)
-        with contextlib.suppress(TimeoutError):
+        try:
             await asyncio.wait_for(proc.wait(), timeout=_KILL_GRACE_S)
+        except TimeoutError:
+            # Survived SIGKILL — uninterruptible sleep, or the group leader is
+            # gone and the child reparented. Nothing left to try.
+            _logger.error("bash_unkillable pid=%d", proc.pid)
 
 
 def _format_output(output: str, returncode: int) -> str:
@@ -69,6 +81,11 @@ def _format_output(output: str, returncode: int) -> str:
         fd, spill_path = tempfile.mkstemp(prefix="pi_bash_", suffix=".log")
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(output)
+        # The model is told the path; the operator otherwise never learns a
+        # temp file was created, and nothing ever removes it.
+        _logger.warning(
+            "bash_output_spilled path=%s bytes=%d", spill_path, len(output.encode("utf-8"))
+        )
 
     lines = output.splitlines()
     truncated = False
@@ -89,6 +106,8 @@ def _format_output(output: str, returncode: int) -> str:
         parts.append(f"[output truncated; showing last {len(lines)} lines]")
     if parts:
         body = "\n".join(parts) + "\n" + body
+    if truncated:
+        _logger.warning("bash_output_truncated kept_lines=%d", len(lines))
     if returncode != 0:
         body += f"\n[exit code: {returncode}]"
     return body

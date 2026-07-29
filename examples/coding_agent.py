@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 import os
 import sys
 from collections.abc import Sequence
@@ -30,10 +31,15 @@ from midge.client import Client, TextDelta
 from midge.compaction import compact, needs_compaction
 from midge.extensions import BUILTIN_TOOL_DIRS, load_extensions
 from midge.logs import configure as configure_logging
+from midge.logs import provider_host
 from midge.messages import TextContent, UserMessage
 from midge.persistence import Session, TranscriptEntry, read_transcript
 from midge.session import export_html
 from midge.skills import default_skill_dirs, load_skills, skill_message, skills_prompt
+
+# Not `__name__`: run as `-m`, that is "__main__", which sits outside the
+# `midge` logger tree and so never picks up the configured level.
+_logger = logging.getLogger("midge.examples.coding_agent")
 
 BASE_SYSTEM_PROMPT = (
     "You are a coding assistant working in a local repository. "
@@ -149,9 +155,17 @@ async def amain(
     # than restored from the header, which froze at session creation.
     full_prompt = "\n\n".join(p for p in (durable, prompt_addition, catalogue) if p)
 
+    base_url = os.getenv("OPENAI_BASE_URL")
+    _logger.info(
+        "startup mode=headless model=%s provider=%s tools=%d skills=%d",
+        model,
+        provider_host(base_url),
+        len(registry),
+        len(skills),
+    )
     client = Client(
         api_key=os.getenv("OPENAI_API_KEY"),
-        base_url=os.getenv("OPENAI_BASE_URL"),
+        base_url=base_url,
     )
     agent = Agent(
         client=client,

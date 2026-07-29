@@ -188,7 +188,8 @@ async def test_raising_handler_is_logged_and_skipped(
         res = await hooks.emit(Context(messages=[]))
 
     assert isinstance(res, ContextResult)
-    assert any("/ext/bad.py" in rec.message for rec in caplog.records)
+    assert any("hook_handler_failed" in rec.message and "/ext/bad.py" in rec.message
+               for rec in caplog.records)
 
 
 async def test_error_mode_raise_propagates() -> None:

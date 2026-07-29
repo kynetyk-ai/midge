@@ -475,11 +475,14 @@ class Hooks:
         except Exception as e:
             if self.error_mode == "raise":
                 raise
+            # `error_mode="continue"` is the default, so this swallow is the
+            # normal path — without exc_info an extension author's traceback is
+            # gone for good.
             _logger.warning(
-                "Hook handler%s failed: %s: %s",
-                f" from {reg.source}" if reg.source else "",
+                "hook_handler_failed source=%s error=%s",
+                reg.source or "-",
                 type(e).__name__,
-                e,
+                exc_info=e,
             )
             return None
 

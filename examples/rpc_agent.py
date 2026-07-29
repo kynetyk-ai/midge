@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 import os
 import sys
 from pathlib import Path
@@ -26,7 +27,12 @@ from midge.agent import Agent
 from midge.client import Client
 from midge.extensions import BUILTIN_TOOL_DIRS, load_extensions
 from midge.logs import configure as configure_logging
+from midge.logs import provider_host
 from midge.rpc import RpcServer
+
+# Not `__name__`: run as `-m`, that is "__main__", which sits outside the
+# `midge` logger tree and so never picks up the configured level.
+_logger = logging.getLogger("midge.examples.rpc_agent")
 
 _READ_LIMIT = 16 * 1024 * 1024
 
@@ -58,13 +64,21 @@ async def amain(extension_dirs: list[Path]) -> int:
     if prompt_addition:
         full_prompt += "\n\n" + prompt_addition
 
+    base_url = os.getenv("OPENAI_BASE_URL")
+    model = os.getenv("MIDGE_MODEL", "gpt-4o-mini")
+    _logger.info(
+        "startup mode=rpc model=%s provider=%s tools=%d",
+        model,
+        provider_host(base_url),
+        len(registry),
+    )
     client = Client(
         api_key=os.getenv("OPENAI_API_KEY"),
-        base_url=os.getenv("OPENAI_BASE_URL"),
+        base_url=base_url,
     )
     agent = Agent(
         client=client,
-        model=os.getenv("MIDGE_MODEL", "gpt-4o-mini"),
+        model=model,
         tools=registry,
         system_prompt=full_prompt,
     )

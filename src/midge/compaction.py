@@ -18,11 +18,15 @@ thresholds with that in mind. Swap in `tiktoken` later if accuracy matters.
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable, Sequence
 
 from midge.client import Client, Error, TextDelta
 from midge.hooks import BeforeCompact, CompactResult, Hooks
+from midge.logs import payload
 from midge.messages import Message, UserMessage, make_summary_message
+
+_logger = logging.getLogger(__name__)
 
 SUMMARIZATION_SYSTEM_PROMPT = """You are a context summarization assistant. Your job is to produce a compact summary of a conversation history so the rest of the conversation can resume with full context but reduced token usage. Do not continue the conversation; only summarize.
 
@@ -191,21 +195,41 @@ async def compact(
         keep_recent_tokens=keep_recent_tokens,
         count_tokens_fn=count_tokens_fn,
     )
+    # Three different outcomes return None; without these the caller cannot
+    # tell "nothing to do" from "a hook said no".
     if cut_idx == 0:
+        _logger.debug("compaction_skipped reason=no_cut_point messages=%d", len(history))
         return None
 
     if hooks is not None:
         res = await hooks.emit(BeforeCompact(history=history, cut_index=cut_idx))
         if isinstance(res, CompactResult):
             if res.cancel:
+                _logger.info("compaction_cancelled_by_hook cut_index=%d", cut_idx)
                 return None
             if res.cut_index is not None:
                 # A hook index landing mid-sequence would put a tool result at
                 # the head of the new history, with nothing issuing its call.
                 cut_idx = _snap_to_user_boundary(history, res.cut_index)
+                if cut_idx != res.cut_index:
+                    _logger.info(
+                        "compaction_cut_snapped requested=%d used=%d", res.cut_index, cut_idx
+                    )
                 if cut_idx <= 0 or cut_idx >= len(history):
+                    _logger.info("compaction_skipped reason=hook_cut_out_of_range cut=%d", cut_idx)
                     return None
 
+    before_tokens = count_tokens_fn(history)
     summary_text = await summarize(client, model, history[:cut_idx])
     new_history: list[Message] = [make_summary_message(summary_text), *history[cut_idx:]]
+    _logger.info(
+        "compaction_applied cut_index=%d messages=%d->%d tokens=%d->%d summary_chars=%d",
+        cut_idx,
+        len(history),
+        len(new_history),
+        before_tokens,
+        count_tokens_fn(new_history),
+        len(summary_text),
+    )
+    _logger.debug("compaction_summary text=%s", payload(summary_text))
     return new_history, summary_text, cut_idx

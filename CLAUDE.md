@@ -45,6 +45,21 @@ extensions.
 - WASM / native deps
 - LangChain / LiteLLM (see above)
 
+## Logging
+
+`src/midge/logs.py` owns configuration; every other module only ever acquires a logger.
+
+- `_logger = logging.getLogger(__name__)` at module top. Never `print()`, never a facade, adapter, or wrapper — `getLogger(__name__)` is what makes `%(name)s`, per-module levels, and `caplog` work, and all three break the moment something is put in front of it.
+- **Only entrypoints call `configure()`.** Library code never configures logging, because the right handler depends on the mode and only the entrypoint knows it. Stdout is the protocol in RPC mode and the transcript in headless mode, so nothing may write to it. In the TUI, `logging.StreamHandler` binds `sys.stderr` at construction and so writes straight past Textual's `redirect_stderr` and corrupts the display — use `tui_log_handler()`.
+- Lazy `%s` arguments, never an f-string in the format string. Enforced by ruff `G`/`LOG`.
+- **The first token is a `snake_case` event identity, then `key=%s` pairs.** `_logger.warning("skill_description_missing path=%s", path)`, not `"Skipping skill %s: description is required"`. Errors have to be countable with `grep -c`, not a regex over English.
+- Levels: **ERROR** the operation failed · **WARNING** degraded but continuing · **INFO** the operational narrative · **DEBUG** why it did that.
+- Every `except` that swallows logs, with `exc_info=e` (or `.exception()`) whenever the traceback would otherwise be lost. A bare `type(e).__name__` is rarely enough to act on.
+- Arguments are evaluated whether or not the level is on, so keep them O(1). Anything expensive goes through `logs.payload()`, which defers the work into `__str__`.
+- **Payloads only at DEBUG, only via `logs.payload()`** — it truncates at `MIDGE_LOG_PAYLOAD_CHARS` (default 2000). Request bodies, tool arguments and results qualify.
+- **Credentials are not payload and are excluded at every level.** An `api_key` is never logged — not a prefix, not a length. A `base_url` goes through `logs.provider_host()`, which keeps the hostname and drops userinfo and query string.
+- No logging in pure transforms (`session.py`, `tools/__init__.py`) — their failures already raise with real tracebacks.
+
 ## Layout
 
 ```
@@ -52,6 +67,7 @@ src/midge/            # the harness package
 src/midge/tools/      # @tool decorator + built-in coding tools
 src/midge/extensions.py  # the loader for tool directories
 src/midge/skills.py   # SKILL.md discovery + the system-prompt catalogue
+src/midge/logs.py     # logging configuration (entrypoints only)
 src/midge/hooks.py    # lifecycle events + handler registry
 tests/              # pytest tests
 examples/           # entrypoints

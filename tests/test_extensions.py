@@ -109,7 +109,7 @@ def test_duplicate_tool_name_first_wins(
     t = registry.get("shared")
     assert isinstance(t, Tool)
     assert asyncio.run(t.invoke({})) == "first"
-    assert any("shadowed" in rec.message for rec in caplog.records)
+    assert any("tool_name_shadowed" in rec.message for rec in caplog.records)
 
 
 def test_missing_directory_warns(
@@ -120,7 +120,7 @@ def test_missing_directory_warns(
         registry, _ = load_extensions([nonexistent])
 
     assert len(registry) == 0
-    assert any("not found" in rec.message for rec in caplog.records)
+    assert any("extension_source_not_found" in rec.message for rec in caplog.records)
 
 
 def test_single_file_path_works(tmp_path: Path) -> None:
@@ -151,7 +151,7 @@ def test_failing_import_warns_and_continues(
         registry, _ = load_extensions([tmp_path])
 
     assert "good" in registry
-    assert any("Failed to load extension" in rec.message for rec in caplog.records)
+    assert any("extension_import_failed" in rec.message for rec in caplog.records)
 
 
 def test_two_dirs_compose(tmp_path: Path) -> None:

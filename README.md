@@ -159,6 +159,7 @@ src/midge/
 ├── session.py         # single-file HTML transcript exporter
 ├── rpc.py             # JSON-on-stdio RPC server
 ├── extensions.py      # load_extensions(dirs) → (ToolRegistry, prompt_addition)
+├── logs.py            # logging config: MIDGE_LOG_LEVEL, MIDGE_LOG_FILE
 ├── skills.py          # SKILL.md discovery + <available_skills> catalogue
 ├── hooks.py           # lifecycle events + handler registry
 ├── tui/app.py         # Textual TUI

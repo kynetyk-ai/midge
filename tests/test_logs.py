@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from midge.logs import DEFAULT_PAYLOAD_CHARS, configure, payload
+from midge.logs import DEFAULT_PAYLOAD_CHARS, configure, payload, provider_host
 
 _VARS = (
     "MIDGE_LOG_LEVEL",
@@ -193,3 +193,48 @@ def test_payload_is_not_rendered_when_the_level_is_off(
     configure(_Formatting())
     logging.getLogger("midge.client").debug("request body=%s", payload(_Tracking()))
     assert rendered is True
+
+
+def test_provider_host_defaults_when_unset() -> None:
+    assert provider_host(None) == "default"
+    assert provider_host("") == "default"
+
+
+def test_provider_host_strips_everything_but_the_hostname() -> None:
+    assert provider_host("https://api.openai.com/v1") == "api.openai.com"
+    assert provider_host("http://127.0.0.1:1234/v1") == "127.0.0.1"
+
+
+def test_provider_host_drops_credentials_in_userinfo() -> None:
+    # A base_url may carry a secret; only the hostname is ever loggable.
+    rendered = provider_host("https://user:hunter2@proxy.internal:8443/v1?token=abc")
+    assert rendered == "proxy.internal"
+    assert "hunter2" not in rendered
+    assert "abc" not in rendered
+
+
+def test_provider_host_marks_unparseable_input() -> None:
+    assert provider_host("::::") == "invalid"
+
+
+def test_tui_handler_is_never_an_eagerly_bound_stream(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A StreamHandler built before App.run() writes past Textual's
+    redirect_stderr and corrupts the display. TextualHandler resolves the
+    target per record instead."""
+    from textual.logging import TextualHandler
+
+    from midge.tui import tui_log_handler
+
+    monkeypatch.delenv("MIDGE_LOG_FILE", raising=False)
+    handler = tui_log_handler()
+
+    assert isinstance(handler, TextualHandler)
+    assert not isinstance(handler, logging.StreamHandler)
+
+
+def test_tui_handler_defers_to_log_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from midge.tui import tui_log_handler
+
+    monkeypatch.setenv("MIDGE_LOG_FILE", str(tmp_path / "midge.log"))
+    # None hands the case back to configure(), which opens the file itself.
+    assert tui_log_handler() is None

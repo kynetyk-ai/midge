@@ -22,6 +22,7 @@ The codebase optimizes for clarity over cleverness. A few load-bearing conventio
 - Comment the **why**, not the **what** — well-named identifiers handle the latter.
 - No backwards-compatibility scaffolding for code that does not yet exist.
 - Keep abstractions cheap.
+- Log through `logging.getLogger(__name__)`, never `print()`. Message format is a `snake_case` event name then `key=%s` pairs, so errors stay countable. Only entrypoints configure logging; see the Logging section of [`CLAUDE.md`](./CLAUDE.md).
 
 [`CLAUDE.md`](./CLAUDE.md) captures more of the project's "feel" and is worth a skim before a substantive change.
 

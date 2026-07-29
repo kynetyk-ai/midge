@@ -10,6 +10,7 @@ from typing import Any, Literal
 
 import openai
 
+from midge.logs import payload
 from midge.messages import (
     AssistantMessage,
     Message,
@@ -179,6 +180,16 @@ class Client:
         if oai_tools:
             create_kwargs["tools"] = oai_tools
 
+        _logger.debug(
+            # Every argument here is O(1) — `payload` defers the expensive part,
+            # but a plain argument is evaluated whether or not DEBUG is on.
+            "provider_request model=%s messages=%d tools=%d body=%s",
+            model,
+            len(oai_messages),
+            len(oai_tools or ()),
+            payload(create_kwargs),
+        )
+
         attempt = 0
         while True:
             # Retries only happen before any content event escaped, and each
@@ -276,10 +287,23 @@ class Client:
                     )
 
                 partial.stop_reason = _map_finish_reason(finish_reason)
+                _logger.debug(
+                    "provider_response model=%s finish=%s stop=%s blocks=%d attempt=%d",
+                    model,
+                    finish_reason,
+                    partial.stop_reason,
+                    len(partial.content),
+                    attempt,
+                )
+                if attempt:
+                    _logger.info("provider_recovered model=%s attempts=%d", model, attempt + 1)
                 yield Done(message=partial)
                 return
 
             except asyncio.CancelledError:
+                _logger.info(
+                    "provider_stream_cancelled model=%s blocks=%d", model, len(partial.content)
+                )
                 partial.stop_reason = "aborted"
                 partial.error_message = "cancelled"
                 yield Error(message=partial)
