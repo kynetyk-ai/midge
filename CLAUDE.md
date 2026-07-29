@@ -22,10 +22,10 @@ The user does not work in TypeScript and wants a codebase they can read, modify,
 |---|---|---|
 | Built-in LLM-callable tools (`read`, `bash`, …) | `src/midge/tools/coding/` | `packages/coding-agent/src/core/tools/` |
 | Loading user `.py` files that register tools | `src/midge/extensions.py`, `--extension-dir` | `src/core/extensions/` |
-| `SKILL.md` — the [Agent Skills standard](https://agentskills.io/specification) | **no equivalent** | `src/core/skills.ts` |
+| `SKILL.md` — the [Agent Skills standard](https://agentskills.io/specification) | `src/midge/skills.py`, `--skill-dir` | `src/core/skills.ts` |
 
 The word **skill** means the `SKILL.md` standard and nothing else. Do not use it for tools or
-extensions. midge has no skills support today; the name is kept free in case it is added.
+extensions.
 
 ## Tooling and conventions
 
@@ -51,6 +51,7 @@ extensions. midge has no skills support today; the name is kept free in case it 
 src/midge/            # the harness package
 src/midge/tools/      # @tool decorator + built-in coding tools
 src/midge/extensions.py  # the loader for tool directories
+src/midge/skills.py   # SKILL.md discovery + the system-prompt catalogue
 src/midge/hooks.py    # lifecycle events + handler registry
 tests/              # pytest tests
 examples/           # entrypoints

@@ -1,8 +1,8 @@
 """`midge` CLI: launches the interactive TUI.
 
 Usage:
-    midge [--extension-dir DIR] [--session PATH] [--compaction-threshold N] \\
-       [--compaction-keep-recent N]
+    midge [--extension-dir DIR] [--skill-dir DIR] [--session PATH] \\
+       [--compaction-threshold N] [--compaction-keep-recent N]
 
 Env: OPENAI_API_KEY, OPENAI_BASE_URL, MIDGE_MODEL (default: gpt-4o-mini).
 """
@@ -19,6 +19,7 @@ from midge.client import Client
 from midge.extensions import BUILTIN_TOOL_DIRS, load_extensions
 from midge.hooks import Hooks, SessionEnd, SessionStart
 from midge.persistence import Session
+from midge.skills import default_skill_dirs, load_skills, skills_prompt
 from midge.tui import run_tui
 
 BASE_SYSTEM_PROMPT = (
@@ -37,6 +38,17 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         default=[],
         metavar="DIR",
         help="Directory of extension .py files to load (repeatable).",
+    )
+    parser.add_argument(
+        "--skill-dir",
+        action="append",
+        type=Path,
+        default=[],
+        metavar="DIR",
+        help=(
+            "Directory of SKILL.md skills to load (repeatable). Searched before "
+            "the project and user defaults."
+        ),
     )
     parser.add_argument(
         "--session",
@@ -70,24 +82,29 @@ def main(argv: list[str] | None = None) -> None:
     registry, prompt_addition = load_extensions(
         [*BUILTIN_TOOL_DIRS, *args.extension_dir], hooks=hooks
     )
+    # Explicit paths outrank the defaults: naming a directory on the command
+    # line is a deliberate override. Note this is the opposite nesting from the
+    # extension dirs above, where the built-ins must not be shadowed.
+    skills = load_skills([*args.skill_dir, *default_skill_dirs()])
+    catalogue = skills_prompt(skills) if "read" in registry else ""
 
     session: Session | None = None
+    model = os.getenv("MIDGE_MODEL", "gpt-4o-mini")
+    durable = BASE_SYSTEM_PROMPT
+
     if args.session is not None:
         if args.session.exists():
             session = Session.load(args.session)
             model = session.header.model
-            full_prompt = session.header.system_prompt or BASE_SYSTEM_PROMPT
+            durable = session.header.system_prompt or BASE_SYSTEM_PROMPT
         else:
-            full_prompt = BASE_SYSTEM_PROMPT
-            if prompt_addition:
-                full_prompt += "\n\n" + prompt_addition
-            model = os.getenv("MIDGE_MODEL", "gpt-4o-mini")
-            session = Session.new(args.session, model=model, system_prompt=full_prompt)
-    else:
-        full_prompt = BASE_SYSTEM_PROMPT
-        if prompt_addition:
-            full_prompt += "\n\n" + prompt_addition
-        model = os.getenv("MIDGE_MODEL", "gpt-4o-mini")
+            session = Session.new(args.session, model=model, system_prompt=durable)
+
+    # The header records the agent's identity. Which tools and skills exist is a
+    # fact about this machine right now, so it is recomposed on every start
+    # rather than restored — otherwise a skill added after the session began is
+    # invisible, and its absolute paths could point at another machine entirely.
+    full_prompt = "\n\n".join(p for p in (durable, prompt_addition, catalogue) if p)
 
     client = Client(
         api_key=os.getenv("OPENAI_API_KEY"),
