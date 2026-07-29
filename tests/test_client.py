@@ -497,3 +497,148 @@ async def test_invalid_tool_call_arguments_become_empty_dict() -> None:
     tc = done.message.content[0]
     assert isinstance(tc, ToolCall)
     assert tc.arguments == {}
+
+
+# ---- token usage ----
+
+
+def _usage_chunk(*, prompt: int, completion: int, cached: int = 0) -> Any:
+    """The provider's final chunk: usage present, `choices` empty."""
+    return SimpleNamespace(
+        choices=[],
+        usage=SimpleNamespace(
+            prompt_tokens=prompt,
+            completion_tokens=completion,
+            prompt_tokens_details=SimpleNamespace(cached_tokens=cached),
+        ),
+    )
+
+
+async def test_usage_is_captured_from_the_final_chunk() -> None:
+    client = Client()
+    _install_fake_stream(
+        client,
+        _FakeStream(
+            [
+                _chunk(content="hi"),
+                _chunk(finish_reason="stop"),
+                _usage_chunk(prompt=1200, completion=35, cached=1024),
+            ]
+        ),
+    )
+
+    events = await _collect(client.stream(messages=[UserMessage(content="hi")], model="m"))
+    done = events[-1]
+    assert isinstance(done, Done)
+    assert done.message.usage is not None
+    assert done.message.usage.input == 1200
+    assert done.message.usage.output == 35
+    assert done.message.usage.cached == 1024
+
+
+async def test_usage_chunk_does_not_disturb_content() -> None:
+    client = Client()
+    _install_fake_stream(
+        client,
+        _FakeStream(
+            [
+                _chunk(content="a"),
+                _usage_chunk(prompt=5, completion=1),
+                _chunk(content="b"),
+                _chunk(finish_reason="stop"),
+            ]
+        ),
+    )
+
+    events = await _collect(client.stream(messages=[UserMessage(content="hi")], model="m"))
+    done = events[-1]
+    assert isinstance(done, Done)
+    assert isinstance(done.message.content[0], TextContent)
+    assert done.message.content[0].text == "ab"
+
+
+async def test_stream_options_requested_by_default() -> None:
+    client = Client()
+    captured: list[dict[str, Any]] = []
+
+    async def create(**kwargs: Any) -> _FakeStream:
+        captured.append(kwargs)
+        return _FakeStream([_chunk(finish_reason="stop")])
+
+    client._client = SimpleNamespace(  # type: ignore[assignment]
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+    )
+    await _collect(client.stream(messages=[UserMessage(content="hi")], model="m"))
+
+    assert captured[0]["stream_options"] == {"include_usage": True}
+
+
+async def test_stream_options_can_be_switched_off() -> None:
+    # Some OpenAI-compatible servers 400 on stream_options, which would fail
+    # the whole turn.
+    client = Client(include_usage=False)
+    captured: list[dict[str, Any]] = []
+
+    async def create(**kwargs: Any) -> _FakeStream:
+        captured.append(kwargs)
+        return _FakeStream([_chunk(finish_reason="stop")])
+
+    client._client = SimpleNamespace(  # type: ignore[assignment]
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+    )
+    await _collect(client.stream(messages=[UserMessage(content="hi")], model="m"))
+
+    assert "stream_options" not in captured[0]
+
+
+async def test_include_usage_env_opt_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MIDGE_INCLUDE_USAGE", "0")
+    assert Client()._include_usage is False
+    monkeypatch.setenv("MIDGE_INCLUDE_USAGE", "1")
+    assert Client()._include_usage is True
+
+
+async def test_usage_absent_when_the_server_omits_it() -> None:
+    client = Client()
+    _install_fake_stream(
+        client, _FakeStream([_chunk(content="hi"), _chunk(finish_reason="stop")])
+    )
+
+    events = await _collect(client.stream(messages=[UserMessage(content="hi")], model="m"))
+    done = events[-1]
+    assert isinstance(done, Done)
+    assert done.message.usage is None
+
+
+class _FailingStream:
+    """Emits chunks, then raises — a provider dying after reporting usage."""
+
+    def __init__(self, chunks: list[Any], error: BaseException) -> None:
+        self._chunks = list(chunks)
+        self._error = error
+
+    def __aiter__(self) -> _FailingStream:
+        return self
+
+    async def __anext__(self) -> Any:
+        if self._chunks:
+            return self._chunks.pop(0)
+        raise self._error
+
+
+async def test_usage_from_a_failed_attempt_does_not_survive_a_retry() -> None:
+    # Each attempt resets per-attempt state; usage counted against a request
+    # that then failed must not be attributed to the one that succeeded.
+    client = Client(retry_base_delay=0)
+    _install_attempts(
+        client,
+        [
+            _FailingStream([_usage_chunk(prompt=999, completion=999)], _status_error(429)),
+            _FakeStream([_chunk(content="ok"), _chunk(finish_reason="stop")]),
+        ],
+    )
+
+    events = await _collect(client.stream(messages=[UserMessage(content="hi")], model="m"))
+    done = events[-1]
+    assert isinstance(done, Done)
+    assert done.message.usage is None
