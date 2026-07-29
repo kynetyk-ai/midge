@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import io
+import os
 import sys
 from collections.abc import Iterator
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -105,3 +109,126 @@ def test_interleaving_keeps_the_protocol_clean() -> None:
         assert s.out.getvalue() == b'{"seq":1}\n{"seq":2}\n'
     finally:
         s.restore()
+
+
+# ---- backpressure ----
+
+
+async def test_a_stalled_writer_does_not_stop_the_dispatch_loop() -> None:
+    """The property that matters: a client that stops reading must not cost
+    the server its ability to be told to stop.
+
+    With a blocking writer the event loop itself stalls, so `abort` cannot be
+    read and the SIGTERM handler cannot run — only SIGKILL is left.
+    """
+    from midge.agent import Agent
+    from midge.client import Client
+    from midge.rpc import RpcServer
+
+    released = asyncio.Event()
+    written: list[bytes] = []
+
+    async def stalled_write(data: bytes) -> None:
+        written.append(data)
+        await released.wait()
+
+    inbox: asyncio.Queue[bytes] = asyncio.Queue()
+
+    async def read_line() -> bytes:
+        return await inbox.get()
+
+    client = Client()
+    gate = asyncio.Event()
+
+    class _Stream:
+        def __aiter__(self) -> _Stream:
+            return self
+
+        async def __anext__(self) -> object:
+            await gate.wait()
+            raise StopAsyncIteration
+
+    async def create(**kwargs: object) -> _Stream:
+        return _Stream()
+
+    client._client = SimpleNamespace(  # type: ignore[assignment]
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+    )
+    agent = Agent(client=client, model="m")
+    server = RpcServer(agent)
+    task = asyncio.create_task(server.serve(read_line=read_line, write=stalled_write))
+
+    inbox.put_nowait(b'{"id":"p","type":"prompt","message":"hi"}\n')
+    await asyncio.sleep(0.05)
+    run = server._current_run
+    assert run is not None and not run.done()
+
+    # The writer is stuck on the very first frame.
+    assert len(written) == 1
+
+    # Abort must still be dispatched and must still cancel the run, even though
+    # its own response cannot be written yet.
+    inbox.put_nowait(b'{"id":"a","type":"abort"}\n')
+    for _ in range(50):
+        await asyncio.sleep(0.01)
+        if run.cancelled() or run.done():
+            break
+    assert run.cancelled() or run.done(), "abort never reached the run"
+
+    released.set()
+    gate.set()
+    inbox.put_nowait(b"")
+    # Bounded so a regression fails the test rather than hanging the suite.
+    await asyncio.wait_for(task, timeout=5)
+
+
+def test_writer_falls_back_to_blocking_for_a_regular_file(tmp_path: Path) -> None:
+    """`midge --rpc > out.jsonl`: asyncio refuses to wrap a regular file, and a
+    file has no reader to stall behind, so blocking writes are correct there."""
+    from midge.rpc import _stdout_writer
+
+    async def go() -> None:
+        path = tmp_path / "out.jsonl"
+        with path.open("wb") as fh:
+            write, close = await _stdout_writer(asyncio.get_running_loop(), fh)
+            await write(b'{"type":"response"}\n')
+            close()
+        assert path.read_bytes() == b'{"type":"response"}\n'
+
+    asyncio.run(go())
+
+
+def test_writer_uses_a_draining_transport_for_a_pipe() -> None:
+    """The pipe case is the one that used to wedge the loop."""
+    from midge.rpc import _stdout_writer
+
+    async def go() -> None:
+        r_fd, w_fd = os.pipe()
+        reader = os.fdopen(r_fd, "rb")
+        with os.fdopen(w_fd, "wb", buffering=0) as w:
+            write, close = await _stdout_writer(asyncio.get_running_loop(), w)
+
+            ticks = 0
+
+            async def heartbeat() -> None:
+                nonlocal ticks
+                while True:
+                    await asyncio.sleep(0.005)
+                    ticks += 1
+
+            beat = asyncio.ensure_future(heartbeat())
+            # More than a pipe buffer, so a blocking writer would wedge here.
+            big = asyncio.ensure_future(write(b"x" * 300_000))
+            await asyncio.sleep(0.1)
+
+            assert ticks > 0, "the event loop stopped scheduling while writing"
+            assert not big.done(), "expected the write to be suspended, not done"
+
+            # Draining lets it finish.
+            await asyncio.get_running_loop().run_in_executor(None, reader.read, 300_000)
+            await asyncio.wait_for(big, timeout=5)
+            beat.cancel()
+            close()
+        reader.close()
+
+    asyncio.run(go())

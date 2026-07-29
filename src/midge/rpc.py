@@ -59,6 +59,11 @@ from midge.session import export_html
 _logger = logging.getLogger(__name__)
 
 READ_LIMIT = 16 * 1024 * 1024
+# Roughly ten ordinary answers' worth of frames — deep enough that a client
+# pausing to render or collect garbage never stalls anything, shallow enough
+# that a client which has died applies backpressure instead of exhausting memory.
+OUTBOX_FRAMES = 4096
+FLUSH_TIMEOUT = 5.0
 
 WriteFn = Callable[[bytes], Awaitable[None]]
 ReadLineFn = Callable[[], Awaitable[bytes]]
@@ -182,11 +187,15 @@ class RpcServer:
         self.steering = agent.steering if agent.steering is not None else SteeringQueue()
         agent.steering = self.steering
         self._current_run: asyncio.Task[None] | None = None
-        self._write_lock = asyncio.Lock()
+        # Frames are queued, not written inline. The dispatch loop must keep
+        # reading while a slow client is being written to, or `abort` — the one
+        # command that can stop a runaway — cannot be delivered.
+        self._outbox: asyncio.Queue[bytes] = asyncio.Queue(maxsize=OUTBOX_FRAMES)
         self._write: WriteFn | None = None
 
     async def serve(self, *, read_line: ReadLineFn, write: WriteFn) -> None:
         self._write = write
+        pump = asyncio.ensure_future(self._pump())
         try:
             while True:
                 line = await read_line()
@@ -215,6 +224,12 @@ class RpcServer:
                 run.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await run
+            # Give whatever is queued a chance to land before the pipe closes.
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self._outbox.join(), timeout=FLUSH_TIMEOUT)
+            pump.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await pump
 
     async def _dispatch(self, cmd: dict[str, Any]) -> None:
         cmd_id_raw = cmd.get("id")
@@ -590,11 +605,29 @@ class RpcServer:
             out["data"] = data
         await self._emit(out)
 
+    async def _pump(self) -> None:
+        """Single writer. Being the only one is what keeps frames whole."""
+        assert self._write is not None, "_pump started outside serve()"
+        while True:
+            line = await self._outbox.get()
+            try:
+                await self._write(line)
+            except Exception:
+                _logger.exception("rpc_write_failed")
+            finally:
+                self._outbox.task_done()
+
     async def _emit(self, obj: dict[str, Any]) -> None:
         assert self._write is not None, "_emit called outside serve()"
         line = (json.dumps(obj, ensure_ascii=False) + "\n").encode("utf-8")
-        async with self._write_lock:
-            await self._write(line)
+        if self._outbox.full():
+            # The queue is deep enough that reaching this means the client has
+            # genuinely stopped, not paused. Stalling the producer is then the
+            # right answer — better than dropping frames or growing without
+            # bound — and it is the agent, not the dispatch loop, that produces
+            # nearly all of them.
+            _logger.warning("rpc_outbox_full frames=%d", self._outbox.qsize())
+        await self._outbox.put(line)
 
 
 async def serve_stdio(server: RpcServer) -> None:
@@ -614,9 +647,7 @@ async def serve_stdio(server: RpcServer) -> None:
     async def read_line() -> bytes:
         return await reader.readline()
 
-    async def write(data: bytes) -> None:
-        stdout.write(data)
-        stdout.flush()
+    write, close_writer = await _stdout_writer(loop, stdout)
 
     serving = asyncio.ensure_future(server.serve(read_line=read_line, write=write))
 
@@ -638,3 +669,46 @@ async def serve_stdio(server: RpcServer) -> None:
         for sig in installed:
             with contextlib.suppress(NotImplementedError):
                 loop.remove_signal_handler(sig)
+        close_writer()
+
+
+async def _stdout_writer(
+    loop: asyncio.AbstractEventLoop, stdout: BinaryIO
+) -> tuple[WriteFn, Callable[[], None]]:
+    """A writer that suspends rather than blocks when the client stops reading.
+
+    A pipe holds ~64 KiB, and one ordinary assistant answer is ~20 KiB of frames
+    because every token is its own record — so three answers fill it. Writing
+    with a plain `file.write` then blocks the *event loop*, which stops the
+    agent, every tool, and the stdin reader together. `abort` cannot get through
+    because it arrives on the blocked reader, and the SIGTERM handler cannot run
+    because it is queued on the blocked loop. Only SIGKILL is left.
+
+    `drain()` suspends the calling coroutine instead, so the loop keeps
+    scheduling: commands are still dispatched and an abort still lands. The
+    agent throttles to the speed of the client, which is the correct answer —
+    pausing beats both blocking and buffering without bound.
+    """
+    try:
+        transport, protocol = await loop.connect_write_pipe(
+            lambda: asyncio.streams.FlowControlMixin(loop), stdout
+        )
+    except ValueError:
+        # Not a pipe, socket or tty — `midge --rpc > out.jsonl`. A regular file
+        # has no reader to stall behind, so blocking writes are fine here and
+        # asyncio refuses to wrap it anyway.
+        _logger.debug("rpc_writer mode=blocking reason=not_a_pipe")
+
+        async def write_blocking(data: bytes) -> None:
+            stdout.write(data)
+            stdout.flush()
+
+        return write_blocking, lambda: None
+
+    writer = asyncio.StreamWriter(transport, protocol, None, loop)
+
+    async def write(data: bytes) -> None:
+        writer.write(data)
+        await writer.drain()
+
+    return write, transport.close
