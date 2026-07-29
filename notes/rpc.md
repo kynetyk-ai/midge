@@ -208,7 +208,8 @@ to. No UI concepts in the response.
 
 **What is listed.** The server has an opinion about what is a user-facing
 action: `abort`, `compact`, `clear_context`, `new_session`, `export_html`,
-`set_model`, `set_system_prompt`, plus every loaded skill as `skill:<name>`.
+`set_model`, `set_system_prompt`, `reload`, plus every loaded skill as
+`skill:<name>`.
 Out: `prompt`, `steer` and `follow_up`, which *are* the interaction rather than
 menu items, and the `get_*` family, which a client reads to render itself.
 
@@ -249,3 +250,73 @@ has a text-expansion path where that makes sense; midge does not.
   - Drive `serve()` with a queue-backed fake stdin and a buffer-backed fake stdout, asserting on parsed frames. Keeping the transport injectable is what lets the whole protocol be tested in-process.
 
 **Keep the event-mapping seam.** pi pipes its internal session events straight to stdout, which is free for pi but couples every client to its internal types — that is how TUI-only events ended up on its wire. Add new events through `event_to_wire`, and keep the explicit `tool_call_*` (the model is requesting) vs `tool_execution_*` / `tool_result` (we ran it) split; in pi that distinction is implied by ordering inside a nested payload.
+
+## `reload` (#46)
+
+Skills and extensions were discovered once, at startup, so a new `SKILL.md` or an
+edited extension needed a restart to take effect. That is a bad loop for
+authoring and a worse one under RPC, where the process is long-lived by design.
+`pi` has `/reload` for the same reason (`slash-commands.ts:40`).
+
+**Hooks are not a third target.** There is no `--hook-dir` and no hook file
+format; hooks reach the registry only through `load_extensions`, which calls each
+module's `register_hooks`. Reloading extensions *is* reloading hooks.
+
+### Both targets are a discard and re-run
+
+Nothing incremental, nothing source-scoped — the loaders already have the shapes
+that make the blunt version correct:
+
+- **Tools are returned.** `load_extensions` builds a *fresh* `ToolRegistry`, so
+  assigning it drops the old one whole. No removal logic, no residue.
+- **Hooks are mutated** into a shared `Hooks` rather than returned, so they would
+  double-register. `Hooks.clear()` handles it, and it awaits every `add_cleanup`
+  handler first — exactly what unloading should do.
+- **Sub-agents rebind for free.** Re-import produces new `SubagentTool`
+  instances, so `bind_subagents` on the new registry binds them. The model comes
+  off the agent, so a `set_model` since startup is respected rather than reverted.
+
+A source-scoped hook removal was designed and dropped. It would do identical work
+today, because `load_extensions` is the only thing that registers into the
+server's `Hooks`. `_Registration.source` is already stamped if that ever stops
+being true — that is the upgrade path, and it is not needed yet.
+
+### The server stores source lists, not a recipe
+
+`extension_sources` and `skill_sources` are the exact lists the entrypoint passed
+to the loaders. Reload repeats that call. Reconstructing them server-side would
+mean knowing which sources are built-in, and an embedder that handed the agent a
+deliberately restricted registry would find reload silently widening it to every
+built-in tool. `None` means the entrypoint did not wire that target up, which is
+not an empty list: naming an unwired target is an error, while the bare form
+reloads whatever *is* wired, so the convenient spelling always works.
+
+### Refused mid-turn
+
+Swapping the tool registry under a running turn breaks tool-call/result pairing.
+Refusing also disposes of the one genuinely hard case: a child registry bound to
+the old `SubagentRuntime` can only exist inside an in-flight sub-agent, which can
+only exist inside a turn.
+
+### The one coupling: the read gate
+
+The skills catalogue tells the model to open a `SKILL.md`, so it is gated on a
+`read` tool — without one it is an instruction to do the impossible. That gate is
+*derived* in `_generated_prompt()` rather than stored, so it cannot fall out of
+date. The consequence is that reloading **extensions** can add or remove the
+skills catalogue with no skill having changed, which is the only place the two
+targets are not independent.
+
+`_base_prompt` is untouched, so a prompt set via `set_system_prompt` survives.
+
+### Not on the wire
+
+Per-file errors. Both loaders already skip a bad file, log it, and carry on;
+reporting them here means changing both return types to serve a client that does
+not exist. The response carries the resulting `tools` and `skills` counts.
+
+### Still deferred
+
+A re-imported extension gets a fresh module under a new synthetic name, so the
+old module's state is not reclaimed. `notes/extensions.md` describes extensions
+as stateless; reload is what makes that assumption matter.

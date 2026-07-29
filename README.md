@@ -64,7 +64,7 @@ echo '{"id":"1","type":"prompt","message":"say hi"}' | \
 poetry run python -m examples.rpc_agent
 ```
 
-Newline-delimited JSON. `get_commands` enumerates everything invocable — built-in commands and `SKILL.md` skills alike — each with a JSON Schema for its arguments, so a client can build a command palette without hardcoding the protocol. Protocol details in [`notes/rpc.md`](./notes/rpc.md).
+Newline-delimited JSON. `get_commands` enumerates everything invocable — built-in commands and `SKILL.md` skills alike — each with a JSON Schema for its arguments, so a client can build a command palette without hardcoding the protocol. `reload` re-scans skills and extensions from disk, so a new `SKILL.md` or an edited tool takes effect without restarting. Protocol details in [`notes/rpc.md`](./notes/rpc.md).
 
 ### Second domain (notes / personal knowledge)
 
