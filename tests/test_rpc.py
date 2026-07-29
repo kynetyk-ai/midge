@@ -10,7 +10,9 @@ from typing import Any
 from midge import rpc
 from midge.agent import Agent
 from midge.client import Client
-from midge.messages import AssistantMessage, TextContent, UserMessage
+from midge.extensions import load_extensions
+from midge.hooks import Hooks, ToolCallEvent, ToolCallResult
+from midge.messages import AssistantMessage, TextContent, ToolCall, UserMessage
 from midge.persistence import Session
 from midge.rpc import RpcServer, event_to_wire
 from midge.skills import Skill, load_skills, skills_prompt
@@ -514,11 +516,14 @@ async def test_system_prompt_round_trips() -> None:
     await task
 
 
-CATALOGUE = "<available_skills>\n  <skill><name>deploy</name></skill>\n</available_skills>"
+# Stands in for whatever midge generates and appends. Sourced here from an
+# extension rather than a skill so these tests stay about the base/generated
+# split; the skills half has its own tests under `reload`.
+GENERATED = "Extension guidance: prefer the notes tool."
 
 
 def _server_with_composed_prompt(agent: Agent) -> tuple[RpcServer, _Inbox, _Outbox, Any]:
-    server = RpcServer(agent, base_prompt="You are a coding assistant.", prompt_suffix=CATALOGUE)
+    server = RpcServer(agent, base_prompt="You are a coding assistant.", extension_prompt=GENERATED)
     agent.system_prompt = server._compose_prompt()
     inbox, outbox = _Inbox(), _Outbox()
     task = asyncio.create_task(server.serve(read_line=inbox.read_line, write=outbox.write))
@@ -533,7 +538,7 @@ async def test_set_system_prompt_keeps_the_generated_half() -> None:
     agent = Agent(client=Client(), model="m")
     _server, inbox, outbox, task = _server_with_composed_prompt(agent)
 
-    assert CATALOGUE in (agent.system_prompt or "")
+    assert GENERATED in (agent.system_prompt or "")
 
     await _command(
         inbox, outbox, {"id": "s", "type": "set_system_prompt", "prompt": "You are a lawyer."}
@@ -541,7 +546,7 @@ async def test_set_system_prompt_keeps_the_generated_half() -> None:
 
     assert agent.system_prompt is not None
     assert agent.system_prompt.startswith("You are a lawyer.")
-    assert CATALOGUE in agent.system_prompt, "the skills catalogue was dropped"
+    assert GENERATED in agent.system_prompt, "the generated half was dropped"
     assert "coding assistant" not in agent.system_prompt
     inbox.close()
     await task
@@ -556,7 +561,7 @@ async def test_get_system_prompt_separates_the_halves() -> None:
     # A client can see what it owns and what midge appends, without guessing
     # where one ends and the other begins.
     assert resp["data"]["base"] == "You are a coding assistant."
-    assert resp["data"]["appended"] == CATALOGUE
+    assert resp["data"]["appended"] == GENERATED
     assert resp["data"]["prompt"] == agent.system_prompt
     inbox.close()
     await task
@@ -786,14 +791,14 @@ async def test_new_session_header_stores_the_base_not_the_composed_prompt(
     skills catalogue every time."""
     agent = Agent(client=Client(), model="m")
     _server, inbox, outbox, task = _server_with_composed_prompt(agent)
-    assert CATALOGUE in (agent.system_prompt or "")
+    assert GENERATED in (agent.system_prompt or "")
 
     path = tmp_path / "fresh.jsonl"
     await _command(inbox, outbox, {"id": "n", "type": "new_session", "path": str(path)})
 
     header = Session.load(path).header
     assert header.system_prompt == "You are a coding assistant."
-    assert CATALOGUE not in (header.system_prompt or "")
+    assert GENERATED not in (header.system_prompt or "")
     inbox.close()
     await task
 
@@ -1341,5 +1346,497 @@ async def test_queued_skill_resolves_at_enqueue_not_at_delivery(tmp_path: Path) 
     assert queued is not None
     assert "body" in str(queued.message.content)
     assert "COMPLETELY DIFFERENT" not in str(queued.message.content)
+    inbox.close()
+    await task
+
+
+# ---- reload ----
+
+
+_NOTES_EXT = '''
+from midge.tools import tool
+
+
+@tool
+async def notes(text: str) -> str:
+    """Record a note."""
+    return text
+'''
+
+# `read` is what gates the skills catalogue, so a fake one is the lever the
+# coupling tests need. Its behaviour is irrelevant; only its name is.
+_READ_EXT = '''
+from midge.tools import tool
+
+
+@tool
+async def read(path: str) -> str:
+    """Read a file."""
+    return path
+'''
+
+
+def _write_ext(directory: Path, stem: str, body: str) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{stem}.py"
+    path.write_text(body, encoding="utf-8")
+    return path
+
+
+def _server_with_sources(
+    agent: Agent,
+    *,
+    extension_sources: list[Path] | None = None,
+    skill_sources: list[Path] | None = None,
+) -> tuple[RpcServer, _Inbox, _Outbox, asyncio.Task[None]]:
+    """Construct the server the way `cli.py` does: load, then hand over the
+    same source lists so `reload` repeats exactly that call."""
+    if extension_sources is not None:
+        registry, ext_prompt = load_extensions(extension_sources, hooks=agent.hooks)
+        agent.tools = registry
+    else:
+        ext_prompt = ""
+    skills = load_skills(skill_sources) if skill_sources is not None else []
+    server = RpcServer(
+        agent,
+        base_prompt="BASE",
+        extension_prompt=ext_prompt,
+        skills=skills,
+        extension_sources=extension_sources,
+        skill_sources=skill_sources,
+    )
+    agent.system_prompt = server._compose_prompt()
+    inbox, outbox = _Inbox(), _Outbox()
+    task = asyncio.create_task(server.serve(read_line=inbox.read_line, write=outbox.write))
+    return server, inbox, outbox, task
+
+
+async def _reload(inbox: _Inbox, outbox: _Outbox, **kw: Any) -> dict[str, Any]:
+    cmd_id = f"rl{len(outbox.lines)}"
+    return await _command(inbox, outbox, {"id": cmd_id, "type": "reload", **kw})
+
+
+async def _command_names(inbox: _Inbox, outbox: _Outbox) -> list[str]:
+    """`_commands` reuses one id, so it re-reads its own first response. These
+    tests enumerate twice around a reload and need a fresh id each time."""
+    cmd_id = f"gc{len(outbox.lines)}"
+    resp = await _command(inbox, outbox, {"id": cmd_id, "type": "get_commands"})
+    assert resp["success"] is True
+    return [c["name"] for c in resp["data"]["commands"]]
+
+
+# --- skills ---
+
+
+async def test_reload_picks_up_a_skill_written_after_startup(tmp_path: Path) -> None:
+    ext = tmp_path / "ext"
+    _write_ext(ext, "reader", _READ_EXT)
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    agent = Agent(client=Client(), model="m")
+    _server, inbox, outbox, task = _server_with_sources(
+        agent, extension_sources=[ext], skill_sources=[skills_dir]
+    )
+
+    assert "skill:deploy" not in await _command_names(inbox, outbox)
+
+    _write_skill(skills_dir / "deploy", "deploy")
+    resp = await _reload(inbox, outbox, targets=["skills"])
+    assert resp["success"] is True
+    assert resp["data"]["skills"] == 1
+
+    assert "skill:deploy" in await _command_names(inbox, outbox)
+    assert "deploy" in (agent.system_prompt or ""), "the catalogue was not recomposed"
+    inbox.close()
+    await task
+
+
+async def test_reload_drops_a_deleted_skill(tmp_path: Path) -> None:
+    ext = tmp_path / "ext"
+    _write_ext(ext, "reader", _READ_EXT)
+    skills_dir = tmp_path / "skills"
+    path = _write_skill(skills_dir / "deploy", "deploy")
+    agent = Agent(client=Client(), model="m")
+    _server, inbox, outbox, task = _server_with_sources(
+        agent, extension_sources=[ext], skill_sources=[skills_dir]
+    )
+    assert "deploy" in (agent.system_prompt or "")
+
+    path.unlink()
+    await _reload(inbox, outbox, targets=["skills"])
+
+    assert "skill:deploy" not in await _command_names(inbox, outbox)
+    assert "deploy" not in (agent.system_prompt or "")
+    inbox.close()
+    await task
+
+
+async def test_reload_keeps_a_base_prompt_set_over_rpc(tmp_path: Path) -> None:
+    """`set_system_prompt` owns the base; reload replaces only what midge
+    generates. Losing the operator's prompt to a re-scan would be silent."""
+    ext = tmp_path / "ext"
+    _write_ext(ext, "reader", _READ_EXT)
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    agent = Agent(client=Client(), model="m")
+    _server, inbox, outbox, task = _server_with_sources(
+        agent, extension_sources=[ext], skill_sources=[skills_dir]
+    )
+
+    await _command(
+        inbox, outbox, {"id": "sp", "type": "set_system_prompt", "prompt": "YOU ARE A POET"}
+    )
+    _write_skill(skills_dir / "deploy", "deploy")
+    await _reload(inbox, outbox)
+
+    assert (agent.system_prompt or "").startswith("YOU ARE A POET")
+    assert "deploy" in (agent.system_prompt or "")
+    inbox.close()
+    await task
+
+
+# --- extensions ---
+
+
+async def test_reload_picks_up_a_new_tool(tmp_path: Path) -> None:
+    ext = tmp_path / "ext"
+    ext.mkdir()
+    agent = Agent(client=Client(), model="m")
+    _server, inbox, outbox, task = _server_with_sources(agent, extension_sources=[ext])
+    assert "notes" not in agent.tools
+
+    _write_ext(ext, "notes", _NOTES_EXT)
+    resp = await _reload(inbox, outbox, targets=["extensions"])
+
+    assert resp["success"] is True
+    assert resp["data"]["tools"] == 1
+    assert "notes" in agent.tools
+    inbox.close()
+    await task
+
+
+async def test_reload_drops_a_deleted_extension(tmp_path: Path) -> None:
+    ext = tmp_path / "ext"
+    path = _write_ext(ext, "notes", _NOTES_EXT)
+    agent = Agent(client=Client(), model="m")
+    _server, inbox, outbox, task = _server_with_sources(agent, extension_sources=[ext])
+    assert "notes" in agent.tools
+
+    path.unlink()
+    await _reload(inbox, outbox, targets=["extensions"])
+
+    assert "notes" not in agent.tools
+    inbox.close()
+    await task
+
+
+def _hook_ext(log: Path, *, block: bool) -> str:
+    """An extension whose hook appends to `log` on every invocation.
+
+    A file rather than a module-level counter: a reload re-imports under a new
+    synthetic module name, so anything in-module resets and could not tell a
+    second registration apart from a first.
+    """
+    return f'''
+from pathlib import Path
+
+from midge.hooks import ToolCallResult
+
+LOG = Path({str(log)!r})
+
+
+def register_hooks(hooks):
+    def _seen(event, ctx=None):
+        with LOG.open("a") as fh:
+            fh.write("x")
+        return ToolCallResult(block=True, reason="denied") if {block!r} else None
+
+    hooks.on("tool_call", _seen)
+'''
+
+
+_CLEANUP_EXT = '''
+from pathlib import Path
+
+LOG = Path({log!r})
+
+
+def register_hooks(hooks):
+    hooks.add_cleanup(lambda: LOG.open("a").write("c"))
+'''
+
+
+async def _fire_tool_call(agent: Agent) -> Any:
+    assert agent.hooks is not None
+    return await agent.hooks.emit(ToolCallEvent(tool_call=ToolCall(id="t1", name="notes")))
+
+
+async def test_a_hook_fires_once_after_repeated_reloads(tmp_path: Path) -> None:
+    """The regression reload exists to avoid. Tools are *returned* as a fresh
+    registry, so they swap cleanly; hooks are *mutated* into a shared `Hooks`,
+    so without `clear()` every reload leaves another copy of every handler
+    registered and a single tool call is judged N times."""
+    ext = tmp_path / "ext"
+    log = tmp_path / "hook.log"
+    _write_ext(ext, "policy", _hook_ext(log, block=False))
+    agent = Agent(client=Client(), model="m", hooks=Hooks())
+    _server, inbox, outbox, task = _server_with_sources(agent, extension_sources=[ext])
+
+    await _reload(inbox, outbox, targets=["extensions"])
+    await _reload(inbox, outbox, targets=["extensions"])
+    await _fire_tool_call(agent)
+
+    assert log.read_text() == "x", "the handler was registered more than once"
+    inbox.close()
+    await task
+
+
+async def test_reload_applies_an_edited_hook_policy(tmp_path: Path) -> None:
+    ext = tmp_path / "ext"
+    log = tmp_path / "hook.log"
+    _write_ext(ext, "policy", _hook_ext(log, block=False))
+    agent = Agent(client=Client(), model="m", hooks=Hooks())
+    _server, inbox, outbox, task = _server_with_sources(agent, extension_sources=[ext])
+    assert await _fire_tool_call(agent) is None
+
+    _write_ext(ext, "policy", _hook_ext(log, block=True))
+    await _reload(inbox, outbox, targets=["extensions"])
+
+    result = await _fire_tool_call(agent)
+    assert isinstance(result, ToolCallResult)
+    assert result.block is True
+    inbox.close()
+    await task
+
+
+async def test_reload_drops_the_hooks_of_a_deleted_extension(tmp_path: Path) -> None:
+    ext = tmp_path / "ext"
+    log = tmp_path / "hook.log"
+    path = _write_ext(ext, "policy", _hook_ext(log, block=True))
+    agent = Agent(client=Client(), model="m", hooks=Hooks())
+    _server, inbox, outbox, task = _server_with_sources(agent, extension_sources=[ext])
+
+    path.unlink()
+    await _reload(inbox, outbox, targets=["extensions"])
+
+    assert await _fire_tool_call(agent) is None, "a deleted extension still enforces policy"
+    inbox.close()
+    await task
+
+
+async def test_reload_runs_an_extensions_cleanup(tmp_path: Path) -> None:
+    ext = tmp_path / "ext"
+    log = tmp_path / "cleanup.log"
+    _write_ext(ext, "resource", _CLEANUP_EXT.format(log=str(log)))
+    agent = Agent(client=Client(), model="m", hooks=Hooks())
+    _server, inbox, outbox, task = _server_with_sources(agent, extension_sources=[ext])
+    assert not log.exists()
+
+    await _reload(inbox, outbox, targets=["extensions"])
+
+    assert log.read_text() == "c", "unload did not run the extension's cleanup"
+    inbox.close()
+    await task
+
+
+async def test_a_broken_extension_is_skipped_and_the_rest_load(tmp_path: Path) -> None:
+    ext = tmp_path / "ext"
+    _write_ext(ext, "notes", _NOTES_EXT)
+    _write_ext(ext, "broken", "this is not python(")
+    agent = Agent(client=Client(), model="m", hooks=Hooks())
+    _server, inbox, outbox, task = _server_with_sources(agent, extension_sources=[ext])
+
+    resp = await _reload(inbox, outbox, targets=["extensions"])
+
+    assert resp["success"] is True
+    assert "notes" in agent.tools
+    inbox.close()
+    await task
+
+
+# --- the coupling between the two targets ---
+
+
+async def test_reloading_extensions_can_remove_the_skills_catalogue(tmp_path: Path) -> None:
+    """The one place the targets are not independent. The catalogue tells the
+    model to open a `SKILL.md`, so it is gated on a `read` tool — and an
+    extensions reload can take that tool away without any skill changing."""
+    ext = tmp_path / "ext"
+    reader = _write_ext(ext, "reader", _READ_EXT)
+    skills_dir = tmp_path / "skills"
+    _write_skill(skills_dir / "deploy", "deploy")
+    agent = Agent(client=Client(), model="m", hooks=Hooks())
+    _server, inbox, outbox, task = _server_with_sources(
+        agent, extension_sources=[ext], skill_sources=[skills_dir]
+    )
+    assert "deploy" in (agent.system_prompt or "")
+
+    reader.unlink()
+    await _reload(inbox, outbox, targets=["extensions"])
+    assert "deploy" not in (agent.system_prompt or ""), (
+        "the catalogue survived losing the tool it depends on"
+    )
+
+    _write_ext(ext, "reader", _READ_EXT)
+    await _reload(inbox, outbox, targets=["extensions"])
+    assert "deploy" in (agent.system_prompt or ""), "the catalogue did not come back"
+    inbox.close()
+    await task
+
+
+# --- targets, refusal, validation ---
+
+
+async def test_reloading_skills_leaves_the_tool_registry_untouched(tmp_path: Path) -> None:
+    ext = tmp_path / "ext"
+    _write_ext(ext, "notes", _NOTES_EXT)
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    agent = Agent(client=Client(), model="m", hooks=Hooks())
+    _server, inbox, outbox, task = _server_with_sources(
+        agent, extension_sources=[ext], skill_sources=[skills_dir]
+    )
+    before = agent.tools
+
+    resp = await _reload(inbox, outbox, targets=["skills"])
+
+    assert resp["data"]["targets"] == ["skills"]
+    assert agent.tools is before, "a skills reload rebuilt the tool registry"
+    inbox.close()
+    await task
+
+
+async def test_reload_is_refused_while_a_run_is_in_flight() -> None:
+    client = Client()
+    gate = asyncio.Event()
+    _install_slow_stream(client, [_chunk(content="part")], gate)
+    agent = Agent(client=client, model="m")
+    _server, inbox, outbox, task = _server_with_sources(agent, extension_sources=[])
+    before = agent.tools
+
+    await inbox.feed_text('{"id": "p", "type": "prompt", "message": "go"}\n')
+    await _wait_for(
+        lambda: any(line.get("type") == "assistant_text_delta" for line in outbox.lines)
+    )
+    resp = await _reload(inbox, outbox, targets=["extensions"])
+
+    assert resp["success"] is False
+    assert "in flight" in resp["error"]
+    assert agent.tools is before, "a refused reload still swapped the registry"
+
+    gate.set()
+    await _wait_for(lambda: any(x.get("type") == "agent_settled" for x in outbox.lines))
+    inbox.close()
+    await task
+
+
+async def test_an_unknown_target_is_rejected(tmp_path: Path) -> None:
+    ext = tmp_path / "ext"
+    ext.mkdir()
+    agent = Agent(client=Client(), model="m", hooks=Hooks())
+    _server, inbox, outbox, task = _server_with_sources(agent, extension_sources=[ext])
+    before = agent.tools
+
+    resp = await _reload(inbox, outbox, targets=["bogus"])
+
+    assert resp["success"] is False
+    assert agent.tools is before, "a rejected reload still ran"
+    inbox.close()
+    await task
+
+
+async def test_an_unconfigured_target_is_named_in_the_error() -> None:
+    """`_start_server` wires no sources, which is how an embedder that built its
+    own registry arrives here. Reloading it would silently replace that registry
+    with an empty one."""
+    agent = Agent(client=Client(), model="m")
+    _server, inbox, outbox, task = _start_server(agent)
+
+    resp = await _reload(inbox, outbox, targets=["extensions", "skills"])
+
+    assert resp["success"] is False
+    assert "extensions" in resp["error"] and "skills" in resp["error"]
+    inbox.close()
+    await task
+
+
+async def test_the_bare_form_reloads_only_what_is_wired_up(tmp_path: Path) -> None:
+    skills_dir = tmp_path / "skills"
+    _write_skill(skills_dir / "deploy", "deploy")
+    agent = Agent(client=Client(), model="m")
+    _server, inbox, outbox, task = _server_with_sources(agent, skill_sources=[skills_dir])
+
+    resp = await _reload(inbox, outbox)
+
+    assert resp["success"] is True
+    assert resp["data"]["targets"] == ["skills"]
+    inbox.close()
+    await task
+
+
+async def test_reload_is_enumerated_with_a_targets_enum() -> None:
+    agent = Agent(client=Client(), model="m")
+    _server, inbox, outbox, task = _start_server(agent)
+
+    commands = await _commands(inbox, outbox)
+    entry = next(c for c in commands if c["name"] == "reload")
+
+    assert entry["invoke"] == "command"
+    schema = entry["parameters"]
+    assert schema["additionalProperties"] is False
+    # Optional, so a consumer can render it as select-and-fire or as a
+    # multi-select without a second convention.
+    assert "targets" not in schema.get("required", [])
+    assert set(_enum_values(schema)) == {"skills", "extensions"}
+    inbox.close()
+    await task
+
+
+def _enum_values(schema: dict[str, Any]) -> list[str]:
+    """Pull the target enum out wherever pydantic put it ($defs or inline)."""
+    found: list[str] = []
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            if isinstance(node.get("enum"), list):
+                found.extend(node["enum"])
+            for v in node.values():
+                walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+
+    walk(schema)
+    return found
+
+
+_SUBAGENT_EXT = '''
+from midge.subagents import subagent
+
+
+@subagent(description="Probe something.", prompt="You are a probe.", tools=())
+async def probe(question: str) -> str:
+    return question
+'''
+
+
+async def test_a_subagent_still_runs_after_a_reload(tmp_path: Path) -> None:
+    """Re-import produces *new* `SubagentTool` instances, so the reload has to
+    call `bind_subagents` again. Without it the fresh tool has no runtime and
+    the model's first delegation fails."""
+    ext = tmp_path / "ext"
+    _write_ext(ext, "probe", _SUBAGENT_EXT)
+    client = Client()
+    _install_turns(client, [[_chunk(content="child says hi"), _chunk(finish_reason="stop")]])
+    agent = Agent(client=client, model="m", hooks=Hooks())
+    _server, inbox, outbox, task = _server_with_sources(agent, extension_sources=[ext])
+    before = agent.tools.get("spawn_probe")
+
+    await _reload(inbox, outbox, targets=["extensions"])
+
+    after = agent.tools.get("spawn_probe")
+    assert after is not before, "reload did not re-import the sub-agent tool"
+    result = await agent.tools.invoke("spawn_probe", {"question": "why"}, call_id="c1")
+    assert "child says hi" in str(result)
     inbox.close()
     await task

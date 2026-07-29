@@ -99,13 +99,13 @@ def main(argv: list[str] | None = None) -> None:
     # because a handler bound to stdout would corrupt the protocol.
     configure_logging(None if args.rpc else tui_log_handler())
     hooks = Hooks()
-    registry, prompt_addition = load_extensions(
-        [*BUILTIN_TOOL_DIRS, *args.extension_dir], hooks=hooks
-    )
+    extension_sources = [*BUILTIN_TOOL_DIRS, *args.extension_dir]
     # Explicit paths outrank the defaults: naming a directory on the command
     # line is a deliberate override. Note this is the opposite nesting from the
-    # extension dirs above, where the built-ins must not be shadowed.
-    skills = load_skills([*args.skill_dir, *default_skill_dirs()])
+    # extension sources above, where the built-ins must not be shadowed.
+    skill_sources = [*args.skill_dir, *default_skill_dirs()]
+    registry, prompt_addition = load_extensions(extension_sources, hooks=hooks)
+    skills = load_skills(skill_sources)
     catalogue = skills_prompt(skills) if "read" in registry else ""
 
     session: Session | None = None
@@ -169,8 +169,12 @@ def main(argv: list[str] | None = None) -> None:
             session=session,
             compaction_keep_recent=args.compaction_keep_recent,
             base_prompt=durable,
-            prompt_suffix="\n\n".join(p for p in (prompt_addition, catalogue) if p),
+            extension_prompt=prompt_addition,
             skills=skills,
+            # The same lists the loaders above were given, so `reload` repeats
+            # that call rather than rebuilding it.
+            extension_sources=extension_sources,
+            skill_sources=skill_sources,
         )
 
         async def _serve() -> None:

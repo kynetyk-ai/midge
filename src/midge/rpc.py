@@ -15,7 +15,8 @@ stderr instead of corrupting the stream.
 
 Inbound: prompt, steer, follow_up, abort, and a set of state and control
 commands `get_commands` enumerates for clients that would rather discover the
-surface than hardcode it.
+surface than hardcode it — including `reload`, which re-scans skills and
+extensions from disk so a long-lived process picks up edits.
 Commands are dispatched serially; a `prompt` returns its response immediately
 after preflight and runs the agent in a background task while the dispatch
 loop continues reading stdin (so `abort` can interrupt).
@@ -33,7 +34,7 @@ import sys
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import Any, BinaryIO, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -57,10 +58,12 @@ from midge.client import (
     ToolCallStart,
 )
 from midge.compaction import compact
+from midge.extensions import load_extensions
 from midge.messages import AssistantMessage, TextContent, ToolCall, UserMessage
 from midge.persistence import Session, read_transcript
 from midge.session import export_html
-from midge.skills import Skill, skill_message
+from midge.skills import Skill, load_skills, skill_message, skills_prompt
+from midge.subagents import bind_subagents
 
 _logger = logging.getLogger(__name__)
 
@@ -198,6 +201,15 @@ class _ExportHtmlParams(_CommandParams):
     )
 
 
+RELOAD_TARGETS = ("skills", "extensions")
+
+
+class _ReloadParams(_CommandParams):
+    targets: list[Literal["skills", "extensions"]] | None = Field(
+        default=None, description="Which sources to re-scan; omit for all of them"
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class BuiltinCommand:
     name: str
@@ -221,6 +233,9 @@ BUILTIN_COMMANDS: tuple[BuiltinCommand, ...] = (
     BuiltinCommand(
         "set_system_prompt", "Replace the agent's base system prompt", _SetSystemPromptParams
     ),
+    BuiltinCommand(
+        "reload", "Re-scan skills and extensions from disk", _ReloadParams
+    ),
 )
 
 _NO_PARAMS: dict[str, Any] = {"type": "object", "properties": {}, "additionalProperties": False}
@@ -236,8 +251,10 @@ class RpcServer:
         session: Session | None = None,
         compaction_keep_recent: int = 20_000,
         base_prompt: str | None = None,
-        prompt_suffix: str = "",
+        extension_prompt: str = "",
         skills: Sequence[Skill] | None = None,
+        extension_sources: Sequence[Path] | None = None,
+        skill_sources: Sequence[Path] | None = None,
     ) -> None:
         self.agent = agent
         # `client` and `model` come off the agent; `session` is what the export
@@ -247,10 +264,19 @@ class RpcServer:
         # The agent's prompt is composed: a durable base the operator owns, then
         # what midge generates — extension contributions and the skills
         # catalogue. Keeping the halves apart is what lets `set_system_prompt`
-        # change the base without silently deleting the catalogue.
+        # change the base without silently deleting the catalogue, and what lets
+        # `reload` replace one generated half without disturbing the other.
         self._base_prompt = base_prompt if base_prompt is not None else (agent.system_prompt or "")
-        self._prompt_suffix = prompt_suffix
+        self._extension_prompt = extension_prompt
         self._skills: Sequence[Skill] = skills or ()
+        # The exact source lists the entrypoint loaded from, so `reload` re-runs
+        # the same call rather than reconstructing one. Reconstructing would mean
+        # knowing which sources are built-in, and an embedder that handed the
+        # agent a deliberately restricted registry would find reload silently
+        # widening it. `None` means the entrypoint did not wire that target up,
+        # which is not the same as an empty list.
+        self._extension_sources = list(extension_sources) if extension_sources is not None else None
+        self._skill_sources = list(skill_sources) if skill_sources is not None else None
         # The queue is shared with the agent: it drains steering at its own
         # boundaries, the server drains follow-ups once a run is done.
         self.steering = agent.steering if agent.steering is not None else SteeringQueue()
@@ -336,6 +362,8 @@ class RpcServer:
                 await self._handle_clear_context(cmd_id)
             case "new_session":
                 await self._handle_new_session(cmd_id, cmd)
+            case "reload":
+                await self._handle_reload(cmd_id, cmd)
             case _:
                 _logger.warning("rpc_command_unknown type=%r", cmd_type)
                 await self._respond(
@@ -548,8 +576,20 @@ class RpcServer:
             cmd_id, "get_last_assistant_text", success=True, data={"text": text}
         )
 
+    def _generated_prompt(self) -> str:
+        """Extension contributions plus the skills catalogue, gated as at startup.
+
+        Derived rather than stored so the `read` gate cannot fall out of date:
+        the catalogue tells the model to open a `SKILL.md`, so without a tool
+        that can open one it is an instruction to do the impossible. An
+        extensions reload can add or remove `read`, which makes this the one
+        point where reloading extensions changes the skills half of the prompt.
+        """
+        catalogue = skills_prompt(self._skills) if "read" in self.agent.tools else ""
+        return "\n\n".join(p for p in (self._extension_prompt, catalogue) if p)
+
     def _compose_prompt(self) -> str:
-        return "\n\n".join(p for p in (self._base_prompt, self._prompt_suffix) if p)
+        return "\n\n".join(p for p in (self._base_prompt, self._generated_prompt()) if p)
 
     async def _handle_get_system_prompt(self, cmd_id: str | None) -> None:
         await self._respond(
@@ -559,7 +599,7 @@ class RpcServer:
             data={
                 "prompt": self.agent.system_prompt,
                 "base": self._base_prompt,
-                "appended": self._prompt_suffix,
+                "appended": self._generated_prompt(),
             },
         )
 
@@ -720,6 +760,113 @@ class RpcServer:
         await self._respond(
             cmd_id, "new_session", success=True, data={"session": str(opened.path)}
         )
+
+    async def _handle_reload(self, cmd_id: str | None, cmd: dict[str, Any]) -> None:
+        """Re-scan skills and extensions from disk.
+
+        Both targets are a discard and re-run rather than anything incremental.
+        That works because the two loaders already have the right shapes:
+        `load_extensions` returns a *fresh* registry, so tools are a swap with
+        no residue, and `Hooks.clear()` runs every cleanup before wiping, which
+        is exactly what unloading an extension should do. Hooks would otherwise
+        double-register, because they are mutated into a shared `Hooks` rather
+        than returned.
+
+        Per-file failures are not on the wire. Both loaders already skip a bad
+        file, log it, and carry on; reporting them here would mean changing
+        both return types to serve a client that does not exist yet.
+        """
+        try:
+            params = _ReloadParams.model_validate(
+                {k: v for k, v in cmd.items() if k not in ("id", "type")}
+            )
+        except ValueError as e:
+            await self._respond(cmd_id, "reload", success=False, error=str(e))
+            return
+
+        # Refused rather than queued: swapping the tool registry under a running
+        # turn breaks the tool-call/result pairing the loop depends on. It also
+        # disposes of the one genuinely hard case — a sub-agent holding a child
+        # registry bound to the old runtime can only exist inside a turn.
+        if self._current_run is not None and not self._current_run.done():
+            await self._respond(
+                cmd_id, "reload", success=False, error="cannot reload while a run is in flight"
+            )
+            return
+
+        configured = {
+            "extensions": self._extension_sources is not None,
+            "skills": self._skill_sources is not None,
+        }
+        if params.targets is not None:
+            targets = tuple(params.targets)
+            missing = [t for t in targets if not configured[t]]
+            if missing:
+                await self._respond(
+                    cmd_id,
+                    "reload",
+                    success=False,
+                    error=f"no sources configured for: {', '.join(missing)}",
+                )
+                return
+        else:
+            # The bare form reloads what is wired up. Failing it because an
+            # embedder wired only skills would make the convenient spelling the
+            # one that does not work.
+            targets = tuple(t for t in RELOAD_TARGETS if configured[t])
+
+        if "extensions" in targets:
+            await self._reload_extensions()
+        if "skills" in targets:
+            self._reload_skills()
+        # After both, so an extensions reload that added or removed `read` is
+        # reflected even when only extensions were asked for.
+        self.agent.system_prompt = self._compose_prompt()
+        _logger.info(
+            "rpc_reloaded targets=%s tools=%d skills=%d",
+            ",".join(targets),
+            len(self.agent.tools),
+            len(self._skills),
+        )
+        await self._respond(
+            cmd_id,
+            "reload",
+            success=True,
+            data={
+                "targets": list(targets),
+                "tools": len(self.agent.tools),
+                "skills": len(self._skills),
+            },
+        )
+
+    async def _reload_extensions(self) -> None:
+        assert self._extension_sources is not None
+        hooks = self.agent.hooks
+        if hooks is not None:
+            # A whole-registry wipe, which is right because `load_extensions` is
+            # the only thing that registers into this `Hooks` — and it runs every
+            # `add_cleanup` handler first, which is what unloading should do.
+            # `_Registration.source` is already stamped if this ever needs to
+            # become a scoped removal.
+            await hooks.clear()
+        registry, self._extension_prompt = load_extensions(
+            self._extension_sources, hooks=hooks
+        )
+        # Re-import produces new `SubagentTool` instances, so this binds the
+        # fresh ones. The model comes off the agent so a `set_model` since
+        # startup is respected rather than reverted.
+        bind_subagents(
+            registry,
+            client=self.agent.client,
+            model=self.agent.model,
+            hooks=hooks,
+            session_path=self.session.path if self.session is not None else None,
+        )
+        self.agent.tools = registry
+
+    def _reload_skills(self) -> None:
+        assert self._skill_sources is not None
+        self._skills = load_skills(self._skill_sources)
 
     async def _handle_abort(self, cmd_id: str | None) -> None:
         if self._current_run is not None and not self._current_run.done():

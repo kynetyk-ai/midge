@@ -85,3 +85,26 @@ When two extensions register a tool with the same `name`, the loader emits a war
 - A CLI flag `--extension-dir DIR` (repeatable) on `examples/coding_agent.py`.
 
 That's the minimum-viable extension loader. ~80 lines. Defer per-extension state, hot-reload, version checks, and slash-command-style invocation.
+
+## Reload (#46)
+
+`reload` over RPC re-runs `load_extensions` with the same source list the
+entrypoint used, after `Hooks.clear()`. Two things that shape the loader matter
+here, and both were accidental rather than designed:
+
+- **The registry is returned, so tools swap cleanly.** Nothing has to be removed;
+  the old registry is dropped whole.
+- **Hooks are mutated into a caller-supplied `Hooks`, so they would accumulate.**
+  `clear()` covers it, and it awaits every `add_cleanup` handler before wiping,
+  which is what unload should do. A source-scoped removal was considered and
+  dropped: `load_extensions` is the only thing that registers into the server's
+  `Hooks`, so scoping would do identical work today. `_Registration.source` is
+  already stamped if that changes.
+
+**Statelessness stops being just a convention.** A re-import creates a fresh
+module under a new synthetic name (`_midge_ext_<stem>_<hash>`), so the previous
+module's globals are not reclaimed and anything it opened is not closed unless it
+registered a cleanup. The note above says extensions are stateless per pi-mono;
+reload is what turns that from a convention into something you can actually
+notice breaking. An extension that holds a resource should register
+`add_cleanup` for it.
