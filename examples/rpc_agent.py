@@ -29,14 +29,12 @@ from midge.extensions import BUILTIN_TOOL_DIRS, load_extensions
 from midge.hooks import Hooks
 from midge.logs import configure as configure_logging
 from midge.logs import provider_host
-from midge.rpc import RpcServer, claim_stdout
+from midge.rpc import RpcServer, serve_stdio
 from midge.subagents import bind_subagents
 
 # Not `__name__`: run as `-m`, that is "__main__", which sits outside the
 # `midge` logger tree and so never picks up the configured level.
 _logger = logging.getLogger("midge.examples.rpc_agent")
-
-_READ_LIMIT = 16 * 1024 * 1024
 
 BASE_SYSTEM_PROMPT = (
     "You are a coding assistant. "
@@ -58,10 +56,6 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 
 
 async def amain(extension_dirs: list[Path]) -> int:
-    # Before anything else can write: take fd 1 for the protocol and send
-    # everything else — including a stray print() from a tool or extension —
-    # to stderr.
-    stdout = claim_stdout()
     configure_logging()
     # Without a Hooks object an extension's `register_hooks` never runs, so a
     # tool-approval policy loaded here would be silently inert — and a
@@ -93,20 +87,6 @@ async def amain(extension_dirs: list[Path]) -> int:
         hooks=hooks,
     )
 
-    loop = asyncio.get_running_loop()
-    # The default 64 KiB limit turns a large pasted prompt into a
-    # ValueError that escapes `serve()` and kills the server.
-    reader = asyncio.StreamReader(limit=_READ_LIMIT)
-    protocol = asyncio.StreamReaderProtocol(reader)
-    await loop.connect_read_pipe(lambda: protocol, sys.stdin)
-
-    async def read_line() -> bytes:
-        return await reader.readline()
-
-    async def write(data: bytes) -> None:
-        stdout.write(data)
-        stdout.flush()
-
     # The halves are passed apart so `set_system_prompt` can change the base
     # without deleting what the extensions contributed.
     server = RpcServer(
@@ -115,7 +95,9 @@ async def amain(extension_dirs: list[Path]) -> int:
         base_prompt=BASE_SYSTEM_PROMPT,
         prompt_suffix=prompt_addition,
     )
-    await server.serve(read_line=read_line, write=write)
+    # Claims stdout for the protocol, installs SIGTERM/SIGHUP handlers, and
+    # reads stdin to EOF.
+    await serve_stdio(server)
     return 0
 
 

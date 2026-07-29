@@ -821,3 +821,75 @@ async def test_failed_new_session_leaves_state_untouched(tmp_path: Path) -> None
     inbox.close()
     await task
     live.close()
+
+
+# ---- protocol hygiene ----
+
+
+async def test_unterminated_final_line_is_still_dispatched() -> None:
+    """`readline()` returns buffered data without a newline at EOF, so a client
+    that forgets the trailing \\n still gets its command run."""
+    agent = Agent(client=Client(), model="m")
+    _server, inbox, outbox, task = _start_server(agent)
+
+    await inbox.feed_text('{"id":"r1","type":"get_state"}')  # no newline
+    inbox.close()
+    await task
+
+    responses = [x for x in outbox.lines if x.get("type") == "response"]
+    assert [r["id"] for r in responses] == ["r1"]
+    assert responses[0]["success"] is True
+
+
+async def test_blank_lines_are_skipped() -> None:
+    agent = Agent(client=Client(), model="m")
+    _server, inbox, outbox, task = _start_server(agent)
+
+    await inbox.feed_text("\n\n   \n")
+    await inbox.feed_text('{"id":"r1","type":"get_state"}\n')
+    inbox.close()
+    await task
+
+    assert [x["id"] for x in outbox.lines if x.get("type") == "response"] == ["r1"]
+
+
+async def test_crlf_is_tolerated() -> None:
+    agent = Agent(client=Client(), model="m")
+    _server, inbox, outbox, task = _start_server(agent)
+
+    await inbox.feed_text('{"id":"r1","type":"get_state"}\r\n')
+    inbox.close()
+    await task
+
+    assert [x["id"] for x in outbox.lines if x.get("type") == "response"] == ["r1"]
+
+
+async def test_non_object_json_is_a_parse_error() -> None:
+    agent = Agent(client=Client(), model="m")
+    _server, inbox, outbox, task = _start_server(agent)
+
+    await inbox.feed_text("[1, 2, 3]\n")
+    inbox.close()
+    await task
+
+    resp = outbox.lines[0]
+    assert resp["command"] == "parse"
+    assert resp["success"] is False
+    assert "JSON object" in resp["error"]
+
+
+async def test_eof_cancels_an_in_flight_run() -> None:
+    client = Client()
+    gate = asyncio.Event()
+    _install_slow_stream(client, [_chunk(content="part")], gate)
+    agent = Agent(client=client, model="m")
+    _server, inbox, outbox, task = _start_server(agent)
+
+    await inbox.feed_text('{"id":"p","type":"prompt","message":"hi"}\n')
+    await _wait_for(lambda: any(x.get("type") == "assistant_text_delta" for x in outbox.lines))
+
+    inbox.close()
+    await task  # `serve`'s finally cancels the run and awaits it
+
+    errors = [x for x in outbox.lines if x.get("type") == "error"]
+    assert [e["stop_reason"] for e in errors] == ["aborted"]

@@ -27,6 +27,15 @@ Source:
 - Auto-compaction / auto-retry
 - `bash` / `abort_bash` direct execution
 
+> **Update (#30).** The Phase 2 subset above has been extended. Added since:
+> `get_state`, `get_last_assistant_text`, `get_system_prompt`,
+> `set_system_prompt`, `set_model`, `export_html`, `compact`, `clear_context`,
+> `new_session`, plus `steer` / `follow_up` and the `agent_settled` terminal
+> event. Model swap arrived as a bare `set_model`; thinking levels, fork/clone,
+> the extension-UI channel, auto-retry and `bash` are all still out, for the
+> reasons in #30. Session naming needs a storage decision and is filed
+> separately.
+
 ## Wire format
 
 **Newline-delimited JSON.** Each record is `json.dumps(obj) + "\n"`. LF only — strip a trailing `\r` before emit if present (pi-mono does this explicitly to handle Windows clients writing CRLF).
@@ -74,7 +83,9 @@ We mirror this **two-category** pattern. It keeps responses idempotent (one per 
 
 `id` is optional but if provided must be echoed on the response. Generate `req_<N>` if absent (matches `rpc-client.ts:479`).
 
-`prompt` returns success **immediately** after preflight, before the run completes. Events follow asynchronously, terminating with either `agent_end` or `error`. Clients track lifecycle by watching for those terminal events, not by waiting on the response.
+`prompt` returns success **immediately** after preflight, before the run completes. Its `data.accepted` says whether the run `started` or was `queued` behind one already in flight — the response answers "did you accept this", never "did it finish".
+
+Events follow asynchronously. **Clients wait on `agent_settled`, not `agent_end`.** `agent_end` means one run finished; a queued follow-up starts another, so it can fire several times for one client prompt. `agent_settled` is emitted once the run is done *and* the queues are drained, including on the error and abort paths.
 
 ## Outbound: event mapping from our internal taxonomy
 
@@ -104,7 +115,17 @@ The naming difference (`tool_call_*` for LLM emission vs. `tool_execution_*`/`to
 2. Read stdin line by line; parse each as a command.
 3. Write responses (correlated by `id`) and events (uncorrelated) to stdout, each as one `json.dumps + "\n"`.
 4. On stdin EOF, shut down cleanly.
-5. SIGTERM → cancel any in-flight task, drain pending events, exit. SIGKILL is brute-force only.
+5. SIGTERM/SIGHUP → cancel any in-flight task, exit. SIGKILL is brute-force only.
+
+Implemented as `rpc.serve_stdio(server)`, which claims stdout, installs the
+signal handlers and reads stdin to EOF. Both `midge --rpc` and
+`examples/rpc_agent.py` go through it.
+
+**Stdout is claimed at startup.** `claim_stdout()` captures the real handle for
+the protocol and repoints `sys.stdout` at stderr, so a stray `print()` from a
+tool, a hook, an extension or a dependency cannot corrupt the stream. This is
+not hypothetical — an extension that printed on every hook event put three
+non-JSON lines mid-stream before the guard existed.
 
 ## Errors
 
@@ -115,19 +136,20 @@ The naming difference (`tool_call_*` for LLM emission vs. `tool_execution_*`/`to
 ## Subtle points
 
 - **Stream interleaving.** When two commands arrive close together, the second only fires *after* the first's response is written. Pi-mono enforces this by serializing on a queue (`rpc-mode.ts`); we should do the same with a single asyncio task driving the stdin reader.
-- **Async commands and events.** While a `prompt` is streaming, async events flow on stdout. If the client sends a `get_messages` mid-prompt, our serialized loop will run it after the prompt completes (or after `abort` interrupts it). Document this.
+- **Async commands and events.** While a `prompt` is streaming, async events flow on stdout. A `get_messages` sent mid-prompt is answered *immediately*, interleaved with the event stream — the dispatch loop keeps reading stdin during a run so `abort` can land, and every other command rides the same path. (An earlier draft of this note said such commands were deferred until the run finished; that was never what the code did.)
 - **No image support in v1.** `prompt` accepts `message: str` only. `images` is deferred.
 - **JSON encoding gotcha.** `json.dumps` defaults to ensure_ascii=True; turn it off (`ensure_ascii=False`) so unicode survives without `\u` escapes — keeps wire payloads small and readable.
 
 ## What Phase 2 implements
 
 - `src/midge/rpc.py`:
-  - A `serve_stdio()` async function that reads stdin, dispatches commands, writes events.
-  - One handler per inbound command type. Use a dispatch dict, not isinstance chains.
-  - Internal mapper `agent_event_to_wire(ev) -> dict | None` — returns None for events we drop.
+  - `RpcServer.serve(read_line=, write=)` — the transport-agnostic loop; the injected callables are what make it testable without pipes.
+  - `serve_stdio(server)` — binds that loop to this process's stdin/stdout.
+  - One handler per inbound command type, dispatched by a `match` on `type`. (This note originally said "use a dispatch dict, not isinstance chains". A `match` statement reads better than either and is what shipped.)
+  - `event_to_wire(ev) -> dict | None` — returns None for events we drop. Named `agent_event_to_wire` in this note originally.
 - `examples/rpc_agent.py`:
-  - Tiny entrypoint mirroring `examples/coding_agent.py`'s wiring, but ending in `await serve_stdio(agent)` instead of running a single prompt.
+  - Tiny entrypoint mirroring `examples/coding_agent.py`'s wiring, ending in `await serve_stdio(server)`. `midge --rpc` is the first-class route and gets `--session`, `--skill-dir` and the compaction flags; the example stays minimal on purpose.
 - Tests in `tests/test_rpc.py`:
-  - Drive `serve_stdio` with `asyncio.StreamReader`/`StreamWriter` pairs (or `io.BytesIO` wrappers) and assert event sequences.
+  - Drive `serve()` with a queue-backed fake stdin and a buffer-backed fake stdout, asserting on parsed frames. Keeping the transport injectable is what lets the whole protocol be tested in-process.
 
-~150 lines for the RPC layer plus tests.
+**Keep the event-mapping seam.** pi pipes its internal session events straight to stdout, which is free for pi but couples every client to its internal types — that is how TUI-only events ended up on its wire. Add new events through `event_to_wire`, and keep the explicit `tool_call_*` (the model is requesting) vs `tool_execution_*` / `tool_result` (we ran it) split; in pi that distinction is implied by ordering inside a nested payload.

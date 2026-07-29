@@ -26,6 +26,7 @@ import contextlib
 import io
 import json
 import logging
+import signal
 import sys
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -54,6 +55,8 @@ from midge.persistence import Session, read_transcript
 from midge.session import export_html
 
 _logger = logging.getLogger(__name__)
+
+READ_LIMIT = 16 * 1024 * 1024
 
 WriteFn = Callable[[bytes], Awaitable[None]]
 ReadLineFn = Callable[[], Awaitable[bytes]]
@@ -176,7 +179,10 @@ class RpcServer:
                 line = await read_line()
                 if not line:
                     break
-                stripped = line.rstrip(b"\r\n")
+                # `strip`, not `rstrip("\r\n")`: a whitespace-only line is a
+                # blank line, not a malformed command, and answering it with a
+                # parse error is noise.
+                stripped = line.strip()
                 if not stripped:
                     continue
                 try:
@@ -516,3 +522,46 @@ class RpcServer:
         line = (json.dumps(obj, ensure_ascii=False) + "\n").encode("utf-8")
         async with self._write_lock:
             await self._write(line)
+
+
+async def serve_stdio(server: RpcServer) -> None:
+    """Run `server` over this process's stdin/stdout.
+
+    Claims stdout first, installs SIGTERM/SIGHUP handlers so a supervisor can
+    stop the process cleanly, and shuts down on stdin EOF.
+    """
+    stdout = claim_stdout()
+    loop = asyncio.get_running_loop()
+
+    # The default 64 KiB limit turns a large pasted prompt into a ValueError
+    # that escapes `serve` and kills the process.
+    reader = asyncio.StreamReader(limit=READ_LIMIT)
+    await loop.connect_read_pipe(lambda: asyncio.StreamReaderProtocol(reader), sys.stdin)
+
+    async def read_line() -> bytes:
+        return await reader.readline()
+
+    async def write(data: bytes) -> None:
+        stdout.write(data)
+        stdout.flush()
+
+    serving = asyncio.ensure_future(server.serve(read_line=read_line, write=write))
+
+    def _stop(signame: str) -> None:
+        _logger.info("rpc_signal signal=%s", signame)
+        serving.cancel()
+
+    installed: list[signal.Signals] = []
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        with contextlib.suppress(NotImplementedError, AttributeError):
+            loop.add_signal_handler(sig, _stop, sig.name)
+            installed.append(sig)
+    try:
+        # Cancelling is a clean stop here, not a failure: `serve`'s own finally
+        # cancels the in-flight run on the way out.
+        with contextlib.suppress(asyncio.CancelledError):
+            await serving
+    finally:
+        for sig in installed:
+            with contextlib.suppress(NotImplementedError):
+                loop.remove_signal_handler(sig)
