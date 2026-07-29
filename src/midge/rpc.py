@@ -28,6 +28,7 @@ import json
 import logging
 import sys
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any, BinaryIO
 
 from midge.agent import (
@@ -47,7 +48,10 @@ from midge.client import (
     ToolCallEnd,
     ToolCallStart,
 )
-from midge.messages import TextContent, ToolCall
+from midge.compaction import compact
+from midge.messages import AssistantMessage, TextContent, ToolCall
+from midge.persistence import Session, read_transcript
+from midge.session import export_html
 
 _logger = logging.getLogger(__name__)
 
@@ -141,8 +145,18 @@ def event_to_wire(ev: Any) -> dict[str, Any] | None:
 
 
 class RpcServer:
-    def __init__(self, agent: Agent) -> None:
+    def __init__(
+        self,
+        agent: Agent,
+        *,
+        session: Session | None = None,
+        compaction_keep_recent: int = 20_000,
+    ) -> None:
         self.agent = agent
+        # `client` and `model` come off the agent; `session` is what the export
+        # and persistence commands need and cannot reach otherwise.
+        self.session = session
+        self.compaction_keep_recent = compaction_keep_recent
         self._current_run: asyncio.Task[None] | None = None
         self._write_lock = asyncio.Lock()
         self._write: WriteFn | None = None
@@ -187,6 +201,22 @@ class RpcServer:
                 await self._handle_abort(cmd_id)
             case "get_messages":
                 await self._handle_get_messages(cmd_id)
+            case "get_state":
+                await self._handle_get_state(cmd_id)
+            case "get_last_assistant_text":
+                await self._handle_get_last_assistant_text(cmd_id)
+            case "get_system_prompt":
+                await self._handle_get_system_prompt(cmd_id)
+            case "set_system_prompt":
+                await self._handle_set_system_prompt(cmd_id, cmd)
+            case "set_model":
+                await self._handle_set_model(cmd_id, cmd)
+            case "export_html":
+                await self._handle_export_html(cmd_id, cmd)
+            case "compact":
+                await self._handle_compact(cmd_id)
+            case "new_session" | "clear_context":
+                await self._handle_new_session(cmd_id, cmd)
             case _:
                 _logger.warning("rpc_command_unknown type=%r", cmd_type)
                 await self._respond(
@@ -239,6 +269,157 @@ class RpcServer:
                 await self._emit(
                     {"type": "error", "message": str(e), "stop_reason": "error"}
                 )
+
+    async def _handle_get_state(self, cmd_id: str | None) -> None:
+        # Deliberately excludes the system prompt: composed from the base, every
+        # extension contribution and the skills catalogue, it runs to kilobytes,
+        # which is not what a state summary is for. `get_system_prompt` has it.
+        await self._respond(
+            cmd_id,
+            "get_state",
+            success=True,
+            data={
+                "model": self.agent.model,
+                "streaming": self._current_run is not None and not self._current_run.done(),
+                "session": str(self.session.path) if self.session is not None else None,
+                "messages": len(self.agent.history),
+            },
+        )
+
+    async def _handle_get_last_assistant_text(self, cmd_id: str | None) -> None:
+        text: str | None = None
+        for m in reversed(self.agent.history):
+            if isinstance(m, AssistantMessage):
+                joined = "".join(c.text for c in m.content if isinstance(c, TextContent))
+                text = joined or None
+                break
+        await self._respond(
+            cmd_id, "get_last_assistant_text", success=True, data={"text": text}
+        )
+
+    async def _handle_get_system_prompt(self, cmd_id: str | None) -> None:
+        await self._respond(
+            cmd_id,
+            "get_system_prompt",
+            success=True,
+            data={"prompt": self.agent.system_prompt},
+        )
+
+    async def _handle_set_system_prompt(self, cmd_id: str | None, cmd: dict[str, Any]) -> None:
+        prompt = cmd.get("prompt")
+        if not isinstance(prompt, str):
+            await self._respond(
+                cmd_id,
+                "set_system_prompt",
+                success=False,
+                error="`prompt` is required and must be a string",
+            )
+            return
+        # `_stream` snapshots the prompt once outside its turn loop, so a change
+        # mid-run lands on the next turn rather than corrupting the one in
+        # flight. It replaces the whole composed prompt — skills catalogue and
+        # extension contributions included — so callers should read, edit, set.
+        self.agent.system_prompt = prompt
+        _logger.info("rpc_system_prompt_set chars=%d", len(prompt))
+        await self._respond(cmd_id, "set_system_prompt", success=True)
+
+    async def _handle_set_model(self, cmd_id: str | None, cmd: dict[str, Any]) -> None:
+        model = cmd.get("model")
+        if not isinstance(model, str) or not model:
+            await self._respond(
+                cmd_id,
+                "set_model",
+                success=False,
+                error="`model` is required and must be a non-empty string",
+            )
+            return
+        self.agent.model = model
+        _logger.info("rpc_model_set model=%s", model)
+        await self._respond(cmd_id, "set_model", success=True)
+
+    async def _handle_export_html(self, cmd_id: str | None, cmd: dict[str, Any]) -> None:
+        raw_path = cmd.get("output_path")
+        if raw_path is not None and not isinstance(raw_path, str):
+            await self._respond(
+                cmd_id, "export_html", success=False,
+                error="`output_path` must be a string",
+            )
+            return
+        if self.session is None:
+            await self._respond(
+                cmd_id, "export_html", success=False,
+                error="no session; export needs a transcript on disk",
+            )
+            return
+
+        out = Path(raw_path) if raw_path else self.session.path.with_suffix(".html")
+        # From the file, not `agent.history`: history is post-compaction and
+        # loses every message a compaction folded away.
+        _, entries = read_transcript(self.session.path)
+        try:
+            out.write_text(
+                export_html(entries, model=self.agent.model), encoding="utf-8"
+            )
+        except OSError as e:
+            await self._respond(cmd_id, "export_html", success=False, error=str(e))
+            return
+        _logger.info("rpc_exported path=%s entries=%d", out, len(entries))
+        await self._respond(cmd_id, "export_html", success=True, data={"path": str(out)})
+
+    async def _handle_compact(self, cmd_id: str | None) -> None:
+        result = await compact(
+            self.agent.history,
+            client=self.agent.client,
+            model=self.agent.model,
+            keep_recent_tokens=self.compaction_keep_recent,
+            hooks=self.agent.hooks,
+        )
+        if result is None:
+            await self._respond(
+                cmd_id, "compact", success=True,
+                data={"summary": None, "cut_index": None, "message_count": len(self.agent.history)},
+            )
+            return
+        new_history, summary, cut_index = result
+        self.agent.history = new_history
+        if self.session is not None:
+            self.session.append_compaction(summary=summary, cut_index=cut_index)
+        await self._respond(
+            cmd_id, "compact", success=True,
+            data={
+                "summary": summary,
+                "cut_index": cut_index,
+                "message_count": len(new_history),
+            },
+        )
+
+    async def _handle_new_session(self, cmd_id: str | None, cmd: dict[str, Any]) -> None:
+        raw_path = cmd.get("path")
+        if raw_path is not None and not isinstance(raw_path, str):
+            await self._respond(
+                cmd_id, "new_session", success=False, error="`path` must be a string"
+            )
+            return
+
+        self.agent.history = []
+        if self.session is not None:
+            self.session.close()
+            self.session = None
+        if raw_path:
+            try:
+                self.session = Session.new(
+                    Path(raw_path),
+                    model=self.agent.model,
+                    system_prompt=self.agent.system_prompt,
+                )
+            except (OSError, FileExistsError) as e:
+                await self._respond(cmd_id, "new_session", success=False, error=str(e))
+                return
+        _logger.info("rpc_new_session path=%s", raw_path or "-")
+        await self._respond(
+            cmd_id, "new_session", success=True,
+            data={"session": str(self.session.path) if self.session is not None else None},
+        )
 
     async def _handle_abort(self, cmd_id: str | None) -> None:
         if self._current_run is not None and not self._current_run.done():

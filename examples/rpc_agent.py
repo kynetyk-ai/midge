@@ -109,7 +109,7 @@ async def amain(extension_dirs: list[Path]) -> int:
         stdout.write(data)
         stdout.flush()
 
-    server = RpcServer(agent)
+    server = RpcServer(agent, session=None)
     await server.serve(read_line=read_line, write=write)
     return 0
 
