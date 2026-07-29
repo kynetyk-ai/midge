@@ -92,7 +92,7 @@ def load_skills(sources: Iterable[Path | str]) -> list[Skill]:
             existing = skills.get(skill.name)
             if existing is not None:
                 _logger.warning(
-                    "Skill %r at %s shadowed by %s",
+                    "skill_name_shadowed name=%s path=%s winner=%s",
                     skill.name,
                     skill.path,
                     existing.path,
@@ -165,18 +165,18 @@ def skill_message(
 def _sources_for(path: Path) -> list[Path]:
     if path.is_file():
         if path.suffix != ".md":
-            _logger.warning("Skill source is not a markdown file: %s", path)
+            _logger.warning("skill_source_not_markdown path=%s", path)
             return []
         return [path]
     if path.is_dir():
         return _walk(path, 0)
-    _logger.warning("Skill source not found: %s", path)
+    _logger.warning("skill_source_not_found path=%s", path)
     return []
 
 
 def _walk(directory: Path, depth: int) -> list[Path]:
     if depth > _MAX_DEPTH:
-        _logger.warning("Skill search stopped at depth %d: %s", _MAX_DEPTH, directory)
+        _logger.warning("skill_search_depth_exceeded max=%d path=%s", _MAX_DEPTH, directory)
         return []
 
     # A directory holding SKILL.md is a leaf. This is what keeps a bundled
@@ -188,7 +188,7 @@ def _walk(directory: Path, depth: int) -> list[Path]:
     try:
         entries = sorted(directory.iterdir())
     except OSError as e:
-        _logger.warning("Cannot read skill directory %s: %s", directory, e)
+        _logger.warning("skill_dir_unreadable path=%s error=%s", directory, type(e).__name__)
         return []
 
     found: list[Path] = []
@@ -215,33 +215,33 @@ def _load_skill_file(path: Path) -> Skill | None:
     try:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as e:
-        _logger.warning("Skipping skill %s: %s", path, e)
+        _logger.warning("skill_unreadable path=%s error=%s", path, type(e).__name__)
         return None
 
     raw_frontmatter, _ = _split_frontmatter(text)
     if raw_frontmatter is None:
-        _logger.warning("Skipping skill %s: missing YAML frontmatter", path)
+        _logger.warning("skill_frontmatter_missing path=%s", path)
         return None
 
     try:
         parsed = yaml.safe_load(raw_frontmatter)
     except yaml.YAMLError as e:
-        _logger.warning("Skipping skill %s: invalid frontmatter: %s", path, e)
+        _logger.warning("skill_frontmatter_invalid path=%s error=%s", path, e)
         return None
     if not isinstance(parsed, dict):
-        _logger.warning("Skipping skill %s: frontmatter is not a mapping", path)
+        _logger.warning("skill_frontmatter_not_mapping path=%s", path)
         return None
 
     description = parsed.get("description")
     # The description is the only thing the model sees before deciding whether
     # to open the file, so a skill without one is unreachable by construction.
     if not isinstance(description, str) or not description.strip():
-        _logger.warning("Skipping skill %s: description is required", path)
+        _logger.warning("skill_description_missing path=%s", path)
         return None
     description = description.strip()
     if len(description) > _MAX_DESCRIPTION:
         _logger.warning(
-            "Skill %s: description is %d chars (max %d)",
+            "skill_description_too_long path=%s chars=%d max=%d",
             path,
             len(description),
             _MAX_DESCRIPTION,
@@ -255,7 +255,7 @@ def _load_skill_file(path: Path) -> Skill | None:
         name = raw_name.strip()
     else:
         # Unquoted `on`/`no`/`yes` parse as bools, not strings.
-        _logger.warning("Skill %s: name is not a string, using %r", path, fallback)
+        _logger.warning("skill_name_not_a_string path=%s using=%s", path, fallback)
         name = fallback
 
     _warn_about_name(path, name)
@@ -274,15 +274,13 @@ def _warn_about_name(path: Path, name: str) -> None:
     # is hostile to skill directories shared between harnesses, so it is not
     # enforced here — pi dropped it for the same reason.
     if len(name) > _MAX_NAME:
-        _logger.warning("Skill %s: name is %d chars (max %d)", path, len(name), _MAX_NAME)
+        _logger.warning("skill_name_too_long path=%s chars=%d max=%d", path, len(name), _MAX_NAME)
     if not _NAME_RE.match(name):
-        _logger.warning(
-            "Skill %s: name %r should be lowercase a-z, 0-9 and hyphens only", path, name
-        )
+        _logger.warning("skill_name_bad_charset path=%s name=%s", path, name)
     if name.startswith("-") or name.endswith("-"):
-        _logger.warning("Skill %s: name %r should not start or end with a hyphen", path, name)
+        _logger.warning("skill_name_edge_hyphen path=%s name=%s", path, name)
     if "--" in name:
-        _logger.warning("Skill %s: name %r should not contain consecutive hyphens", path, name)
+        _logger.warning("skill_name_double_hyphen path=%s name=%s", path, name)
 
 
 __all__ = [

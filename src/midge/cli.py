@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 import os
 from pathlib import Path
 
@@ -18,9 +19,13 @@ from midge.agent import Agent
 from midge.client import Client
 from midge.extensions import BUILTIN_TOOL_DIRS, load_extensions
 from midge.hooks import Hooks, SessionEnd, SessionStart
+from midge.logs import configure as configure_logging
+from midge.logs import provider_host
 from midge.persistence import Session
 from midge.skills import default_skill_dirs, load_skills, skills_prompt
-from midge.tui import run_tui
+from midge.tui import run_tui, tui_log_handler
+
+_logger = logging.getLogger(__name__)
 
 BASE_SYSTEM_PROMPT = (
     "You are a coding assistant working in a local repository. "
@@ -78,6 +83,9 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
+    # Before `load_extensions`/`load_skills`, which are the two loudest
+    # loaders — a handler installed after them loses every startup diagnostic.
+    configure_logging(tui_log_handler())
     hooks = Hooks()
     registry, prompt_addition = load_extensions(
         [*BUILTIN_TOOL_DIRS, *args.extension_dir], hooks=hooks
@@ -106,9 +114,18 @@ def main(argv: list[str] | None = None) -> None:
     # invisible, and its absolute paths could point at another machine entirely.
     full_prompt = "\n\n".join(p for p in (durable, prompt_addition, catalogue) if p)
 
+    base_url = os.getenv("OPENAI_BASE_URL")
+    _logger.info(
+        "startup mode=tui model=%s provider=%s tools=%d skills=%d session=%s",
+        model,
+        provider_host(base_url),
+        len(registry),
+        len(skills),
+        args.session or "-",
+    )
     client = Client(
         api_key=os.getenv("OPENAI_API_KEY"),
-        base_url=os.getenv("OPENAI_BASE_URL"),
+        base_url=base_url,
     )
     agent = Agent(
         client=client,

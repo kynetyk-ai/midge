@@ -141,6 +141,7 @@ class RpcServer:
         cmd_id_raw = cmd.get("id")
         cmd_id = cmd_id_raw if isinstance(cmd_id_raw, str) else None
         cmd_type = cmd.get("type")
+        _logger.info("rpc_command type=%s id=%s", cmd_type, cmd_id or "-")
         match cmd_type:
             case "prompt":
                 await self._handle_prompt(cmd_id, cmd)
@@ -149,6 +150,7 @@ class RpcServer:
             case "get_messages":
                 await self._handle_get_messages(cmd_id)
             case _:
+                _logger.warning("rpc_command_unknown type=%r", cmd_type)
                 await self._respond(
                     cmd_id,
                     cmd_type if isinstance(cmd_type, str) else "unknown",
@@ -194,7 +196,7 @@ class RpcServer:
                 )
             raise
         except Exception as e:
-            _logger.exception("error during prompt run")
+            _logger.exception("rpc_prompt_failed")
             if not saw_error_event:
                 await self._emit(
                     {"type": "error", "message": str(e), "stop_reason": "error"}

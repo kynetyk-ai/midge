@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -32,6 +33,7 @@ from midge.hooks import (
     TurnStart,
     TurnStartResult,
 )
+from midge.logs import payload
 from midge.messages import (
     AssistantMessage,
     Message,
@@ -274,7 +276,12 @@ class Agent:
             # BaseException, not Exception: `GeneratorExit` (any consumer that
             # breaks out of the `async for`), `KeyboardInterrupt`, and a hook
             # raising under `error_mode="raise"` all leave the same orphan.
-            except BaseException:
+            except BaseException as e:
+                _logger.warning(
+                    "turn_interrupted error=%s pending=%d",
+                    type(e).__name__,
+                    sum(1 for tc in tool_calls if tc.id not in answered),
+                )
                 for tc in tool_calls:
                     if tc.id in answered:
                         continue
@@ -306,26 +313,47 @@ class Agent:
 
     async def _run_tool(self, tc: ToolCall) -> ToolResultMessage:
         if tc.arguments_error is not None:
+            _logger.warning("tool_args_unusable tool=%s id=%s", tc.name, tc.id)
             return _tool_error(
                 tc, f"Arguments could not be parsed: {tc.arguments_error}"
             )
+        _logger.debug("tool_start tool=%s id=%s args=%s", tc.name, tc.id, payload(tc.arguments))
+        started = time.monotonic()
         try:
             result: Any = await self.tools.invoke(tc.name, tc.arguments)
+            text = _truncate(str(result))
+            _logger.info(
+                "tool_ok tool=%s id=%s ms=%d chars=%d",
+                tc.name,
+                tc.id,
+                int((time.monotonic() - started) * 1000),
+                len(text),
+            )
+            _logger.debug("tool_result tool=%s id=%s result=%s", tc.name, tc.id, payload(text))
             return ToolResultMessage(
                 tool_call_id=tc.id,
                 tool_name=tc.name,
-                content=[TextContent(text=_truncate(str(result)))],
+                content=[TextContent(text=text)],
                 is_error=False,
             )
         except KeyError:
+            _logger.warning("tool_not_found tool=%s id=%s", tc.name, tc.id)
             return _tool_error(tc, f"Tool {tc.name!r} not found")
         except ValidationError as e:
+            _logger.warning("tool_args_invalid tool=%s id=%s", tc.name, tc.id)
             return _tool_error(tc, f"Invalid arguments: {e}")
         except asyncio.CancelledError:
+            _logger.info("tool_cancelled tool=%s id=%s", tc.name, tc.id)
             raise
         except Exception as e:
+            # exc_info because the tool body is user code: without a traceback
+            # the exception type is all anyone gets, and it is rarely enough.
             _logger.warning(
-                "tool_failed tool=%s id=%s error=%s", tc.name, tc.id, type(e).__name__
+                "tool_failed tool=%s id=%s error=%s",
+                tc.name,
+                tc.id,
+                type(e).__name__,
+                exc_info=e,
             )
             return _tool_error(tc, f"Tool error: {type(e).__name__}: {e}")
 
@@ -336,6 +364,7 @@ def _truncate(text: str) -> str:
     if len(text) <= MAX_TOOL_RESULT_CHARS:
         return text
     dropped = len(text) - MAX_TOOL_RESULT_CHARS
+    _logger.warning("tool_result_truncated dropped=%d limit=%d", dropped, MAX_TOOL_RESULT_CHARS)
     return text[:MAX_TOOL_RESULT_CHARS] + f"\n… [truncated {dropped} characters]"
 
 

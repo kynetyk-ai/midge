@@ -21,8 +21,9 @@ from pathlib import Path
 from midge.agent import Agent
 from midge.client import Client
 from midge.extensions import load_extensions
+from midge.logs import configure as configure_logging
 from midge.persistence import Session
-from midge.tui import run_tui
+from midge.tui import run_tui, tui_log_handler
 
 NOTES_SYSTEM_PROMPT = (
     "You are a personal knowledge assistant. Help the user capture, find, "
@@ -55,6 +56,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
+    configure_logging(tui_log_handler())
 
     registry, prompt_addition = load_extensions([_EXTENSION_DIR])
     full_prompt = NOTES_SYSTEM_PROMPT

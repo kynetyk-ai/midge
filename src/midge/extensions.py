@@ -46,23 +46,31 @@ def load_extensions(
             try:
                 module = _import_file(f)
             except Exception as e:
-                _logger.warning("Failed to load extension %s: %s", f, e)
+                _logger.warning(
+                    "extension_import_failed path=%s error=%s",
+                    f,
+                    type(e).__name__,
+                    exc_info=e,
+                )
                 continue
+            # Extensions log under the same `midge` root, so one env var covers
+            # them and the record names the file it came from. An extension that
+            # declares its own `log` module-level name keeps it.
+            setattr(module, "log", logging.getLogger(f"midge.ext.{f.stem}"))  # noqa: B010
             for t in _extract_tools(module):
                 if t.name in registry:
-                    _logger.warning(
-                        "Tool %r from %s shadowed by earlier registration",
-                        t.name,
-                        f,
-                    )
+                    _logger.warning("tool_name_shadowed tool=%s path=%s", t.name, f)
                     continue
                 registry.add(t)
+                _logger.debug("tool_registered tool=%s path=%s", t.name, f)
             sp = getattr(module, "SYSTEM_PROMPT", None)
             if isinstance(sp, str) and sp.strip():
                 prompts.append(sp.strip())
             if hooks is not None:
                 _register_hooks(module, f, hooks)
+            _logger.debug("extension_loaded path=%s", f)
 
+    _logger.info("extensions_loaded tools=%d prompt_contributions=%d", len(registry), len(prompts))
     return registry, "\n\n".join(prompts)
 
 
@@ -79,7 +87,12 @@ def _register_hooks(module: ModuleType, path: Path, hooks: Hooks) -> None:
     try:
         fn(scoped)
     except Exception as e:
-        _logger.warning("register_hooks failed for %s: %s", path, e)
+        _logger.warning(
+            "extension_register_hooks_failed path=%s error=%s",
+            path,
+            type(e).__name__,
+            exc_info=e,
+        )
 
 
 class _SourceScopedHooks:
@@ -107,7 +120,7 @@ def _files_for(path: Path) -> list[Path] | None:
         return [path] if _is_extension_file(path) else []
     if path.is_dir():
         return sorted(p for p in path.iterdir() if _is_extension_file(p))
-    _logger.warning("Extension source not found: %s", path)
+    _logger.warning("extension_source_not_found path=%s", path)
     return None
 
 
