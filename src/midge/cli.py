@@ -170,6 +170,7 @@ def main(argv: list[str] | None = None) -> None:
             compaction_keep_recent=args.compaction_keep_recent,
             base_prompt=durable,
             prompt_suffix="\n\n".join(p for p in (prompt_addition, catalogue) if p),
+            skills=skills,
         )
 
         async def _serve() -> None:

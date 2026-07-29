@@ -7,11 +7,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+from midge import rpc
 from midge.agent import Agent
 from midge.client import Client
 from midge.messages import AssistantMessage, TextContent, UserMessage
 from midge.persistence import Session
 from midge.rpc import RpcServer, event_to_wire
+from midge.skills import Skill, load_skills, skills_prompt
 from midge.tools import ToolRegistry, tool
 
 
@@ -1087,5 +1089,257 @@ async def test_steer_requires_a_message() -> None:
 
     assert resp["success"] is False
     assert "message" in resp["error"]
+    inbox.close()
+    await task
+
+
+# ---- get_commands ----
+
+
+def _write_skill(directory: Path, name: str, *, extra: str = "") -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / "SKILL.md"
+    path.write_text(
+        f"---\nname: {name}\ndescription: Does {name} things.\n{extra}---\n\n# {name}\n\nbody\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def _server_with_skills(agent: Agent, skills: list[Skill]) -> tuple[Any, _Inbox, _Outbox, Any]:
+    server = RpcServer(agent, skills=skills)
+    inbox, outbox = _Inbox(), _Outbox()
+    task = asyncio.create_task(server.serve(read_line=inbox.read_line, write=outbox.write))
+    return server, inbox, outbox, task
+
+
+async def _commands(inbox: _Inbox, outbox: _Outbox) -> list[dict[str, Any]]:
+    resp = await _command(inbox, outbox, {"id": "gc", "type": "get_commands"})
+    assert resp["success"] is True
+    return resp["data"]["commands"]
+
+
+async def test_builtins_are_listed_without_any_skills() -> None:
+    agent = Agent(client=Client(), model="m")
+    _server, inbox, outbox, task = _start_server(agent)
+
+    commands = await _commands(inbox, outbox)
+
+    names = {c["name"] for c in commands}
+    assert "compact" in names and "abort" in names and "set_model" in names
+    assert all(c["source"] == "builtin" for c in commands)
+    inbox.close()
+    await task
+
+
+async def test_every_entry_carries_the_contract() -> None:
+    agent = Agent(client=Client(), model="m")
+    _server, inbox, outbox, task = _start_server(agent)
+
+    for c in await _commands(inbox, outbox):
+        assert set(c) >= {"name", "source", "invoke", "description", "parameters"}
+        assert c["invoke"] in ("command", "prompt")
+        assert c["description"]
+        params = c["parameters"]
+        assert params["type"] == "object"
+        assert params["additionalProperties"] is False
+        assert isinstance(params.get("properties", {}), dict)
+        # Provenance is skills-only for now.
+        assert ("source_info" in c) == (c["source"] == "skill")
+    inbox.close()
+    await task
+
+
+async def test_zero_argument_commands_are_select_and_fire() -> None:
+    """Empty `properties` is the signal a consumer uses to decide whether to
+    collect input before invoking."""
+    agent = Agent(client=Client(), model="m")
+    _server, inbox, outbox, task = _start_server(agent)
+
+    by_name = {c["name"]: c for c in await _commands(inbox, outbox)}
+
+    for name in ("compact", "clear_context", "abort"):
+        assert by_name[name]["parameters"]["properties"] == {}, name
+    inbox.close()
+    await task
+
+
+async def test_required_and_optional_arguments_are_distinguishable() -> None:
+    agent = Agent(client=Client(), model="m")
+    _server, inbox, outbox, task = _start_server(agent)
+
+    by_name = {c["name"]: c for c in await _commands(inbox, outbox)}
+
+    set_model = by_name["set_model"]["parameters"]
+    assert set_model["required"] == ["model"]
+    assert set_model["properties"]["model"]["type"] == "string"
+
+    export = by_name["export_html"]["parameters"]
+    assert "output_path" in export["properties"]
+    assert "output_path" not in export.get("required", [])
+    inbox.close()
+    await task
+
+
+async def test_listed_builtins_are_all_really_dispatchable() -> None:
+    """Guards against a command being added to the registry but never wired,
+    or renamed on one side only."""
+    agent = Agent(client=Client(), model="m")
+    _server, inbox, outbox, task = _start_server(agent)
+
+    commands = await _commands(inbox, outbox)
+    inbox.close()
+    await task
+
+    source = Path(rpc.__file__).read_text(encoding="utf-8")
+    for c in commands:
+        if c["source"] == "builtin":
+            assert f'case "{c["name"]}"' in source, f"{c['name']} is listed but not dispatched"
+
+
+async def test_skills_are_listed_with_provenance(tmp_path: Path) -> None:
+    path = _write_skill(tmp_path / "deploy", "deploy")
+    skills = load_skills([tmp_path])
+    agent = Agent(client=Client(), model="m")
+    _server, inbox, outbox, task = _server_with_skills(agent, skills)
+
+    entry = next(c for c in await _commands(inbox, outbox) if c["source"] == "skill")
+
+    assert entry["name"] == "skill:deploy"
+    assert entry["invoke"] == "prompt"
+    assert entry["description"] == "Does deploy things."
+    assert entry["source_info"]["path"] == str(path.resolve())
+    inbox.close()
+    await task
+
+
+async def test_a_non_invocable_skill_is_listed_but_not_advertised(tmp_path: Path) -> None:
+    """Hiding a skill from the model's catalogue is exactly the case where an
+    explicit command is the only way to reach it — the two surfaces disagree on
+    purpose."""
+    _write_skill(tmp_path / "manual", "manual", extra="disable-model-invocation: true\n")
+    skills = load_skills([tmp_path])
+    assert skills_prompt(skills) == ""
+
+    agent = Agent(client=Client(), model="m")
+    _server, inbox, outbox, task = _server_with_skills(agent, skills)
+
+    names = {c["name"] for c in await _commands(inbox, outbox)}
+    assert "skill:manual" in names
+    inbox.close()
+    await task
+
+
+async def test_command_list_is_stable_across_calls(tmp_path: Path) -> None:
+    _write_skill(tmp_path / "deploy", "deploy")
+    agent = Agent(client=Client(), model="m")
+    _server, inbox, outbox, task = _server_with_skills(agent, load_skills([tmp_path]))
+
+    first = await _commands(inbox, outbox)
+    outbox.lines.clear()
+    second = await _commands(inbox, outbox)
+
+    assert [c["name"] for c in first] == [c["name"] for c in second]
+    inbox.close()
+    await task
+
+
+# ---- /skill: expansion ----
+
+
+async def test_skill_command_expands_into_the_envelope(tmp_path: Path) -> None:
+    _write_skill(tmp_path / "deploy", "deploy")
+    client = Client()
+    captured = _install_turns(client, [[_chunk(content="ok"), _chunk(finish_reason="stop")]])
+    agent = Agent(client=client, model="m")
+    _server, inbox, outbox, task = _server_with_skills(agent, load_skills([tmp_path]))
+
+    await inbox.feed_text('{"id":"p","type":"prompt","message":"/skill:deploy"}\n')
+    await _wait_for(lambda: any(x.get("type") == "agent_settled" for x in outbox.lines))
+
+    sent = str(captured[0]["messages"][-1]["content"])
+    assert sent.startswith('<skill name="deploy"')
+    assert "body" in sent
+    assert "/skill:deploy" not in sent
+    inbox.close()
+    await task
+
+
+async def test_skill_command_appends_trailing_arguments(tmp_path: Path) -> None:
+    _write_skill(tmp_path / "deploy", "deploy")
+    client = Client()
+    captured = _install_turns(client, [[_chunk(content="ok"), _chunk(finish_reason="stop")]])
+    agent = Agent(client=client, model="m")
+    _server, inbox, outbox, task = _server_with_skills(agent, load_skills([tmp_path]))
+
+    await inbox.feed_text('{"id":"p","type":"prompt","message":"/skill:deploy to staging"}\n')
+    await _wait_for(lambda: any(x.get("type") == "agent_settled" for x in outbox.lines))
+
+    sent = str(captured[0]["messages"][-1]["content"])
+    assert sent.endswith("</skill>\n\nto staging")
+    inbox.close()
+    await task
+
+
+async def test_ordinary_text_is_untouched(tmp_path: Path) -> None:
+    _write_skill(tmp_path / "deploy", "deploy")
+    client = Client()
+    captured = _install_turns(client, [[_chunk(content="ok"), _chunk(finish_reason="stop")]])
+    agent = Agent(client=client, model="m")
+    _server, inbox, outbox, task = _server_with_skills(agent, load_skills([tmp_path]))
+
+    await inbox.feed_text('{"id":"p","type":"prompt","message":"what does a/b testing mean?"}\n')
+    await _wait_for(lambda: any(x.get("type") == "agent_settled" for x in outbox.lines))
+
+    assert str(captured[0]["messages"][-1]["content"]) == "what does a/b testing mean?"
+    inbox.close()
+    await task
+
+
+async def test_unknown_skill_fails_and_starts_no_run(tmp_path: Path) -> None:
+    _write_skill(tmp_path / "deploy", "deploy")
+    agent = Agent(client=Client(), model="m")
+    server, inbox, outbox, task = _server_with_skills(agent, load_skills([tmp_path]))
+
+    resp = await _command(inbox, outbox, {"id": "p", "type": "prompt", "message": "/skill:nope"})
+
+    assert resp["success"] is False
+    assert "nope" in resp["error"]
+    assert server._current_run is None, "a failed expansion must not start a run"
+    inbox.close()
+    await task
+
+
+async def test_unknown_skill_in_steer_never_reaches_the_queue(tmp_path: Path) -> None:
+    """The failure has to happen at enqueue, which is the point of resolving
+    there: it reaches whoever queued it rather than surfacing mid-run."""
+    _write_skill(tmp_path / "deploy", "deploy")
+    agent = Agent(client=Client(), model="m")
+    server, inbox, outbox, task = _server_with_skills(agent, load_skills([tmp_path]))
+
+    resp = await _command(inbox, outbox, {"id": "s", "type": "steer", "message": "/skill:nope"})
+
+    assert resp["success"] is False
+    assert server.steering.snapshot() == {"steering": [], "follow_up": []}
+    inbox.close()
+    await task
+
+
+async def test_queued_skill_resolves_at_enqueue_not_at_delivery(tmp_path: Path) -> None:
+    """Editing the SKILL.md between queueing and delivery must not change what
+    is delivered — the user gets what they asked for when they asked."""
+    path = _write_skill(tmp_path / "deploy", "deploy")
+    agent = Agent(client=Client(), model="m")
+    server, inbox, outbox, task = _server_with_skills(agent, load_skills([tmp_path]))
+
+    await _command(inbox, outbox, {"id": "f", "type": "follow_up", "message": "/skill:deploy"})
+    path.write_text(
+        "---\nname: deploy\ndescription: d\n---\n\nCOMPLETELY DIFFERENT\n", encoding="utf-8"
+    )
+
+    queued = server.steering.take_follow_up()
+    assert queued is not None
+    assert "body" in str(queued.message.content)
+    assert "COMPLETELY DIFFERENT" not in str(queued.message.content)
     inbox.close()
     await task
