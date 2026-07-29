@@ -42,6 +42,7 @@ message, so the model chooses inputs but never the child's prompt, tools, or mod
 - **Pydantic v2** for tool-arg schemas.
 - **Textual** for the TUI.
 - **Lint:** `ruff`. **Type-check:** `pyright`. **Test:** `pytest` + `pytest-asyncio`.
+- **Size budget:** the core harness (`src/midge/*.py`, excluding `tools/` and `tui/`) is capped at 5000 lines, counting neither blanks, comments, nor docstrings. Enforced by `scripts/loc.py` in CI and in `tests/test_loc_budget.py`. Prose is deliberately free — if a change breaches the cap, simplify the code or move what is not core into `tools/` or an extension. Never comply by deleting explanation.
 
 ## Out of scope (do not propose without checking)
 

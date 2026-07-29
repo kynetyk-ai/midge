@@ -2,7 +2,9 @@
 
 A hackable Python agent harness originally ported from [`pi-mono`](https://github.com/badlogic/pi-mono) (TypeScript) for personal preference, readability, and domain-adaptability.
 
-The whole harness is roughly 2k LOC. The agent loop, OpenAI-compatible client, tool registry, extension loader, RPC server, HTML exporter, JSONL session save/load, context compaction, and Textual TUI are all small enough to read in a sitting and modify with confidence.
+The core harness is under 3.5k lines of code — blank lines, comments and docstrings excluded — and **CI holds it under 5k** (`scripts/loc.py`). The agent loop, OpenAI-compatible client, tool registry, extension loader, RPC server, HTML exporter, JSONL session save/load, context compaction, and Textual TUI are all small enough to read in a sitting and modify with confidence.
+
+The budget covers `src/midge/*.py`, the harness itself. `tools/` and `tui/` are excluded and reported separately: built-in tools are a library that grows with the domain, and the TUI is a presentation layer. Prose is free, so hitting the cap means simplifying code rather than deleting the explanation of why it works that way. Run `poetry run python scripts/loc.py` for the per-file table.
 
 ## What's in the box
 
