@@ -54,6 +54,92 @@ MAX_TOOL_RESULT_CHARS = 50_000
 _logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True, slots=True)
+class QueuedMessage:
+    id: str
+    message: UserMessage
+
+
+class SteeringQueue:
+    """Messages a client wants injected into a run that is already going.
+
+    Two queues with different delivery points, and the difference is the whole
+    idea. **Steering** lands at a tool-call boundary inside the current run —
+    "interrupt at the next safe seam", not "interrupt now": a steer issued
+    during a ten-tool batch waits for that batch to finish. **Follow-up** lands
+    only once the run has nothing left to do, which makes it the next turn.
+
+    Ordering between the two is priority, not arrival: steering is drained at
+    every boundary, follow-up only at quiescence, so a stream of steers delays
+    a follow-up indefinitely even if it was queued first.
+
+    Entries carry an id so a client can reconcile a delivery against what it
+    queued. Matching on text, which is what pi does, is ambiguous for duplicates
+    and blind to anything that is not text.
+
+    Whatever is queued must already be a plain message. Anything whose meaning
+    depends on *when* it runs — a command that invokes a handler, say — has to
+    be rejected or resolved by the caller at enqueue time, not deferred to the
+    boundary, so its errors surface to whoever queued it.
+    """
+
+    def __init__(self) -> None:
+        self._steering: list[QueuedMessage] = []
+        self._follow_up: list[QueuedMessage] = []
+        self._next_id = 0
+
+    def _wrap(self, message: str | UserMessage) -> QueuedMessage:
+        self._next_id += 1
+        msg = message if isinstance(message, UserMessage) else UserMessage(content=message)
+        return QueuedMessage(id=f"q{self._next_id}", message=msg)
+
+    def steer(self, message: str | UserMessage) -> str:
+        entry = self._wrap(message)
+        self._steering.append(entry)
+        return entry.id
+
+    def follow_up(self, message: str | UserMessage) -> str:
+        entry = self._wrap(message)
+        self._follow_up.append(entry)
+        return entry.id
+
+    def take_steering(self) -> list[QueuedMessage]:
+        """Everything queued, not one at a time — the per-boundary throttle pi
+        has exists to pace a UI that midge does not have."""
+        drained, self._steering = self._steering, []
+        return drained
+
+    def take_follow_up(self) -> QueuedMessage | None:
+        return self._follow_up.pop(0) if self._follow_up else None
+
+    def clear(self) -> list[QueuedMessage]:
+        """Drop everything and return it, so a caller can put it back in front
+        of the user. Abort clears: pi leaves its queues alone, so aborting a
+        turn silently starts a *new* run with whatever was pending, and every pi
+        UI has to work around that."""
+        dropped = [*self._steering, *self._follow_up]
+        self._steering, self._follow_up = [], []
+        return dropped
+
+    def pending(self) -> bool:
+        return bool(self._steering or self._follow_up)
+
+    def snapshot(self) -> dict[str, list[dict[str, str]]]:
+        def _render(entries: list[QueuedMessage]) -> list[dict[str, str]]:
+            return [{"id": e.id, "content": str(e.message.content)} for e in entries]
+
+        return {"steering": _render(self._steering), "follow_up": _render(self._follow_up)}
+
+
+@dataclass(slots=True)
+class Steered:
+    """A queued message was injected into the run in progress."""
+
+    message: UserMessage
+    queue_id: str
+    type: Literal["steered"] = "steered"
+
+
 @dataclass(slots=True)
 class ToolExecutionStart:
     tool_call: ToolCall
@@ -73,7 +159,7 @@ class AgentEnd:
     type: Literal["agent_end"] = "agent_end"
 
 
-AgentEvent = StreamEvent | ToolExecutionStart | ToolExecutionEnd | AgentEnd
+AgentEvent = StreamEvent | ToolExecutionStart | ToolExecutionEnd | Steered | AgentEnd
 
 
 class Agent:
@@ -85,12 +171,16 @@ class Agent:
         tools: ToolRegistry | None = None,
         system_prompt: str | None = None,
         hooks: Hooks | None = None,
+        steering: SteeringQueue | None = None,
     ) -> None:
         self.client = client
         self.model = model
         self.tools = tools or ToolRegistry()
         self.system_prompt = system_prompt
         self.hooks = hooks
+        # Owned by the entrypoint and shared, the way `hooks` and `session` are:
+        # the loop only ever drains it, and whoever fills it is someone else.
+        self.steering = steering
         self.history: list[Message] = []
         self._running = False
 
@@ -128,6 +218,11 @@ class Agent:
 
         self.history.append(user_msg)
         new_messages: list[Message] = [user_msg]
+
+        # Pre-flight: anything queued while the agent was idle rides along with
+        # the prompt that woke it.
+        for ev in self._drain_steering(new_messages):
+            yield ev
 
         while True:
             messages = self.history
@@ -183,7 +278,15 @@ class Agent:
 
             tool_calls = [c for c in partial.content if isinstance(c, ToolCall)]
             if not tool_calls:
-                break
+                # A steer arriving during a turn that answered in plain text
+                # re-arms the loop rather than being stranded until the next
+                # prompt — which is what makes steering feel immediate.
+                steered = self._drain_steering(new_messages)
+                if not steered:
+                    break
+                for ev in steered:
+                    yield ev
+                continue
 
             # A message cut off at the token limit has tool calls the model
             # never finished emitting. Running them is a guess; fail them all
@@ -298,10 +401,39 @@ class Agent:
                     new_messages.append(result)
                 raise
 
+            # The loop edge: every tool result for this turn is in history and
+            # the next request has not been built yet. The only safe seam.
+            for ev in self._drain_steering(new_messages):
+                yield ev
+
         if self.hooks is not None:
             await self.hooks.emit(TurnEnd(new_messages=new_messages))
 
         yield AgentEnd(new_messages=new_messages)
+
+    def _drain_steering(self, new_messages: list[Message]) -> list[Steered]:
+        """Append anything steered into history, and say what was injected.
+
+        Only ever called at the loop edge — after every tool result for the
+        turn is appended, before the next provider request is built. Anywhere
+        earlier would put a user message between an assistant message carrying
+        tool calls and its results, which providers reject and which
+        `to_openai_messages` does not repair.
+
+        History and `new_messages` move together, as everywhere else: the TUI
+        persists `AgentEnd.new_messages` on the normal path and `history[mark:]`
+        on cancel, so a message in only one of them is lost from one of them.
+        """
+        if self.steering is None:
+            return []
+        injected: list[Steered] = []
+        for entry in self.steering.take_steering():
+            self.history.append(entry.message)
+            new_messages.append(entry.message)
+            injected.append(Steered(message=entry.message, queue_id=entry.id))
+        if injected:
+            _logger.info("steering_injected count=%d", len(injected))
+        return injected
 
     async def run(self, user_input: str | UserMessage) -> AssistantMessage:
         last_assistant: AssistantMessage | None = None

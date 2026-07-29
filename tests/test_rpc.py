@@ -288,27 +288,29 @@ async def test_prompt_missing_message_responds_failure() -> None:
     assert "message" in resp["error"]
 
 
-async def test_prompt_already_in_flight_rejected() -> None:
+async def test_prompt_in_flight_is_queued_not_rejected() -> None:
+    """Queueing replaced the hard rejection, but the response still says which
+    happened — a client should not infer it from whether events follow."""
     client = Client()
     gate = asyncio.Event()
-    _install_slow_stream(client, [_chunk(content="x")], gate)
+    _install_slow_stream(client, [_chunk(content="part")], gate)
     agent = Agent(client=client, model="m")
-    _, inbox, outbox, task = _start_server(agent)
+    _server, inbox, outbox, task = _start_server(agent)
 
-    await inbox.feed_text('{"id": "r1", "type": "prompt", "message": "first"}\n')
-    await _wait_for(
-        lambda: any(line.get("type") == "assistant_text_delta" for line in outbox.lines)
-    )
-    await inbox.feed_text('{"id": "r2", "type": "prompt", "message": "second"}\n')
-    await _wait_for(lambda: any(line.get("id") == "r2" for line in outbox.lines))
+    first = await _command(inbox, outbox, {"id": "p1", "type": "prompt", "message": "one"})
+    assert first["data"] == {"accepted": "started"}
+
+    await _wait_for(lambda: any(x.get("type") == "assistant_text_delta" for x in outbox.lines))
+    second = await _command(inbox, outbox, {"id": "p2", "type": "prompt", "message": "two"})
+
+    assert second["success"] is True
+    assert second["data"] == {"accepted": "queued"}
+    updates = [x for x in outbox.lines if x.get("type") == "queue_update"]
+    assert updates[-1]["follow_up"][0]["content"] == "two"
 
     gate.set()
     inbox.close()
     await task
-
-    resp = next(line for line in outbox.lines if line.get("id") == "r2")
-    assert resp["success"] is False
-    assert "already in flight" in resp["error"]
 
 
 async def test_no_id_means_no_id_in_response() -> None:
@@ -893,3 +895,197 @@ async def test_eof_cancels_an_in_flight_run() -> None:
 
     errors = [x for x in outbox.lines if x.get("type") == "error"]
     assert [e["stop_reason"] for e in errors] == ["aborted"]
+
+
+# ---- steering, follow-up, settled ----
+
+
+def _tool_turn(call_id: str = "c1") -> list[Any]:
+    return [
+        _chunk(tool_calls=[_tcd(index=0, id=call_id, name="wait", arguments="{}")]),
+        _chunk(finish_reason="tool_calls"),
+    ]
+
+
+def _gated_tool(release: asyncio.Event) -> Any:
+    @tool
+    async def wait() -> str:
+        """Block until the test lets go."""
+        await release.wait()
+        return "released"
+
+    return wait
+
+
+async def test_steer_lands_in_the_next_provider_call_of_the_same_run() -> None:
+    client = Client()
+    captured = _install_turns(
+        client, [_tool_turn(), [_chunk(content="done"), _chunk(finish_reason="stop")]]
+    )
+    release = asyncio.Event()
+    agent = Agent(client=client, model="m", tools=ToolRegistry([_gated_tool(release)]))
+    _server, inbox, outbox, task = _start_server(agent)
+
+    await inbox.feed_text('{"id":"p","type":"prompt","message":"go"}\n')
+    await _wait_for(lambda: any(x.get("type") == "tool_execution_start" for x in outbox.lines))
+
+    resp = await _command(inbox, outbox, {"id": "s", "type": "steer", "message": "actually, stop"})
+    assert resp["success"] is True
+    assert resp["data"]["queue_id"]
+
+    release.set()
+    await _wait_for(lambda: any(x.get("type") == "agent_settled" for x in outbox.lines))
+
+    # The steer reached the second call of the *same* run.
+    roles = [m["role"] for m in captured[1]["messages"]]
+    contents = [str(m.get("content")) for m in captured[1]["messages"]]
+    assert "actually, stop" in contents[-1]
+    assert roles[-1] == "user"
+    inbox.close()
+    await task
+
+
+async def test_steer_never_splits_a_tool_group_on_the_wire() -> None:
+    """A user message between an assistant's tool_calls and its results is
+    rejected by providers, and `to_openai_messages` does not repair it."""
+    client = Client()
+    captured = _install_turns(
+        client, [_tool_turn(), [_chunk(content="done"), _chunk(finish_reason="stop")]]
+    )
+    release = asyncio.Event()
+    agent = Agent(client=client, model="m", tools=ToolRegistry([_gated_tool(release)]))
+    _server, inbox, outbox, task = _start_server(agent)
+
+    await inbox.feed_text('{"id":"p","type":"prompt","message":"go"}\n')
+    await _wait_for(lambda: any(x.get("type") == "tool_execution_start" for x in outbox.lines))
+    await _command(inbox, outbox, {"id": "s", "type": "steer", "message": "steered"})
+    release.set()
+    await _wait_for(lambda: any(x.get("type") == "agent_settled" for x in outbox.lines))
+
+    wire = captured[1]["messages"]
+    roles = [m["role"] for m in wire]
+
+    # Vacuously true if the steer never arrived, so assert it did first.
+    assert any("steered" in str(m.get("content")) for m in wire), "the steer was not delivered"
+    for i, role in enumerate(roles):
+        if role == "tool":
+            assert roles[i - 1] in ("assistant", "tool"), (
+                f"tool at {i} follows {roles[i - 1]}: {roles}"
+            )
+    inbox.close()
+    await task
+
+
+async def test_steer_rearms_a_turn_that_answered_in_text() -> None:
+    client = Client()
+    captured = _install_turns(
+        client,
+        [
+            [_chunk(content="first answer"), _chunk(finish_reason="stop")],
+            [_chunk(content="second answer"), _chunk(finish_reason="stop")],
+        ],
+    )
+    agent = Agent(client=client, model="m")
+    steering = agent.steering
+    _server, inbox, outbox, task = _start_server(agent)
+    assert steering is None  # the server supplies one
+
+    # Queue before the run starts: the pre-flight drain picks it up.
+    await _command(inbox, outbox, {"id": "s", "type": "steer", "message": "and also this"})
+    await inbox.feed_text('{"id":"p","type":"prompt","message":"go"}\n')
+    await _wait_for(lambda: any(x.get("type") == "agent_settled" for x in outbox.lines))
+
+    assert len(captured) == 1
+    assert "and also this" in str(captured[0]["messages"][-1]["content"])
+    inbox.close()
+    await task
+
+
+async def test_follow_up_runs_after_the_current_run() -> None:
+    client = Client()
+    captured = _install_turns(
+        client,
+        [
+            [_chunk(content="first"), _chunk(finish_reason="stop")],
+            [_chunk(content="second"), _chunk(finish_reason="stop")],
+        ],
+    )
+    agent = Agent(client=client, model="m")
+    _server, inbox, outbox, task = _start_server(agent)
+
+    await inbox.feed_text('{"id":"p","type":"prompt","message":"one"}\n')
+    await _command(inbox, outbox, {"id": "f", "type": "follow_up", "message": "two"})
+    await _wait_for(lambda: any(x.get("type") == "agent_settled" for x in outbox.lines))
+
+    ends = [x for x in outbox.lines if x.get("type") == "agent_end"]
+    settled = [x for x in outbox.lines if x.get("type") == "agent_settled"]
+    assert len(ends) == 2, "one agent_end per run"
+    assert len(settled) == 1, "one agent_settled per client prompt"
+    assert outbox.lines.index(settled[0]) > outbox.lines.index(ends[-1])
+    assert len(captured) == 2
+    inbox.close()
+    await task
+
+
+async def test_agent_settled_fires_when_the_run_errors() -> None:
+    client = Client()
+    _install_turns(client, [[_chunk(content=""), _chunk(finish_reason="content_filter")]])
+    agent = Agent(client=client, model="m")
+    _server, inbox, outbox, task = _start_server(agent)
+
+    await _run_to_completion(inbox, outbox)
+    await _wait_for(lambda: any(x.get("type") == "agent_settled" for x in outbox.lines))
+    inbox.close()
+    await task
+
+
+async def test_agent_settled_fires_when_aborted() -> None:
+    client = Client()
+    gate = asyncio.Event()
+    _install_slow_stream(client, [_chunk(content="part")], gate)
+    agent = Agent(client=client, model="m")
+    _server, inbox, outbox, task = _start_server(agent)
+
+    await inbox.feed_text('{"id":"p","type":"prompt","message":"hi"}\n')
+    await _wait_for(lambda: any(x.get("type") == "assistant_text_delta" for x in outbox.lines))
+    await _command(inbox, outbox, {"id": "a", "type": "abort"})
+    await _wait_for(lambda: any(x.get("type") == "agent_settled" for x in outbox.lines))
+
+    gate.set()
+    inbox.close()
+    await task
+
+
+async def test_abort_clears_the_queues() -> None:
+    """pi leaves them, so aborting silently starts a new run from what was
+    pending. "Stop" should mean stop."""
+    client = Client()
+    gate = asyncio.Event()
+    _install_slow_stream(client, [_chunk(content="part")], gate)
+    agent = Agent(client=client, model="m")
+    _server, inbox, outbox, task = _start_server(agent)
+
+    await inbox.feed_text('{"id":"p","type":"prompt","message":"hi"}\n')
+    await _wait_for(lambda: any(x.get("type") == "assistant_text_delta" for x in outbox.lines))
+    await _command(inbox, outbox, {"id": "f", "type": "follow_up", "message": "queued"})
+
+    resp = await _command(inbox, outbox, {"id": "a", "type": "abort"})
+
+    assert [d["content"] for d in resp["data"]["dropped"]] == ["queued"]
+    await _wait_for(lambda: any(x.get("type") == "agent_settled" for x in outbox.lines))
+    assert len([x for x in outbox.lines if x.get("type") == "agent_end"]) == 0
+    gate.set()
+    inbox.close()
+    await task
+
+
+async def test_steer_requires_a_message() -> None:
+    agent = Agent(client=Client(), model="m")
+    _server, inbox, outbox, task = _start_server(agent)
+
+    resp = await _command(inbox, outbox, {"id": "s", "type": "steer"})
+
+    assert resp["success"] is False
+    assert "message" in resp["error"]
+    inbox.close()
+    await task

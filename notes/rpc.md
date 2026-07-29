@@ -127,6 +127,45 @@ tool, a hook, an extension or a dependency cannot corrupt the stream. This is
 not hypothetical — an extension that printed on every hook event put three
 non-JSON lines mid-stream before the guard existed.
 
+## Steering, follow-up, and the terminal event
+
+`steer {message}` is delivered at a **tool-call boundary inside the run already
+going** — after every tool result for the current turn is appended, before the
+next provider request is built. "Interrupt at the next safe seam", not
+"interrupt now": a steer issued during a ten-tool batch waits for that batch.
+It also re-arms a turn that answered in plain text, so a steer never sits
+stranded until the next prompt.
+
+`follow_up {message}` is delivered only once the run has nothing left to do,
+which makes it the next turn. A `prompt` arriving mid-run is queued as a
+follow-up rather than refused; the response says `data.accepted` = `started` or
+`queued` so a client never has to infer which.
+
+Ordering between the two queues is **priority, not arrival**: steering drains at
+every boundary, follow-up only at quiescence, so a stream of steers delays a
+follow-up indefinitely even if it was queued first.
+
+**There is exactly one safe place to inject.** Providers reject a request where
+a `tool` message does not follow the assistant message that issued its call, and
+`to_openai_messages` is a single forward pass that will not repair a split. The
+loop edge is the only point where every result is in and the next request has
+not been built.
+
+**Abort clears the queues** and returns what it dropped, so a client can put the
+text back in front of the user. pi leaves its queues alone, which means aborting
+a turn silently starts a *new* run from whatever was pending — every pi UI works
+around that, so the workaround belongs in the core.
+
+`queue_update` carries a full snapshot, `{steering: [...], follow_up: [...]}`,
+on every enqueue and drain. Entries carry ids; matching on text is ambiguous for
+duplicates and blind to anything that is not text.
+
+**Whatever is queued must already be a plain message.** Anything whose meaning
+depends on when it fires has to be rejected or resolved at enqueue time, so its
+errors reach whoever queued it rather than surfacing mid-run with nothing to
+attribute them to. midge has no command layer yet; the rule is written down so
+the future one obeys it.
+
 ## Errors
 
 - **Parse error** on inbound: emit `{"type": "response", "command": "parse", "success": false, "error": "..."}`. Don't include an `id` because we couldn't parse it.

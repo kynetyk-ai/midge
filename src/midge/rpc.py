@@ -35,6 +35,8 @@ from typing import Any, BinaryIO
 from midge.agent import (
     Agent,
     AgentEnd,
+    Steered,
+    SteeringQueue,
     ToolExecutionEnd,
     ToolExecutionStart,
 )
@@ -50,7 +52,7 @@ from midge.client import (
     ToolCallStart,
 )
 from midge.compaction import compact
-from midge.messages import AssistantMessage, TextContent, ToolCall
+from midge.messages import AssistantMessage, TextContent, ToolCall, UserMessage
 from midge.persistence import Session, read_transcript
 from midge.session import export_html
 
@@ -142,6 +144,13 @@ def event_to_wire(ev: Any) -> dict[str, Any] | None:
             "content": text,
             "is_error": ev.result.is_error,
         }
+    if isinstance(ev, Steered):
+        return {
+            "type": "user_message",
+            "content": str(ev.message.content),
+            "source": "steer",
+            "queue_id": ev.queue_id,
+        }
     if isinstance(ev, AgentEnd):
         return {"type": "agent_end"}
     return None
@@ -168,6 +177,10 @@ class RpcServer:
         # change the base without silently deleting the catalogue.
         self._base_prompt = base_prompt if base_prompt is not None else (agent.system_prompt or "")
         self._prompt_suffix = prompt_suffix
+        # The queue is shared with the agent: it drains steering at its own
+        # boundaries, the server drains follow-ups once a run is done.
+        self.steering = agent.steering if agent.steering is not None else SteeringQueue()
+        agent.steering = self.steering
         self._current_run: asyncio.Task[None] | None = None
         self._write_lock = asyncio.Lock()
         self._write: WriteFn | None = None
@@ -213,6 +226,10 @@ class RpcServer:
                 await self._handle_prompt(cmd_id, cmd)
             case "abort":
                 await self._handle_abort(cmd_id)
+            case "steer":
+                await self._handle_queue(cmd_id, cmd, "steer")
+            case "follow_up":
+                await self._handle_queue(cmd_id, cmd, "follow_up")
             case "get_messages":
                 await self._handle_get_messages(cmd_id)
             case "get_state":
@@ -252,19 +269,66 @@ class RpcServer:
                 error="`message` is required and must be a string",
             )
             return
+        # A prompt arriving mid-run is queued rather than refused, but the
+        # response still says which happened: the client should not have to
+        # infer it from whether events follow.
         if self._current_run is not None and not self._current_run.done():
+            self.steering.follow_up(message)
+            await self._emit_queue_update()
             await self._respond(
-                cmd_id,
-                "prompt",
-                success=False,
-                error="a prompt is already in flight",
+                cmd_id, "prompt", success=True, data={"accepted": "queued"}
             )
             return
-        await self._respond(cmd_id, "prompt", success=True)
-        self._current_run = asyncio.create_task(self._run_prompt(message))
+        await self._respond(cmd_id, "prompt", success=True, data={"accepted": "started"})
+        self._current_run = asyncio.create_task(self._run_until_settled(message))
 
-    async def _run_prompt(self, message: str) -> None:
-        await self._emit({"type": "user_message", "content": message})
+    async def _emit_queue_update(self) -> None:
+        await self._emit({"type": "queue_update", **self.steering.snapshot()})
+
+    async def _handle_queue(
+        self, cmd_id: str | None, cmd: dict[str, Any], kind: str
+    ) -> None:
+        message = cmd.get("message")
+        if not isinstance(message, str) or not message:
+            await self._respond(
+                cmd_id, kind, success=False,
+                error="`message` is required and must be a non-empty string",
+            )
+            return
+        if kind == "steer":
+            queue_id = self.steering.steer(message)
+        else:
+            queue_id = self.steering.follow_up(message)
+        await self._emit_queue_update()
+        _logger.info("rpc_queued kind=%s id=%s", kind, queue_id)
+        await self._respond(cmd_id, kind, success=True, data={"queue_id": queue_id})
+
+    async def _run_until_settled(self, message: str) -> None:
+        """Run, then keep running while follow-ups are waiting.
+
+        `agent_end` means one run finished, and a follow-up starts another, so
+        it can fire several times for one client prompt. `agent_settled` is the
+        terminal a client should wait on — emitted from a `finally` so it also
+        fires when the run errors or is cancelled, which are exactly the paths
+        that could previously emit no terminal at all.
+        """
+        try:
+            nxt: str | UserMessage | None = message
+            while nxt is not None:
+                await self._run_prompt(nxt)
+                queued = self.steering.take_follow_up()
+                if queued is None:
+                    nxt = None
+                else:
+                    await self._emit_queue_update()
+                    nxt = queued.message
+        finally:
+            await self._emit({"type": "agent_settled"})
+
+    async def _run_prompt(self, message: str | UserMessage) -> None:
+        await self._emit({"type": "user_message", "content": str(
+            message.content if isinstance(message, UserMessage) else message
+        )})
         saw_error_event = False
         try:
             async for ev in self.agent.stream(message):
@@ -488,8 +552,17 @@ class RpcServer:
 
     async def _handle_abort(self, cmd_id: str | None) -> None:
         if self._current_run is not None and not self._current_run.done():
+            # Clear before cancelling: leaving the queues alone means the run
+            # that abort just stopped is immediately replaced by one built from
+            # whatever was pending, which is not what "stop" means.
+            dropped = self.steering.clear()
             self._current_run.cancel()
-            await self._respond(cmd_id, "abort", success=True)
+            if dropped:
+                await self._emit_queue_update()
+            await self._respond(
+                cmd_id, "abort", success=True,
+                data={"dropped": [{"id": d.id, "content": str(d.message.content)} for d in dropped]},
+            )
         else:
             await self._respond(
                 cmd_id, "abort", success=False, error="no prompt in flight"
