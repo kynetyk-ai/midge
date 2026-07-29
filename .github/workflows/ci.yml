@@ -39,3 +39,9 @@ jobs:
 
       - name: Test (pytest)
         run: poetry run pytest -q
+
+      # Also asserted by tests/test_loc_budget.py, so it fails while you are
+      # writing the code. Repeated here because the table it prints is the
+      # actionable part, and a `-q` pytest run swallows it.
+      - name: Size budget (core harness)
+        run: poetry run python scripts/loc.py
