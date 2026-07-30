@@ -92,6 +92,22 @@ model = "gpt-4o-mini"
 # default = "adversarial-reviewer"
 
 
+[session]
+# Every run records a JSONL transcript. Set false to record nothing, or pass
+# `--no-session` for one run. An explicit `--session PATH` is honoured either
+# way — naming a file is a deliberate request, not a default.
+# Env: MIDGE_SESSION
+enabled = true
+
+# Where transcripts go. Omit for `.midge/sessions` under the working directory,
+# which `.gitignore` already covers. Without `--session`, a timestamped file is
+# created here; a *relative* `--session run.jsonl` also lands here rather than
+# in the working directory, so transcripts stay one collection. Pass an
+# absolute path to write somewhere else. `~` is expanded.
+# Env: MIDGE_SESSION_DIR
+# dir = "~/.midge/sessions"
+
+
 [retry]
 # How many times a request may be attempted in total, and the base for the
 # exponential backoff between attempts, in seconds. Only errors the provider

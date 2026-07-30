@@ -19,7 +19,7 @@ from midge.hooks import (
     TurnStartResult,
 )
 from midge.messages import AssistantMessage, TextContent, ToolCall, UserMessage
-from midge.persistence import Session
+from midge.persistence import Session, read_transcript, session_continuations
 from midge.subagents import (
     SubagentTool,
     _ChildHooks,
@@ -71,7 +71,7 @@ def _bound(
     turns: list[list[Any]],
     extra: list[Tool] | None = None,
     hooks: Hooks | None = None,
-    session_path: Path | None = None,
+    session: Session | None = None,
     **bind_kw: Any,
 ) -> tuple[ToolRegistry, Client]:
     client = Client()
@@ -82,7 +82,7 @@ def _bound(
         client=client,
         model="parent-model",
         hooks=hooks,
-        session_path=session_path,
+        session=session,
         **bind_kw,
     )
     return registry, client
@@ -449,7 +449,7 @@ async def test_transcript_links_to_the_parent_tool_call(tmp_path: Path) -> None:
         )
     )
 
-    registry, _ = _bound(_explorer(), turns=[_says("found it")], session_path=parent_path)
+    registry, _ = _bound(_explorer(), turns=[_says("found it")], session=parent)
     await registry.invoke("spawn_explore", {"question": "q"}, call_id="call_abc123")
     parent.close()
 
@@ -475,10 +475,11 @@ async def test_transcript_links_to_the_parent_tool_call(tmp_path: Path) -> None:
 
 async def test_transcript_holds_the_child_history(tmp_path: Path) -> None:
     parent_path = tmp_path / "run.jsonl"
-    Session.new(parent_path, model="m").close()
+    parent = Session.new(parent_path, model="m")
 
-    registry, _ = _bound(_explorer(), turns=[_says("found it")], session_path=parent_path)
+    registry, _ = _bound(_explorer(), turns=[_says("found it")], session=parent)
     await registry.invoke("spawn_explore", {"question": "where?"}, call_id="c1")
+    parent.close()
 
     child_path = next(p for p in tmp_path.iterdir() if p != parent_path)
     messages = Session.load(child_path).messages
@@ -488,17 +489,18 @@ async def test_transcript_holds_the_child_history(tmp_path: Path) -> None:
 
 
 async def test_no_transcript_without_a_parent_session(tmp_path: Path) -> None:
-    registry, _ = _bound(_explorer(), turns=[_says("ok")], session_path=None)
+    registry, _ = _bound(_explorer(), turns=[_says("ok")], session=None)
     await registry.invoke("spawn_explore", {"question": "q"}, call_id="c1")
     assert list(tmp_path.iterdir()) == []
 
 
 async def test_hostile_call_id_is_sanitised(tmp_path: Path) -> None:
     parent_path = tmp_path / "run.jsonl"
-    Session.new(parent_path, model="m").close()
+    parent = Session.new(parent_path, model="m")
 
-    registry, _ = _bound(_explorer(), turns=[_says("ok")], session_path=parent_path)
+    registry, _ = _bound(_explorer(), turns=[_says("ok")], session=parent)
     await registry.invoke("spawn_explore", {"question": "q"}, call_id="../../etc/passwd")
+    parent.close()
 
     children = [p for p in tmp_path.iterdir() if p != parent_path]
     assert len(children) == 1
@@ -508,14 +510,88 @@ async def test_hostile_call_id_is_sanitised(tmp_path: Path) -> None:
 
 async def test_empty_call_id_falls_back_to_an_index(tmp_path: Path) -> None:
     parent_path = tmp_path / "run.jsonl"
-    Session.new(parent_path, model="m").close()
+    parent = Session.new(parent_path, model="m")
 
-    registry, _ = _bound(_explorer(), turns=[_says("a"), _says("b")], session_path=parent_path)
+    registry, _ = _bound(_explorer(), turns=[_says("a"), _says("b")], session=parent)
     await registry.invoke("spawn_explore", {"question": "q"}, call_id=None)
     await registry.invoke("spawn_explore", {"question": "q"}, call_id=None)
+    parent.close()
 
     children = sorted(p.name for p in tmp_path.iterdir() if p != parent_path)
     assert children == ["run.explore-0.jsonl", "run.explore-1.jsonl"]
+
+
+async def test_a_child_transcript_says_it_is_a_subagent_run(tmp_path: Path) -> None:
+    """Before `origin`, this was identifiable only by accident — the file
+    happened to have `parent_tool_call_id` set."""
+    parent_path = tmp_path / "run.jsonl"
+    parent = Session.new(parent_path, model="m")
+
+    registry, _ = _bound(_explorer(), turns=[_says("ok")], session=parent)
+    await registry.invoke("spawn_explore", {"question": "q"}, call_id="c1")
+    parent.close()
+
+    child_path = next(p for p in tmp_path.iterdir() if p != parent_path)
+    assert Session.load(child_path).header.origin == "subagent"
+
+
+async def test_the_parent_records_a_forward_link_to_the_child(tmp_path: Path) -> None:
+    """`parent_session` is a back-pointer, so without this "which transcripts
+    belong to this run" is a directory scan."""
+    parent_path = tmp_path / "run.jsonl"
+    parent = Session.new(parent_path, model="m")
+
+    registry, _ = _bound(_explorer(), turns=[_says("ok")], session=parent)
+    await registry.invoke("spawn_explore", {"question": "q"}, call_id="c1")
+    parent.close()
+
+    child_path = next(p for p in tmp_path.iterdir() if p != parent_path)
+    _header, entries = read_transcript(parent_path)
+    (link,) = session_continuations(entries)
+    assert link.reason == "subagent"
+    # Relative to the parent's directory, not absolute: an audit trail should
+    # not bake one machine's layout in, and children are always siblings.
+    assert link.path == child_path.name
+    assert (parent_path.parent / link.path) == child_path
+
+
+async def test_the_chain_walks_both_ways(tmp_path: Path) -> None:
+    parent_path = tmp_path / "run.jsonl"
+    parent = Session.new(parent_path, model="m")
+
+    registry, _ = _bound(_explorer(), turns=[_says("ok")], session=parent)
+    await registry.invoke("spawn_explore", {"question": "q"}, call_id="c1")
+    parent.close()
+
+    _header, entries = read_transcript(parent_path)
+    (link,) = session_continuations(entries)
+    child = Session.load(parent_path.parent / link.path)
+    assert child.header.parent_session == str(parent_path)
+
+
+async def test_every_child_gets_its_own_forward_link(tmp_path: Path) -> None:
+    parent_path = tmp_path / "run.jsonl"
+    parent = Session.new(parent_path, model="m")
+
+    registry, _ = _bound(_explorer(), turns=[_says("a"), _says("b")], session=parent)
+    await registry.invoke("spawn_explore", {"question": "q"}, call_id="c1")
+    await registry.invoke("spawn_explore", {"question": "q"}, call_id="c2")
+    parent.close()
+
+    _header, entries = read_transcript(parent_path)
+    links = session_continuations(entries)
+    assert sorted(r.path for r in links) == sorted(
+        p.name for p in tmp_path.iterdir() if p != parent_path
+    )
+
+
+async def test_no_forward_link_without_a_parent_session(tmp_path: Path) -> None:
+    registry, _ = _bound(_explorer(), turns=[_says("ok")], session=None)
+    result = await registry.invoke("spawn_explore", {"question": "q"}, call_id="c1")
+
+    # The delegation still runs and still answers; only the transcript is absent.
+    assert "ok" in str(result)
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_header_fields_are_additive(tmp_path: Path) -> None:

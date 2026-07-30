@@ -821,6 +821,16 @@ class RpcServer:
         if self.session is not None:
             self.session.close()
         self.session = opened
+        # Sub-agents hold the parent session to write their transcripts beside
+        # it and to record the forward link in it. Without this they would keep
+        # the one just closed, and the next spawn would write to a closed file.
+        bind_subagents(
+            self.agent.tools,
+            client=self.agent.client,
+            model=self.agent.model,
+            hooks=self.agent.hooks,
+            session=opened,
+        )
         _logger.info("rpc_new_session path=%s", raw_path)
         await self._respond(
             cmd_id, "new_session", success=True, data={"session": str(opened.path)}
@@ -941,7 +951,7 @@ class RpcServer:
             client=self.agent.client,
             model=self.agent.model,
             hooks=hooks,
-            session_path=self.session.path if self.session is not None else None,
+            session=self.session,
         )
         self.agent.tools = registry
 

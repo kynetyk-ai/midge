@@ -41,7 +41,6 @@ import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from pathlib import Path
 from typing import Any
 
 from midge.agent import Agent
@@ -77,7 +76,11 @@ class SubagentRuntime:
     registry: ToolRegistry
     limit: asyncio.Semaphore
     hooks: Hooks | None = None
-    session_path: Path | None = None
+    # The parent's open session, not just its path: a child transcript is
+    # recorded in the parent, and the parent's handle is the only one that may
+    # write to that file. A second handle would append past the parent's own
+    # file position and its next write would overwrite the record.
+    session: Session | None = None
     depth: int = 0
     max_depth: int = DEFAULT_MAX_DEPTH
 
@@ -198,7 +201,7 @@ def bind_subagents(
     client: Client,
     model: str,
     hooks: Hooks | None = None,
-    session_path: Path | None = None,
+    session: Session | None = None,
     max_depth: int = DEFAULT_MAX_DEPTH,
     max_concurrent: int = DEFAULT_MAX_CONCURRENT,
 ) -> None:
@@ -213,7 +216,7 @@ def bind_subagents(
         registry=registry,
         limit=asyncio.Semaphore(max(1, max_concurrent)),
         hooks=hooks,
-        session_path=session_path,
+        session=session,
         depth=0,
         max_depth=max_depth,
     )
@@ -335,20 +338,26 @@ def _open_transcript(
 
     The id is what ties the child back to the exact turn that spawned it: it is
     on the parent's ToolCall and again on the ToolResultMessage that answers it.
+
+    The parent also gets a `continued` record naming the child, so a reader can
+    walk down to the delegated work instead of scanning the directory for files
+    that happen to point back here.
     """
-    parent = runtime.session_path
-    if parent is None:
+    parent_session = runtime.session
+    if parent_session is None:
         return None
+    parent = parent_session.path
 
     stem = _UNSAFE.sub("-", call_id or "").strip("-")[:64]
     base = f"{parent.stem}.{spec.name}"
     for candidate in _candidate_names(base, stem):
         path = parent.with_name(candidate + parent.suffix)
         try:
-            return Session.new(
+            child = Session.new(
                 path,
                 model=spec.model or runtime.model,
                 system_prompt=spec.prompt,
+                origin="subagent",
                 parent_session=str(parent),
                 parent_tool_call_id=call_id,
             )
@@ -357,6 +366,19 @@ def _open_transcript(
         except OSError as e:
             _logger.warning("subagent_transcript_failed path=%s error=%s", path, e)
             return None
+        # After the child opens, because the retry loop above is what decides
+        # its name. A failure here costs the forward link and nothing else, so
+        # the child is still returned.
+        try:
+            parent_session.append_continued(path=child.path.name, reason="subagent")
+        except (OSError, ValueError) as e:
+            _logger.warning(
+                "subagent_forward_link_failed parent=%s child=%s error=%s",
+                parent,
+                child.path.name,
+                e,
+            )
+        return child
     return None
 
 

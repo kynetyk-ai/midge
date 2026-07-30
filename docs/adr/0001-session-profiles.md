@@ -199,8 +199,17 @@ Two things follow, both worth having:
   are `origin: subagent`, not profile excursions, and must never be resumed as
   one.
 - **Session discovery (#64) is not a dependency.** `resume_last` needs no listing
-  and no default session location, so midge's refusal to impose one survives
-  this amendment untouched.
+  and no default session location.
+
+> **Footnote, #62.** midge has since grown a default session location —
+> `.midge/sessions`, configured by `[session] dir`, with every run recording a
+> transcript unless told not to. That does not disturb anything above. The
+> load-bearing reason for rejecting a directory-scan `resume_last` is semantic —
+> "pick up where I left off" means *in this session* — and it is untouched:
+> `resume_last` still walks the chain, still resolves nothing by listing a
+> directory, and still does not depend on #64. What changed is only that
+> "midge would have to impose a session location" is no longer available as a
+> supporting cost, since it now has one for unrelated reasons.
 
 **Which profile a transcript is "under" is the last profile record in it**, per
 Decision 5. A thread that has itself since switched away is not a candidate, and

@@ -243,6 +243,25 @@ def test_the_environment_beats_the_file_for_the_default_profile(
     assert config.default_profile == "from-env"
 
 
+def test_the_session_directory_is_named_in_the_file(tmp_path: Path) -> None:
+    config = _load(tmp_path, project='[session]\ndir = "~/transcripts"')
+    assert config.session.dir == Path.home() / "transcripts"
+    assert config.session.enabled is True
+
+
+def test_transcripts_can_be_turned_off_in_the_file(tmp_path: Path) -> None:
+    config = _load(tmp_path, project="[session]\nenabled = false")
+    assert config.session.enabled is False
+
+
+def test_the_environment_beats_the_file_for_the_session_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MIDGE_SESSION_DIR", "/tmp/from-env")
+    config = _load(tmp_path, project='[session]\ndir = "/tmp/from-file"')
+    assert config.session.dir == Path("/tmp/from-env")
+
+
 def test_a_log_file_path_expands_a_tilde(tmp_path: Path) -> None:
     config = _load(tmp_path, project='[log]\nfile = "~/logs/midge.log"')
     assert config.log.file == Path.home() / "logs" / "midge.log"

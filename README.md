@@ -16,7 +16,7 @@ The budget covers `src/midge/*.py`, the harness itself. `providers/`, `tools/` a
 - **Built-in coding tools**: `read`, `write`, `edit`, `bash`.
 - **Lifecycle hooks** — block or rewrite a tool call before it runs, transform context, patch results, observe every event. See [`notes/hooks.md`](./notes/hooks.md) and `examples/approval_extension/`.
 - **Textual TUI** for interactive use, plus a JSON-on-stdio RPC mode for embedding the agent in external tools.
-- **JSONL session save/resume.** The format is append-only and documented: a rename or a context clear is a record appended and replayed on load, never a rewrite, so a crash can only ever damage the final line. Anything that wants to view or watch a session reads the transcript directly.
+- **JSONL session save/resume, on by default.** Every run records a transcript under `.midge/sessions/` unless you say otherwise. The format is append-only and documented: a rename or a context clear is a record appended and replayed on load, never a rewrite, so a crash can only ever damage the final line. A session spanning several files — a sub-agent writes its own — says so in both directions, so the whole run is walkable from any one of them. Anything that wants to view or watch a session reads the transcript directly.
 - **Context compaction** that summarizes old turns when a session gets long.
 - **Provider retry** with a cancellable backoff — rate limits, 5xx, and transport failures get a few attempts before the turn fails. Retries stop once the response has started streaming, so nothing the model already emitted is replayed.
 - **Retargetable** — `examples/notes_agent.py` demonstrates a non-coding domain (personal-knowledge KB) running on the same harness with no core changes.
@@ -57,7 +57,9 @@ MIDGE_MODEL=ibm/granite-3.2-8b \
 poetry run python -m examples.coding_agent --session run.jsonl "summarize the README"
 ```
 
-`model` defaults to `gpt-4o-mini` — see [Configuration](#configuration). Other flags: `--extension-dir DIR`, `--skill-dir DIR`, `--skill NAME`, `--session PATH` (resumes if file exists), `--compaction-threshold N`.
+`model` defaults to `gpt-4o-mini` — see [Configuration](#configuration). Other flags: `--extension-dir DIR`, `--skill-dir DIR`, `--skill NAME`, `--session PATH` (resumes if the file exists), `--no-session`, `--compaction-threshold N`.
+
+Transcripts are written whether or not you ask. Without `--session`, a timestamped file appears in `.midge/sessions/` (already covered by `.gitignore`); `--session run.jsonl` names one in that same directory, and an absolute path writes wherever you point it. `--no-session` records nothing for one run, and `[session] enabled = false` turns it off for good.
 
 ### Configuration
 
@@ -230,9 +232,11 @@ opening message** — so the model supplies the declared inputs and nothing else
 the child's system prompt, its tools, or its model.
 
 Only the child's final answer reaches the parent, which is the point: a search that reads thirty
-files costs the main conversation one paragraph. With `--session`, the child's own turns go to a
-sibling transcript named for the tool call that spawned it, so the delegated work stays
-inspectable and unambiguously linked.
+files costs the main conversation one paragraph. The child's own turns go to a sibling transcript
+named for the tool call that spawned it, so the delegated work stays inspectable. The link is
+recorded both ways — the child's header carries `origin: "subagent"` and a pointer to the parent,
+and the parent appends a `continued` record naming the child — so "which transcripts belong to
+this run" is a walk from either end rather than a directory scan.
 
 A sub-agent inherits the parent's **tool policy** — an approval hook that blocks a command blocks it
 when delegated too — but not the parent's prompt- or request-shaping hooks, which would otherwise

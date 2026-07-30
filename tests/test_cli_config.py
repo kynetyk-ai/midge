@@ -28,8 +28,15 @@ def test_unset_flags_are_none_so_config_can_win() -> None:
     assert args.compaction_keep_recent is None
     assert args.compaction_threshold is None
     assert args.profile is None
+    assert args.session is None
     assert Config().compaction_keep_recent == DEFAULT_KEEP_RECENT
     assert Config().default_profile is None
+    # `--no-session` is the exception the trap allows: `store_true` defaults to
+    # False, but False here means "no opinion" rather than a value that would
+    # shadow `[session] enabled`.
+    assert args.no_session is False
+    assert Config().session.enabled is True
+    assert Config().session.dir is None
 
 
 def test_a_given_flag_carries_its_value() -> None:
@@ -80,13 +87,21 @@ _BROKEN = (
 )
 
 
-def test_an_unknown_profile_name_is_refused(tmp_path: Path) -> None:
+def test_an_unknown_profile_name_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # `main` now opens a transcript before it gets this far, and the default
+    # location is relative to the working directory.
+    monkeypatch.chdir(tmp_path)
     with pytest.raises(SystemExit) as excinfo:
         main(["--extension-dir", str(tmp_path), "--profile", "nope"])
     assert "was not discovered" in str(excinfo.value)
 
 
-def test_a_profile_that_failed_validation_says_so(tmp_path: Path) -> None:
+def test_a_profile_that_failed_validation_says_so(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
     (tmp_path / "rev.py").write_text(_BROKEN)
     with pytest.raises(SystemExit) as excinfo:
         main(["--extension-dir", str(tmp_path), "--profile", "rev"])

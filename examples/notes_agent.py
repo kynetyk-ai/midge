@@ -23,7 +23,7 @@ from midge.config import Config
 from midge.config import emit as emit_config_diagnostics
 from midge.extensions import load_extensions
 from midge.logs import configure as configure_logging
-from midge.persistence import Session
+from midge.persistence import Session, resolve_session_path
 from midge.tui import run_tui, tui_log_handler
 
 NOTES_SYSTEM_PROMPT = (
@@ -43,7 +43,16 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         "--session",
         type=Path,
         metavar="PATH",
-        help="Append turns to a JSONL session file. Resumes if the file exists.",
+        help=(
+            "Append turns to a JSONL session file. Resumes if the file exists. "
+            "A relative path is taken under the session directory. Without this, "
+            "a timestamped file is created there."
+        ),
+    )
+    parser.add_argument(
+        "--no-session",
+        action="store_true",
+        help="Do not write a transcript for this run.",
     )
     parser.add_argument(
         "--compaction-threshold",
@@ -67,16 +76,16 @@ def main(argv: list[str] | None = None) -> None:
         full_prompt += "\n\n" + prompt_addition
 
     session: Session | None = None
-    if args.session is not None:
-        if args.session.exists():
-            session = Session.load(args.session)
-            model = session.header.model
-            full_prompt = session.header.system_prompt or full_prompt
-        else:
-            model = config.model
-            session = Session.new(args.session, model=model, system_prompt=full_prompt)
-    else:
-        model = config.model
+    model = config.model
+    session_file = resolve_session_path(
+        None if args.no_session else args.session,
+        directory=config.session.dir,
+        enabled=config.session.enabled and not args.no_session,
+    )
+    if session_file is not None:
+        session = Session.open(session_file, model=model, system_prompt=full_prompt)
+        model = session.model
+        full_prompt = session.system_prompt or full_prompt
 
     client = Client(
         base_url=config.base_url,

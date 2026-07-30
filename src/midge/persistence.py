@@ -9,6 +9,7 @@ File layout (one JSON object per line):
     {"type":"identity","system_prompt":"...","timestamp":...}
     {"type":"compaction","summary":"...","cut_index":N,"timestamp":...}
     {"type":"clear","cut_index":N,"timestamp":...}
+    {"type":"continued","path":"...","reason":"subagent","timestamp":...}
     {"type":"message","data":{...}}
 
 The first line MUST be the header. A file written by a *newer* build is
@@ -21,8 +22,14 @@ a rewrite would break the invariant that makes truncated-tail recovery in
 `read_transcript` work, since a partial final line is only recoverable when
 nothing else is ever rewritten.
 
+One session can span several files — every sub-agent run writes its own — and
+they say so in both directions: a child's header carries `origin` and
+`parent_session`, and the parent appends a `continued` record naming the child.
+A back-pointer alone would make "find the head of this session" a directory
+scan. See `docs/adr/0001-session-profiles.md`, Decision 2.
+
 A session is intentionally simple:
-- Linear history, no tree / branching / forks.
+- Linear history within a file, no tree / branching / forks.
 - Append-only writes; no rewrite-on-modify, no deletions.
 - Tools and extensions are NOT persisted — they're rebuilt from the registry at
   load time, the same way pi-mono works.
@@ -35,6 +42,7 @@ from __future__ import annotations
 
 import json
 import logging
+import secrets
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from io import TextIOBase
@@ -53,6 +61,17 @@ from midge.messages import Message, make_summary_message
 # `model_change` and `identity` were added without a bump, by the same test: an
 # older build skipping them degrades to "the change did not happen", which is
 # exactly what that build did anyway. Nothing is restored that a user discarded.
+#
+# `continued` and the header's `origin` pass that test too: skipping a
+# `continued` leaves a reader with no forward link, which is what every build
+# before this one had, and restores nothing.
+#
+# That promise is why `origin` declares its whole vocabulary now rather than
+# only `subagent`, the one value with a producer today. Not moving VERSION means
+# a newer build's `origin: "profile"` arrives in a file this build must read,
+# and a Literal that did not list it would raise on the *header* and strand the
+# whole transcript. A value outside the three is a format change that would have
+# to move VERSION, precisely because it cannot degrade.
 VERSION = 2
 
 
@@ -65,6 +84,11 @@ class SessionHeader(BaseModel):
     created_at: str
     model: str
     system_prompt: str | None = None
+    # What this transcript is, stated rather than inferred. Absent means a root
+    # session. Before this existed a sub-agent run was identifiable only by
+    # accident — it happened to have `parent_tool_call_id` set — and a profile
+    # excursion would have been indistinguishable from one.
+    origin: Literal["subagent", "profile", "fork"] | None = None
     # Set on a sub-agent transcript so a file found on its own says which turn
     # of which conversation produced it. `parent_tool_call_id` is the same id
     # that appears on the parent's ToolCall and its ToolResultMessage.
@@ -122,10 +146,41 @@ class IdentityRecord(BaseModel):
     timestamp: int = 0
 
 
+class ContinuedRecord(BaseModel):
+    """Another transcript of this session started here.
+
+    `parent_session` on the child is a back-pointer, so without this "find the
+    head of this session" is a directory scan. This makes the chain walkable
+    forwards, and cheaply: one header and the records, never every message.
+
+    `reason` says whether the parent stopped (`profile`, `fork`) or carried on
+    (`subagent`) — the same fact as the child's `origin`, duplicated on purpose
+    so a walk reads the parent rather than opening every child to classify it.
+
+    `path` is relative to *this* file's directory. Children are always siblings,
+    and an absolute path would bake one machine's layout into the audit trail —
+    the objection `IdentityRecord` already makes about composed prompts.
+    """
+
+    type: Literal["continued"] = "continued"
+    path: str
+    reason: Literal["subagent", "profile", "fork"]
+    timestamp: int = 0
+
+
 # Everything that is not a message. Spelled as a plain union so it works with
 # `isinstance`, which the `Annotated` `Message` alias does not.
+#
+# A record parsed but left out of this union is not merely unlisted: it falls
+# through `fold_history`'s final `else` and is appended to history as though it
+# were a message. Adding a record type is two edits.
 SessionRecord = (
-    CompactionRecord | ClearRecord | SessionInfoRecord | ModelChangeRecord | IdentityRecord
+    CompactionRecord
+    | ClearRecord
+    | SessionInfoRecord
+    | ModelChangeRecord
+    | IdentityRecord
+    | ContinuedRecord
 )
 
 # What the file literally holds, before the records are folded into history.
@@ -137,6 +192,42 @@ _MESSAGE_ADAPTER: TypeAdapter[Message] = TypeAdapter(Message)
 
 def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def default_session_dir() -> Path:
+    """A function, not a constant: `Path.cwd()` at import time would freeze
+    whatever directory the interpreter started in. Same reason `config_paths`
+    and `default_skill_dirs` are functions."""
+    return Path.cwd() / ".midge" / "sessions"
+
+
+def resolve_session_path(
+    explicit: Path | None, *, directory: Path | None = None, enabled: bool = True
+) -> Path | None:
+    """Where this run's transcript goes, or None for no persistence.
+
+    Every entrypoint asks this rather than deciding for itself, so `--session`
+    means the same thing in the CLI and in the example agents.
+
+    A relative `--session` resolves *under the session directory*, not under the
+    working directory: transcripts are one collection, and a path that sometimes
+    means `./run.jsonl` and sometimes `.midge/sessions/run.jsonl` is worse than
+    one that always means the latter. An absolute path is the way out.
+
+    An explicit path outranks `enabled=False`, because naming a file is a
+    deliberate request and a default-off is only a default.
+    """
+    root = directory if directory is not None else default_session_dir()
+    if explicit is not None:
+        return explicit if explicit.is_absolute() else root / explicit
+    if not enabled:
+        return None
+    # Seconds, then four random hex: the stamp sorts a listing chronologically,
+    # which is what session discovery will want, and the suffix is because
+    # `Session.new` raises on collision rather than retrying — two midge
+    # processes started in the same second would otherwise fail at startup.
+    stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    return root / f"{stamp}-{secrets.token_hex(2)}.jsonl"
 
 
 def read_transcript(path: str | Path) -> tuple[SessionHeader, list[TranscriptEntry]]:
@@ -193,6 +284,8 @@ def read_transcript(path: str | Path) -> tuple[SessionHeader, list[TranscriptEnt
             entries.append(ModelChangeRecord.model_validate(raw))
         elif entry_type == "identity":
             entries.append(IdentityRecord.model_validate(raw))
+        elif entry_type == "continued":
+            entries.append(ContinuedRecord.model_validate(raw))
         else:
             _logger.warning("session_unknown_entry_type type=%r path=%s", entry_type, p)
 
@@ -242,6 +335,15 @@ def session_prompt(entries: Sequence[TranscriptEntry]) -> str | None:
     return _last(entries, IdentityRecord, "system_prompt")
 
 
+def session_continuations(entries: Sequence[TranscriptEntry]) -> list[ContinuedRecord]:
+    """Every transcript that started from this one, in the order they did.
+
+    Plural, and so not `_last`: a parent has one record per child, and a walk
+    needs all of them.
+    """
+    return [e for e in entries if isinstance(e, ContinuedRecord)]
+
+
 def _last(entries: Sequence[TranscriptEntry], kind: type, field: str) -> str | None:
     """The last record of `kind`, read backwards — last write wins."""
     for entry in reversed(entries):
@@ -282,6 +384,7 @@ class Session:
         *,
         model: str,
         system_prompt: str | None = None,
+        origin: Literal["subagent", "profile", "fork"] | None = None,
         parent_session: str | None = None,
         parent_tool_call_id: str | None = None,
     ) -> Session:
@@ -297,6 +400,7 @@ class Session:
             created_at=_now_iso(),
             model=model,
             system_prompt=system_prompt,
+            origin=origin,
             parent_session=parent_session,
             parent_tool_call_id=parent_tool_call_id,
         )
@@ -359,6 +463,19 @@ class Session:
         """
         self._append_record({"type": "clear", "cut_index": cut_index})
         self.messages = self.messages[cut_index:]
+
+    def append_continued(
+        self, *, path: str | Path, reason: Literal["subagent", "profile", "fork"]
+    ) -> None:
+        """Record that another transcript of this session started here.
+
+        Unlike `set_name` or `set_model` this updates nothing in memory: it is
+        an event that happened, not a current value some later write supersedes.
+
+        `path` is stored as given and is expected to be relative to this file's
+        directory — `Path.name` for a sibling, which is every case today.
+        """
+        self._append_record({"type": "continued", "path": str(path), "reason": reason})
 
     def set_name(self, name: str) -> None:
         self._append_record({"type": "session_info", "name": name})

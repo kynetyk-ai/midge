@@ -12,12 +12,13 @@ from midge.config import ProviderConfig
 from midge.extensions import load_extensions
 from midge.hooks import Hooks, ToolCallEvent, ToolCallResult
 from midge.messages import ToolCall
-from midge.persistence import Session, read_transcript
+from midge.persistence import Session, read_transcript, session_continuations
 from midge.profiles import ProfileSet
 from midge.profiles import validate as validate_profiles
 from midge.providers import ModelRegistry
 from midge.rpc import RpcServer, event_to_wire
 from midge.skills import Skill, load_skills, skills_prompt
+from midge.subagents import bind_subagents
 from midge.tools import ToolRegistry, tool
 from tests.fakes import finish, install, install_gated, say, tcall
 
@@ -1902,6 +1903,34 @@ async def test_a_subagent_still_runs_after_a_reload(tmp_path: Path) -> None:
     assert after is not before, "reload did not re-import the sub-agent tool"
     result = await agent.tools.invoke("spawn_probe", {"question": "why"}, call_id="c1")
     assert "child says hi" in str(result)
+    inbox.close()
+    await task
+
+
+async def test_a_subagent_follows_new_session_to_the_new_file(tmp_path: Path) -> None:
+    """Sub-agents hold the parent session, so `new_session` has to re-bind them.
+    Without it the runtime keeps the session just closed, and the next spawn
+    writes to a closed file rather than beside the current transcript."""
+    ext = tmp_path / "ext"
+    _write_ext(ext, "probe", _SUBAGENT_EXT)
+    client = Client()
+    install(client, [[say("child says hi"), finish()]])
+    agent = Agent(client=client, model="m", hooks=Hooks())
+
+    first_path = tmp_path / "first.jsonl"
+    first = Session.new(first_path, model="m")
+    server, inbox, outbox, task = _server_with_sources(agent, extension_sources=[ext])
+    server.session = first
+    bind_subagents(agent.tools, client=client, model="m", hooks=agent.hooks, session=first)
+
+    second = tmp_path / "second.jsonl"
+    await _command(inbox, outbox, {"id": "n", "type": "new_session", "path": str(second)})
+    await agent.tools.invoke("spawn_probe", {"question": "why"}, call_id="c1")
+
+    (link,) = session_continuations(read_transcript(second)[1])
+    assert (second.parent / link.path).exists()
+    # And nothing landed in the transcript that was closed.
+    assert session_continuations(read_transcript(first_path)[1]) == []
     inbox.close()
     await task
 
