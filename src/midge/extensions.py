@@ -7,7 +7,9 @@ constant whose contents are appended to the agent's system prompt.
 The loader walks each given directory (or single file path), imports each
 public `.py` file (skipping `_*.py` and `__init__.py`), and pulls every `Tool`
 into a fresh `ToolRegistry`. First-registered wins on name collisions; later
-duplicates are warned about and dropped.
+duplicates are warned about and dropped. A `Profile` instance is collected the
+same way when the caller supplies a `ProfileSet` — so one file may declare a
+tool, a sub-agent and a profile together, and is imported exactly once.
 
 The built-in tools in `midge/tools/coding/` are loaded through this same path —
 built-in and user-supplied tools are not special-cased.
@@ -23,6 +25,7 @@ from types import ModuleType
 from typing import Any
 
 from midge.hooks import Hooks
+from midge.profiles import Profile, ProfileSet
 from midge.tools import Tool, ToolRegistry
 
 _BUILTIN_TOOL_ROOT = Path(__file__).parent / "tools"
@@ -32,8 +35,19 @@ _logger = logging.getLogger(__name__)
 
 
 def load_extensions(
-    sources: Iterable[Path | str], *, hooks: Hooks | None = None
+    sources: Iterable[Path | str],
+    *,
+    hooks: Hooks | None = None,
+    profiles: ProfileSet | None = None,
 ) -> tuple[ToolRegistry, str]:
+    """Import every extension file under `sources` and collect what it declares.
+
+    Tools and the prompt contribution come back; hooks and profiles are
+    collected into whatever the caller passes in, because a caller that does not
+    care about them should not have to acknowledge them. A caller that passes no
+    `profiles` simply discovers none — which is every entrypoint that predates
+    them.
+    """
     registry = ToolRegistry()
     prompts: list[str] = []
 
@@ -63,6 +77,18 @@ def load_extensions(
                     continue
                 registry.add(t)
                 _logger.debug("tool_registered tool=%s path=%s", t.name, f)
+            if profiles is not None:
+                for p in _extract_profiles(module):
+                    if p.name in profiles:
+                        _logger.warning(
+                            "profile_name_shadowed name=%s path=%s winner=%s",
+                            p.name,
+                            f,
+                            profiles.path_of(p.name) or "-",
+                        )
+                        continue
+                    profiles.add(p, path=f)
+                    _logger.debug("profile_registered profile=%s path=%s", p.name, f)
             sp = getattr(module, "SYSTEM_PROMPT", None)
             if isinstance(sp, str) and sp.strip():
                 prompts.append(sp.strip())
@@ -70,7 +96,12 @@ def load_extensions(
                 _register_hooks(module, f, hooks)
             _logger.debug("extension_loaded path=%s", f)
 
-    _logger.info("extensions_loaded tools=%d prompt_contributions=%d", len(registry), len(prompts))
+    _logger.info(
+        "extensions_loaded tools=%d prompt_contributions=%d profiles=%d",
+        len(registry),
+        len(prompts),
+        len(profiles) if profiles is not None else 0,
+    )
     return registry, "\n\n".join(prompts)
 
 
@@ -83,7 +114,7 @@ def _register_hooks(module: ModuleType, path: Path, hooks: Hooks) -> None:
     fn = getattr(module, "register_hooks", None)
     if not callable(fn):
         return
-    scoped = _SourceScopedHooks(hooks, str(path))
+    scoped = _SourceScopedHooks(hooks, str(path), path.stem)
     try:
         fn(scoped)
     except Exception as e:
@@ -96,17 +127,22 @@ def _register_hooks(module: ModuleType, path: Path, hooks: Hooks) -> None:
 
 
 class _SourceScopedHooks:
-    """Thin proxy that stamps `source` onto every registration."""
+    """Thin proxy that stamps `source` and `name` onto every registration.
 
-    def __init__(self, hooks: Hooks, source: str) -> None:
+    Both, because they answer different questions: the path is what a failing
+    handler's warning has to name, and the stem is what a profile can write.
+    """
+
+    def __init__(self, hooks: Hooks, source: str, name: str) -> None:
         self._hooks = hooks
         self._source = source
+        self._name = name
 
     def on(self, type: str, handler: Any) -> Any:
-        return self._hooks.on(type, handler, source=self._source)
+        return self._hooks.on(type, handler, source=self._source, name=self._name)
 
     def observe(self, handler: Any) -> Any:
-        return self._hooks.observe(handler, source=self._source)
+        return self._hooks.observe(handler, source=self._source, name=self._name)
 
     def add_cleanup(self, fn: Any) -> Any:
         return self._hooks.add_cleanup(fn)
@@ -146,6 +182,10 @@ def _import_file(path: Path) -> ModuleType:
 
 def _extract_tools(module: ModuleType) -> list[Tool]:
     return [v for v in vars(module).values() if isinstance(v, Tool)]
+
+
+def _extract_profiles(module: ModuleType) -> list[Profile]:
+    return [v for v in vars(module).values() if isinstance(v, Profile)]
 
 
 __all__ = ["BUILTIN_TOOL_DIRS", "load_extensions"]

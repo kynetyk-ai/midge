@@ -241,6 +241,42 @@ silently override the child's own system prompt. Nesting is capped by depth, and
 
 See `examples/subagent_extension/` and [`notes/subagents.md`](./notes/subagents.md).
 
+### Profiles — what the agent *is*
+
+A sub-agent is a tool the agent uses; a **profile** is the agent itself. It bundles a system
+prompt, a model, a subset of the discovered tools and a set of active hooks under one name, so
+that "the adversarial reviewer" is a thing rather than three unrelated changes:
+
+```python
+from midge.profiles import Profile
+
+ADVERSARIAL = Profile(
+    name="adversarial-reviewer",
+    description="Reviews work that has just been done, looking for what is wrong with it.",
+    tools=("read", "bash"),      # read-only: a reviewer that can edit fixes instead of reporting
+    hooks=("approve",),          # named by the extension file's stem
+    prompt="Assume the work is wrong and find out how. Cite `path:line` for every claim.",
+)
+```
+
+A profile lives in an ordinary extension file — one `.py` may declare a tool, a sub-agent and a
+profile together — so `--extension-dir` discovers it and there is no separate flag. Pick the one
+to start under with `--profile NAME` or `[profiles] default` in the config file.
+
+Validation is strict where the rest of the harness is lenient: a profile naming a tool, a hook, or
+(with a `[models]` table configured) a model that does not exist is **dropped with a diagnostic**
+rather than loaded, so it can never silently grant less than it claims.
+
+```bash
+poetry run midge --extension-dir examples/profile_extension \
+  --extension-dir examples/approval_extension --profile adversarial-reviewer
+```
+
+Today profiles are declared, validated and enumerable — over RPC, `get_profiles` returns the full
+set. **Applying one at runtime is not implemented yet** (`use_profile`, issue #67). See
+[`docs/adr/0001-session-profiles.md`](./docs/adr/0001-session-profiles.md) for the design and what
+was deliberately rejected along with it.
+
 ### Extensions — new tools
 
 1. Write `.py` files with `@tool`-decorated async functions.
@@ -269,6 +305,7 @@ src/midge/
 ├── logs.py            # logging config; entrypoints only
 ├── skills.py          # SKILL.md discovery + <available_skills> catalogue
 ├── subagents.py       # @subagent → spawn_* tools running nested agents
+├── profiles.py        # Profile discovery + validation (what the agent *is*)
 ├── hooks.py           # lifecycle events + handler registry
 ├── tui/app.py         # Textual TUI
 └── cli.py             # `midge` entrypoint
@@ -280,6 +317,7 @@ examples/
 ├── approval_extension/ # tool-approval hook demo
 ├── notes_extension/   # the notes extension pack
 ├── subagent_extension/ # a read-only explorer sub-agent
+├── profile_extension/ # a declared profile: the adversarial reviewer
 └── skills/            # a worked SKILL.md example
 notes/                 # design rationale + patterns extracted from pi-mono
 tests/                 # pytest tests

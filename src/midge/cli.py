@@ -2,7 +2,7 @@
 
 Usage:
     midge [--extension-dir DIR] [--skill-dir DIR] [--session PATH] \\
-       [--compaction-threshold N] [--compaction-keep-recent N]
+       [--profile NAME] [--compaction-threshold N] [--compaction-keep-recent N]
 
 Configuration is `.midge/config.toml`, overridden by environment variables,
 overridden by these flags — see `midge.config`. `OPENAI_API_KEY` is read from the
@@ -25,6 +25,8 @@ from midge.hooks import Hooks, SessionEnd, SessionStart
 from midge.logs import configure as configure_logging
 from midge.logs import provider_host
 from midge.persistence import Session
+from midge.profiles import ProfileSet
+from midge.profiles import validate as validate_profiles
 from midge.providers import Capabilities, ModelRegistry
 from midge.rpc import RpcServer, serve_stdio
 from midge.skills import default_skill_dirs, load_skills, skills_prompt
@@ -59,6 +61,14 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help=(
             "Directory of SKILL.md skills to load (repeatable). Searched before "
             "the project and user defaults."
+        ),
+    )
+    parser.add_argument(
+        "--profile",
+        metavar="NAME",
+        help=(
+            "Start under a discovered profile, by name. Outranks [profiles] "
+            "default. Profiles are declared in extension .py files."
         ),
     )
     parser.add_argument(
@@ -144,7 +154,8 @@ def main(argv: list[str] | None = None) -> None:
     # line is a deliberate override. Note this is the opposite nesting from the
     # extension sources above, where the built-ins must not be shadowed.
     skill_sources = [*args.skill_dir, *default_skill_dirs()]
-    registry, prompt_addition = load_extensions(extension_sources, hooks=hooks)
+    profiles = ProfileSet()
+    registry, prompt_addition = load_extensions(extension_sources, hooks=hooks, profiles=profiles)
     skills = load_skills(skill_sources)
     catalogue = skills_prompt(skills) if "read" in registry else ""
 
@@ -193,6 +204,34 @@ def main(argv: list[str] | None = None) -> None:
             f"{', '.join(model_registry.names())}"
         )
 
+    # After every source is loaded, because a profile may name a tool declared
+    # in another file — and after the model registry, which is the third thing
+    # a profile can name. A profile that fails is dropped, so the selection
+    # check below sees only profiles that would really work.
+    emit_config_diagnostics(
+        validate_profiles(
+            profiles,
+            tools=registry,
+            hook_names=hooks.source_names(),
+            models=model_registry,
+        )
+    )
+    selected = args.profile or config.default_profile
+    if selected is not None and selected not in profiles:
+        # Nothing applies a profile yet (#67), but a name that resolves to
+        # nothing is a mistake either way, and saying so now beats saying it
+        # once switching exists.
+        _logger.error(
+            "startup_profile_unknown profile=%s discovered=%s",
+            selected,
+            ",".join(profiles.names()),
+        )
+        raise SystemExit(
+            f"profile {selected!r} was not discovered; available: "
+            f"{', '.join(profiles.names()) or 'none'}"
+        )
+    _logger.info("profiles_loaded count=%d selected=%s", len(profiles), selected or "-")
+
     # No api_key: the fallback provider reads `OPENAI_API_KEY` itself and a
     # registered one names its own variable, so a credential never passes
     # through configuration.
@@ -239,6 +278,7 @@ def main(argv: list[str] | None = None) -> None:
             base_prompt=durable,
             extension_prompt=prompt_addition,
             skills=skills,
+            profiles=profiles,
             # The same lists the loaders above were given, so `reload` repeats
             # that call rather than rebuilding it.
             extension_sources=extension_sources,

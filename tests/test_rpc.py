@@ -13,6 +13,8 @@ from midge.extensions import load_extensions
 from midge.hooks import Hooks, ToolCallEvent, ToolCallResult
 from midge.messages import AssistantMessage, TextContent, ToolCall, UserMessage
 from midge.persistence import Session, read_transcript
+from midge.profiles import ProfileSet
+from midge.profiles import validate as validate_profiles
 from midge.providers import ModelRegistry
 from midge.rpc import RpcServer, event_to_wire
 from midge.skills import Skill, load_skills, skills_prompt
@@ -1397,9 +1399,17 @@ def _server_with_sources(
 ) -> tuple[RpcServer, _Inbox, _Outbox, asyncio.Task[None]]:
     """Construct the server the way `cli.py` does: load, then hand over the
     same source lists so `reload` repeats exactly that call."""
+    profiles = ProfileSet()
     if extension_sources is not None:
-        registry, ext_prompt = load_extensions(extension_sources, hooks=agent.hooks)
+        registry, ext_prompt = load_extensions(
+            extension_sources, hooks=agent.hooks, profiles=profiles
+        )
         agent.tools = registry
+        validate_profiles(
+            profiles,
+            tools=registry,
+            hook_names=agent.hooks.source_names() if agent.hooks is not None else set(),
+        )
     else:
         ext_prompt = ""
     skills = load_skills(skill_sources) if skill_sources is not None else []
@@ -1408,6 +1418,7 @@ def _server_with_sources(
         base_prompt="BASE",
         extension_prompt=ext_prompt,
         skills=skills,
+        profiles=profiles,
         extension_sources=extension_sources,
         skill_sources=skill_sources,
     )
@@ -1429,6 +1440,92 @@ async def _command_names(inbox: _Inbox, outbox: _Outbox) -> list[str]:
     resp = await _command(inbox, outbox, {"id": cmd_id, "type": "get_commands"})
     assert resp["success"] is True
     return [c["name"] for c in resp["data"]["commands"]]
+
+
+# --- profiles ---
+
+_PROFILE_EXT = '''
+from midge.profiles import Profile
+
+REVIEWER = Profile(
+    name="reviewer",
+    description="Reviews recent work.",
+    prompt="Assume it is wrong.",
+    tools=("read",),
+)
+'''
+
+
+async def test_get_profiles_returns_what_was_discovered(tmp_path: Path) -> None:
+    ext = tmp_path / "ext"
+    _write_ext(ext, "reader", _READ_EXT)
+    path = _write_ext(ext, "reviewer", _PROFILE_EXT)
+    agent = Agent(client=Client(), model="m", hooks=Hooks())
+    _server, inbox, outbox, task = _server_with_sources(agent, extension_sources=[ext])
+
+    resp = await _command(inbox, outbox, {"id": "1", "type": "get_profiles"})
+
+    assert resp["success"] is True
+    assert resp["data"]["profiles"] == [
+        {
+            "name": "reviewer",
+            "description": "Reviews recent work.",
+            "model": None,
+            "tools": ["read"],
+            "hooks": [],
+            "prompt": "Assume it is wrong.",
+            "source": str(path),
+        }
+    ]
+    inbox.close()
+    await task
+
+
+async def test_get_profiles_is_empty_without_any(tmp_path: Path) -> None:
+    agent = Agent(client=Client(), model="m")
+    _server, inbox, outbox, task = _server_with_sources(agent)
+
+    resp = await _command(inbox, outbox, {"id": "1", "type": "get_profiles"})
+
+    assert resp["data"]["profiles"] == []
+    inbox.close()
+    await task
+
+
+async def test_reload_picks_up_a_profile_written_after_startup(tmp_path: Path) -> None:
+    ext = tmp_path / "ext"
+    _write_ext(ext, "reader", _READ_EXT)
+    agent = Agent(client=Client(), model="m", hooks=Hooks())
+    _server, inbox, outbox, task = _server_with_sources(agent, extension_sources=[ext])
+
+    _write_ext(ext, "reviewer", _PROFILE_EXT)
+    resp = await _reload(inbox, outbox)
+
+    assert resp["data"]["profiles"] == 1
+    listed = await _command(inbox, outbox, {"id": "p2", "type": "get_profiles"})
+    assert [p["name"] for p in listed["data"]["profiles"]] == ["reviewer"]
+    inbox.close()
+    await task
+
+
+async def test_reload_drops_a_profile_whose_tool_went_away(tmp_path: Path) -> None:
+    """The validation rule, seen through the one command that can change what
+    exists after startup: the profile still declares `read`, but nothing
+    provides it any more, so it stops loading rather than loading with less."""
+    ext = tmp_path / "ext"
+    _write_ext(ext, "reader", _READ_EXT)
+    _write_ext(ext, "reviewer", _PROFILE_EXT)
+    agent = Agent(client=Client(), model="m", hooks=Hooks())
+    _server, inbox, outbox, task = _server_with_sources(agent, extension_sources=[ext])
+
+    assert (await _reload(inbox, outbox))["data"]["profiles"] == 1
+
+    (ext / "reader.py").unlink()
+    resp = await _reload(inbox, outbox)
+
+    assert resp["data"]["profiles"] == 0
+    inbox.close()
+    await task
 
 
 # --- skills ---

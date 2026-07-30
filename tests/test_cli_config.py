@@ -24,13 +24,18 @@ def test_unset_flags_are_none_so_config_can_win() -> None:
     args = _parse_args([])
     assert args.compaction_keep_recent is None
     assert args.compaction_threshold is None
+    assert args.profile is None
     assert Config().compaction_keep_recent == DEFAULT_KEEP_RECENT
+    assert Config().default_profile is None
 
 
 def test_a_given_flag_carries_its_value() -> None:
-    args = _parse_args(["--compaction-keep-recent", "5000", "--compaction-threshold", "120000"])
+    args = _parse_args(
+        ["--compaction-keep-recent", "5000", "--compaction-threshold", "120000", "--profile", "rev"]
+    )
     assert args.compaction_keep_recent == 5000
     assert args.compaction_threshold == 120_000
+    assert args.profile == "rev"
 
 
 def test_resume_reads_the_folded_identity_not_the_header(tmp_path: Path) -> None:
