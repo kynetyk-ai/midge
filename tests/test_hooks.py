@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -31,57 +29,9 @@ from midge.hooks import (
 )
 from midge.messages import AssistantMessage, TextContent, UserMessage
 from midge.tools import tool
+from tests.fakes import finish, install, say, tcall
 
 # --- shared fakes (mirrors tests/test_agent.py) ---------------------------
-
-
-def _chunk(
-    *,
-    content: str | None = None,
-    tool_calls: list[Any] | None = None,
-    finish_reason: str | None = None,
-) -> Any:
-    delta = SimpleNamespace(content=content, tool_calls=tool_calls)
-    choice = SimpleNamespace(delta=delta, finish_reason=finish_reason)
-    return SimpleNamespace(choices=[choice])
-
-
-def _tcd(
-    *,
-    index: int,
-    id: str | None = None,
-    name: str | None = None,
-    arguments: str | None = None,
-) -> Any:
-    function = SimpleNamespace(name=name, arguments=arguments)
-    return SimpleNamespace(index=index, id=id, function=function)
-
-
-class _FakeStream:
-    def __init__(self, chunks: Iterable[Any]) -> None:
-        self._chunks = list(chunks)
-
-    def __aiter__(self) -> _FakeStream:
-        return self
-
-    async def __anext__(self) -> Any:
-        if not self._chunks:
-            raise StopAsyncIteration
-        return self._chunks.pop(0)
-
-
-def _install_turns(client: Client, turns: list[list[Any]]) -> list[dict[str, Any]]:
-    captured: list[dict[str, Any]] = []
-    iterator = iter(turns)
-
-    async def create(**kwargs: Any) -> _FakeStream:
-        captured.append(kwargs)
-        return _FakeStream(next(iterator))
-
-    client._client = SimpleNamespace(  # type: ignore[assignment]
-        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
-    )
-    return captured
 
 
 async def _collect(agent: Agent, user_input: str) -> list[AgentEvent]:
@@ -91,10 +41,10 @@ async def _collect(agent: Agent, user_input: str) -> list[AgentEvent]:
 def _tool_turn(*calls: tuple[str, str, str]) -> list[Any]:
     """Build a turn that emits the given (id, name, json_args) tool calls."""
     chunks = [
-        _chunk(tool_calls=[_tcd(index=i, id=cid, name=name, arguments=args)])
+        tcall(index=i, id=cid, name=name, args=args)
         for i, (cid, name, args) in enumerate(calls)
     ]
-    chunks.append(_chunk(finish_reason="tool_calls"))
+    chunks.append(finish("tool_use"))
     return chunks
 
 
@@ -353,7 +303,7 @@ def _registry() -> Any:
 
 async def test_agent_without_hooks_is_unchanged() -> None:
     client = Client()
-    _install_turns(client, [[_chunk(content="hello"), _chunk(finish_reason="stop")]])
+    install(client, [[say("hello"), finish()]])
     agent = Agent(client=client, model="gpt-4o")
 
     msg = await agent.run("hi")
@@ -364,11 +314,11 @@ async def test_agent_without_hooks_is_unchanged() -> None:
 
 async def test_blocked_tool_never_executes_and_yields_error_result() -> None:
     client = Client()
-    _install_turns(
+    install(
         client,
         [
             _tool_turn(("c1", "danger", '{"text": "x"}')),
-            [_chunk(content="done"), _chunk(finish_reason="stop")],
+            [say("done"), finish()],
         ],
     )
     hooks = Hooks()
@@ -396,7 +346,7 @@ async def test_ordering_preserved_when_some_calls_blocked() -> None:
     """The `zip(strict=True)` invariant: results must line up with tool_calls
     even when the blocked ones are removed from the gather."""
     client = Client()
-    _install_turns(
+    install(
         client,
         [
             _tool_turn(
@@ -404,7 +354,7 @@ async def test_ordering_preserved_when_some_calls_blocked() -> None:
                 ("c2", "danger", '{"text": "two"}'),
                 ("c3", "echo", '{"text": "three"}'),
             ),
-            [_chunk(content="done"), _chunk(finish_reason="stop")],
+            [say("done"), finish()],
         ],
     )
     hooks = Hooks()
@@ -430,11 +380,11 @@ async def test_ordering_preserved_when_some_calls_blocked() -> None:
 
 async def test_tool_argument_rewrite_reaches_the_tool() -> None:
     client = Client()
-    _install_turns(
+    install(
         client,
         [
             _tool_turn(("c1", "echo", '{"text": "original"}')),
-            [_chunk(content="done"), _chunk(finish_reason="stop")],
+            [say("done"), finish()],
         ],
     )
     hooks = Hooks()
@@ -450,11 +400,11 @@ async def test_tool_argument_rewrite_reaches_the_tool() -> None:
 
 async def test_tool_result_patch_applies_to_history() -> None:
     client = Client()
-    _install_turns(
+    install(
         client,
         [
             _tool_turn(("c1", "echo", '{"text": "secret"}')),
-            [_chunk(content="done"), _chunk(finish_reason="stop")],
+            [say("done"), finish()],
         ],
     )
     hooks = Hooks()
@@ -477,7 +427,7 @@ async def test_tool_result_patch_applies_to_history() -> None:
 
 async def test_context_hook_changes_what_provider_sees_without_mutating_history() -> None:
     client = Client()
-    captured = _install_turns(client, [[_chunk(content="ok"), _chunk(finish_reason="stop")]])
+    captured = install(client, [[say("ok"), finish()]])
     hooks = Hooks()
     hooks.on(
         "context",
@@ -496,7 +446,7 @@ async def test_context_hook_changes_what_provider_sees_without_mutating_history(
 
 async def test_provider_request_hook_overrides_model() -> None:
     client = Client()
-    captured = _install_turns(client, [[_chunk(content="ok"), _chunk(finish_reason="stop")]])
+    captured = install(client, [[say("ok"), finish()]])
     hooks = Hooks()
     hooks.on("before_provider_request", lambda ev, ctx: ProviderRequestResult(model="override"))
     agent = Agent(client=client, model="gpt-4o", hooks=hooks)
@@ -508,7 +458,7 @@ async def test_provider_request_hook_overrides_model() -> None:
 
 async def test_after_provider_response_replaces_message_before_history() -> None:
     client = Client()
-    _install_turns(client, [[_chunk(content="original"), _chunk(finish_reason="stop")]])
+    install(client, [[say("original"), finish()]])
     hooks = Hooks()
     seen_by_message_end: list[str] = []
 
@@ -532,7 +482,7 @@ async def test_after_provider_response_replaces_message_before_history() -> None
 
 async def test_turn_start_prompt_override_reaches_provider() -> None:
     client = Client()
-    captured = _install_turns(client, [[_chunk(content="ok"), _chunk(finish_reason="stop")]])
+    captured = install(client, [[say("ok"), finish()]])
     hooks = Hooks()
     hooks.on("turn_start", lambda ev, ctx: TurnStartResult(system_prompt="OVERRIDDEN"))
     agent = Agent(client=client, model="gpt-4o", system_prompt="base", hooks=hooks)

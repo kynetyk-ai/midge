@@ -4,11 +4,11 @@ A hackable Python agent harness originally ported from [`pi-mono`](https://githu
 
 The core harness is under 3.5k lines of code — blank lines, comments and docstrings excluded — and **CI holds it under 5k** (`scripts/loc.py`). The agent loop, OpenAI-compatible client, tool registry, extension loader, RPC server, HTML exporter, JSONL session save/load, context compaction, and Textual TUI are all small enough to read in a sitting and modify with confidence.
 
-The budget covers `src/midge/*.py`, the harness itself. `tools/` and `tui/` are excluded and reported separately: built-in tools are a library that grows with the domain, and the TUI is a presentation layer. Prose is free, so hitting the cap means simplifying code rather than deleting the explanation of why it works that way. Run `poetry run python scripts/loc.py` for the per-file table.
+The budget covers `src/midge/*.py`, the harness itself. `providers/`, `tools/` and `tui/` are excluded and reported separately: a provider adapter grows with the number of vendors, built-in tools with the domain, and the TUI is a presentation layer. Prose is free, so hitting the cap means simplifying code rather than deleting the explanation of why it works that way. Run `poetry run python scripts/loc.py` for the per-file table.
 
 ## What's in the box
 
-- **Streaming agent loop** against any OpenAI-compatible endpoint (OpenAI, Azure, ollama, vLLM, LM Studio, llama.cpp's `server`, Together, Groq, Fireworks, OpenRouter, ...).
+- **Streaming agent loop** against any OpenAI-compatible endpoint (OpenAI, Azure, ollama, vLLM, LM Studio, llama.cpp's `server`, Together, Groq, Fireworks, OpenRouter, ...). The wire format lives behind a provider registry, so the streaming state machine and retry policy are written once and a second format is an adapter rather than a branch.
 - **`@tool` decorator** that turns an async Python function into an LLM-callable tool, with JSON Schema generated from its signature via Pydantic.
 - **Filesystem extension loader** — drop a `.py` file with `@tool`-decorated functions and an optional `SYSTEM_PROMPT` constant into a directory, point `--extension-dir` at it, and the agent picks up the new tools.
 - **Agent Skills** ([`SKILL.md`](https://agentskills.io/specification)) — drop a directory of markdown instructions in and point `--skill-dir` at it. Names and descriptions go in the system prompt; the agent opens the full file with `read` only when a task matches. No Python, no prompt edits, and directories written for other harnesses load as-is.
@@ -191,8 +191,9 @@ The harness deliberately separates from the "coding agent" identity. See `exampl
 
 ```
 src/midge/
-├── messages.py        # typed message history + OpenAI conversion boundary
-├── client.py          # async OpenAI-compatible client + stream events
+├── messages.py        # typed message history (provider-independent)
+├── client.py          # streaming state machine + retry policy
+├── providers/         # one wire format per adapter; registry + Delta contract
 ├── tools/
 │   ├── __init__.py    # @tool decorator + Pydantic schema + ToolRegistry
 │   └── coding/        # built-in tools: read, bash, edit, write
@@ -225,7 +226,7 @@ tests/                 # pytest tests
 If you want to understand how the harness works, the files in dependency order:
 
 1. `src/midge/messages.py` — the data model.
-2. `src/midge/client.py` — chunk → event mapping; the streaming part.
+2. `src/midge/client.py` — the streaming state machine, then `providers/` for the wire format it is fed by.
 3. `src/midge/tools/__init__.py` — `@tool` and the registry.
 4. `src/midge/agent.py` — the loop.
 5. `src/midge/tools/coding/` — four real tools.

@@ -3,8 +3,6 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any
 
 import pytest
 
@@ -20,21 +18,9 @@ from midge.skills import (
     skill_message,
     skills_prompt,
 )
+from tests.fakes import finish, install, say
 
 VALID = "Deploys the service and runs the release checklist."
-
-
-class _FakeStream:
-    def __init__(self, chunks: list[Any]) -> None:
-        self._chunks = chunks
-
-    def __aiter__(self) -> _FakeStream:
-        return self
-
-    async def __anext__(self) -> Any:
-        if not self._chunks:
-            raise StopAsyncIteration
-        return self._chunks.pop(0)
 
 
 def write_skill(
@@ -384,31 +370,7 @@ async def test_forced_skill_reaches_history_without_agent_changes(tmp_path: Path
 
     client = Client()
 
-    async def create(**kwargs: object) -> _FakeStream:
-        return _FakeStream(
-            [
-                SimpleNamespace(
-                    choices=[
-                        SimpleNamespace(
-                            delta=SimpleNamespace(content="ok", tool_calls=None),
-                            finish_reason=None,
-                        )
-                    ]
-                ),
-                SimpleNamespace(
-                    choices=[
-                        SimpleNamespace(
-                            delta=SimpleNamespace(content=None, tool_calls=None),
-                            finish_reason="stop",
-                        )
-                    ]
-                ),
-            ]
-        )
-
-    client._client = SimpleNamespace(  # type: ignore[assignment]
-        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
-    )
+    install(client, [[say("ok"), finish()]])
     agent = Agent(client=client, model="gpt-4o")
     await agent.run(skill_message(skills, "deploy"))
 

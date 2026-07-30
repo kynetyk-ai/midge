@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
-from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -29,48 +27,11 @@ from midge.messages import (
     Usage,
     UserMessage,
     make_summary_message,
-    to_openai_messages,
+    repair_history,
 )
+from midge.providers.openai_compat import encode_messages
+from tests.fakes import ScriptedProvider, finish, install, say
 
-
-def _chunk(
-    *,
-    content: str | None = None,
-    finish_reason: str | None = None,
-) -> Any:
-    delta = SimpleNamespace(content=content, tool_calls=None)
-    choice = SimpleNamespace(delta=delta, finish_reason=finish_reason)
-    return SimpleNamespace(choices=[choice])
-
-
-class _FakeStream:
-    def __init__(self, chunks: Iterable[Any]) -> None:
-        self._chunks = list(chunks)
-
-    def __aiter__(self) -> _FakeStream:
-        return self
-
-    async def __anext__(self) -> Any:
-        if not self._chunks:
-            raise StopAsyncIteration
-        return self._chunks.pop(0)
-
-
-def _install_turns(client: Client, turns: list[list[Any]]) -> list[dict[str, Any]]:
-    captured: list[dict[str, Any]] = []
-    iterator = iter(turns)
-
-    async def create(**kwargs: Any) -> _FakeStream:
-        captured.append(kwargs)
-        return _FakeStream(next(iterator))
-
-    client._client = SimpleNamespace(  # type: ignore[assignment]
-        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
-    )
-    return captured
-
-
-# ---- count_tokens ----
 
 def test_count_tokens_empty_history() -> None:
     assert count_tokens([]) == 0
@@ -200,13 +161,13 @@ def test_make_summary_message_wraps_text() -> None:
 
 async def test_summarize_collects_text_deltas() -> None:
     client = Client()
-    captured = _install_turns(
+    captured = install(
         client,
         [
             [
-                _chunk(content="## Goal\n"),
-                _chunk(content="learn things"),
-                _chunk(finish_reason="stop"),
+                say("## Goal\n"),
+                say("learn things"),
+                finish(),
             ]
         ],
     )
@@ -238,17 +199,15 @@ async def test_summarize_inherits_client_retry() -> None:
     # the provider retry for free. Locked in because it is easy to lose.
     client = Client(retry_base_delay=0)
     calls = [0]
-    turns = iter([[_chunk(content="## Goal\nx"), _chunk(finish_reason="stop")]])
+    turns = iter([[say("## Goal\nx"), finish()]])
 
-    async def create(**kwargs: Any) -> _FakeStream:
+    async def on_open(body: Any) -> list[Any]:
         calls[0] += 1
         if calls[0] == 1:
             raise openai.APIConnectionError(request=httpx.Request("POST", "http://x"))
-        return _FakeStream(next(turns))
+        return next(turns)
 
-    client._client = SimpleNamespace(  # type: ignore[assignment]
-        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
-    )
+    client.provider = ScriptedProvider(on_open)
 
     text = await summarize(client, "m", [UserMessage(content="hi")])
     assert calls[0] == 2
@@ -257,7 +216,7 @@ async def test_summarize_inherits_client_retry() -> None:
 
 async def test_summarize_empty_output_raises() -> None:
     client = Client()
-    _install_turns(client, [[_chunk(content=""), _chunk(finish_reason="stop")]])
+    install(client, [[say(""), finish()]])
     with pytest.raises(RuntimeError, match="empty output"):
         await summarize(client, "m", [UserMessage(content="hi")])
 
@@ -275,9 +234,9 @@ async def test_compact_returns_none_when_nothing_to_cut() -> None:
 
 async def test_compact_replaces_prefix_with_summary_message() -> None:
     client = Client()
-    _install_turns(
+    install(
         client,
-        [[_chunk(content="## Goal\nbe brief"), _chunk(finish_reason="stop")]],
+        [[say("## Goal\nbe brief"), finish()]],
     )
     history: list[Message] = []
     for i in range(3):
@@ -309,8 +268,8 @@ async def test_compact_replaces_prefix_with_summary_message() -> None:
 
 async def test_compact_does_not_mutate_input_history() -> None:
     client = Client()
-    _install_turns(
-        client, [[_chunk(content="summary"), _chunk(finish_reason="stop")]]
+    install(
+        client, [[say("summary"), finish()]]
     )
     history: list[Message] = [
         UserMessage(content="x" * 500),
@@ -330,7 +289,7 @@ async def test_compact_does_not_mutate_input_history() -> None:
 async def test_compact_propagates_summarize_failure() -> None:
     client = Client()
     # Empty stream → empty output → summarize raises RuntimeError
-    _install_turns(client, [[_chunk(finish_reason="stop")]])
+    install(client, [[finish()]])
     history: list[Message] = []
     for i in range(3):
         history.append(UserMessage(content=f"q{i}: " + "x" * 200))
@@ -363,7 +322,7 @@ async def test_hook_cut_index_snaps_to_user_boundary() -> None:
     hooks.on("before_compact", lambda ev, ctx: CompactResult(cut_index=2))
 
     client = Client()
-    _install_turns(client, [[_chunk(content="SUMMARY"), _chunk(finish_reason="stop")]])
+    install(client, [[say("SUMMARY"), finish()]])
 
     result = await compact(
         history, client=client, model="gpt-4o", keep_recent_tokens=10, hooks=hooks
@@ -372,7 +331,7 @@ async def test_hook_cut_index_snaps_to_user_boundary() -> None:
     new_history, _, cut_idx = result
     assert cut_idx == 3
     assert isinstance(new_history[1], UserMessage)
-    wire = to_openai_messages(new_history)
+    wire = encode_messages(repair_history(new_history))
     answered = {m["tool_call_id"] for m in wire if m.get("role") == "tool"}
     requested = {
         tc["id"]

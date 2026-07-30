@@ -118,3 +118,36 @@ A minimal `client.py`:
 - Internally: call `chat.completions.create(stream=True)`, iterate chunks, dispatch to our event taxonomy.
 - Buffer tool-call arguments; emit `toolcall_delta` with the raw chunk; on `_end`, parse the complete JSON via `json.loads`.
 - Skip incremental partial-JSON parsing for v1; add `jiter` partial mode in v2 if we want progressively-displayed tool args.
+
+## Update — the provider seam
+
+The chunk-parsing described above now lives in `src/midge/providers/openai_compat.py`
+rather than in `client.py`. The split is:
+
+- **`providers/`** owns one wire format each: `encode` builds a request body,
+  `open` starts it, `decode` turns one vendor chunk into a `Delta`, and
+  `is_retryable` classifies a failure. Nothing else.
+- **`client.py`** owns the part that is the same whatever you talk to: the
+  streaming state machine (partial assembly, content indices, tool-argument
+  buffering) and the retry policy.
+
+`Delta` is the normalization point — text fragment, tool-call fragments, a
+`StopReason`, and `Usage`. Above it, midge's vocabulary; below it, the vendor's.
+
+**The state machine deliberately does not move into the adapter.** It is the
+subtle part — the "usage rides a final chunk whose `choices` is empty" quirk, the
+invariant that a retry only happens before any content event escaped, index
+bookkeeping across interleaved parallel tool calls — and a second copy per vendor
+would be the main source of bugs. One state machine, N translators.
+
+Two names are registered against the same adapter, `openai` and
+`openai-compatible`, because they share this wire format entirely. What differs
+is what a server tolerates, and that is declared as `Capabilities`
+(`requires_api_key`, `stream_usage`) rather than discovered by catching a 400.
+`MIDGE_INCLUDE_USAGE` survives as an override for servers that reject
+`stream_options`, but the default now comes from the provider.
+
+The note above also predates a related split: `to_openai_messages` became
+`messages.repair_history` (dropping failed assistant turns and orphaned tool
+results — a fact about midge's history, so provider-independent) plus the
+adapter's `encode_messages`. Core repairs once; each provider only encodes.

@@ -33,7 +33,7 @@ ROOT = Path(__file__).resolve().parent.parent
 CORE = ROOT / "src" / "midge"
 # Reported but not enforced, so code moving out of the core to duck the budget
 # is visible rather than silent.
-CONTEXT = (CORE / "tools", CORE / "tui", ROOT / "tests")
+CONTEXT = (CORE / "providers", CORE / "tools", CORE / "tui", ROOT / "tests")
 
 
 def prose_lines(source: str) -> set[int]:

@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Iterable
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 from midge import rpc
@@ -17,82 +15,7 @@ from midge.persistence import Session, read_transcript
 from midge.rpc import RpcServer, event_to_wire
 from midge.skills import Skill, load_skills, skills_prompt
 from midge.tools import ToolRegistry, tool
-
-
-def _chunk(
-    *,
-    content: str | None = None,
-    tool_calls: list[Any] | None = None,
-    finish_reason: str | None = None,
-) -> Any:
-    delta = SimpleNamespace(content=content, tool_calls=tool_calls)
-    choice = SimpleNamespace(delta=delta, finish_reason=finish_reason)
-    return SimpleNamespace(choices=[choice])
-
-
-def _tcd(
-    *,
-    index: int,
-    id: str | None = None,
-    name: str | None = None,
-    arguments: str | None = None,
-) -> Any:
-    function = SimpleNamespace(name=name, arguments=arguments)
-    return SimpleNamespace(index=index, id=id, function=function)
-
-
-class _FakeStream:
-    def __init__(self, chunks: Iterable[Any]) -> None:
-        self._chunks = list(chunks)
-
-    def __aiter__(self) -> _FakeStream:
-        return self
-
-    async def __anext__(self) -> Any:
-        if not self._chunks:
-            raise StopAsyncIteration
-        return self._chunks.pop(0)
-
-
-def _install_turns(client: Client, turns: list[list[Any]]) -> list[dict[str, Any]]:
-    """Returns a list that accumulates each request's kwargs as turns run."""
-    iterator = iter(turns)
-    captured: list[dict[str, Any]] = []
-
-    async def create(**kwargs: Any) -> _FakeStream:
-        captured.append(kwargs)
-        return _FakeStream(next(iterator))
-
-    client._client = SimpleNamespace(  # type: ignore[assignment]
-        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
-    )
-    return captured
-
-
-class _SlowStream:
-    """Stream that pauses on a sentinel so a test can observe in-flight state."""
-
-    def __init__(self, chunks_before: list[Any], gate: asyncio.Event) -> None:
-        self._before = list(chunks_before)
-        self._gate = gate
-
-    def __aiter__(self) -> _SlowStream:
-        return self
-
-    async def __anext__(self) -> Any:
-        if self._before:
-            return self._before.pop(0)
-        await self._gate.wait()
-        raise StopAsyncIteration
-
-
-def _install_slow_stream(client: Client, before: list[Any], gate: asyncio.Event) -> None:
-    async def create(**kwargs: Any) -> _SlowStream:
-        return _SlowStream(before, gate)
-
-    client._client = SimpleNamespace(  # type: ignore[assignment]
-        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
-    )
+from tests.fakes import finish, install, install_gated, say, tcall
 
 
 class _Inbox:
@@ -146,7 +69,7 @@ def _start_server(agent: Agent) -> tuple[RpcServer, _Inbox, _Outbox, asyncio.Tas
 
 async def test_prompt_response_then_events() -> None:
     client = Client()
-    _install_turns(client, [[_chunk(content="hi"), _chunk(finish_reason="stop")]])
+    install(client, [[say("hi"), finish()]])
     agent = Agent(client=client, model="m")
     _, inbox, outbox, task = _start_server(agent)
 
@@ -167,7 +90,7 @@ async def test_prompt_response_then_events() -> None:
 
 async def test_get_messages_returns_history() -> None:
     client = Client()
-    _install_turns(client, [[_chunk(content="hi"), _chunk(finish_reason="stop")]])
+    install(client, [[say("hi"), finish()]])
     agent = Agent(client=client, model="m")
     _, inbox, outbox, task = _start_server(agent)
 
@@ -194,7 +117,7 @@ async def test_get_messages_returns_history() -> None:
 async def test_abort_cancels_in_flight_prompt() -> None:
     client = Client()
     gate = asyncio.Event()
-    _install_slow_stream(client, [_chunk(content="part")], gate)
+    install_gated(client, [say("part")], gate)
     agent = Agent(client=client, model="m")
     _, inbox, outbox, task = _start_server(agent)
 
@@ -297,7 +220,7 @@ async def test_prompt_in_flight_is_queued_not_rejected() -> None:
     happened — a client should not infer it from whether events follow."""
     client = Client()
     gate = asyncio.Event()
-    _install_slow_stream(client, [_chunk(content="part")], gate)
+    install_gated(client, [say("part")], gate)
     agent = Agent(client=client, model="m")
     _server, inbox, outbox, task = _start_server(agent)
 
@@ -337,16 +260,14 @@ async def test_tool_call_events_flow_through() -> None:
         return f"echoed:{text}"
 
     client = Client()
-    _install_turns(
+    install(
         client,
         [
             [
-                _chunk(
-                    tool_calls=[_tcd(index=0, id="c1", name="echo", arguments='{"text":"hi"}')]
-                ),
-                _chunk(finish_reason="tool_calls"),
+                tcall(index=0, id="c1", name="echo", args='{"text":"hi"}'),
+                finish("tool_use"),
             ],
-            [_chunk(content="ok"), _chunk(finish_reason="stop")],
+            [say("ok"), finish()],
         ],
     )
     agent = Agent(client=client, model="m", tools=ToolRegistry([echo]))
@@ -436,7 +357,7 @@ async def _command(inbox: _Inbox, outbox: _Outbox, cmd: dict[str, Any]) -> dict[
 
 async def test_get_state_reports_model_and_counts() -> None:
     client = Client()
-    _install_turns(client, [[_chunk(content="hi"), _chunk(finish_reason="stop")]])
+    install(client, [[say("hi"), finish()]])
     agent = Agent(client=client, model="gpt-4o")
     _server, inbox, outbox, task = _start_server(agent)
 
@@ -458,7 +379,7 @@ async def test_get_state_reports_model_and_counts() -> None:
 async def test_get_state_reports_streaming_while_in_flight() -> None:
     client = Client()
     gate = asyncio.Event()
-    _install_slow_stream(client, [_chunk(content="part")], gate)
+    install_gated(client, [say("part")], gate)
     agent = Agent(client=client, model="m")
     _server, inbox, outbox, task = _start_server(agent)
 
@@ -474,7 +395,7 @@ async def test_get_state_reports_streaming_while_in_flight() -> None:
 
 async def test_get_last_assistant_text() -> None:
     client = Client()
-    _install_turns(client, [[_chunk(content="the answer"), _chunk(finish_reason="stop")]])
+    install(client, [[say("the answer"), finish()]])
     agent = Agent(client=client, model="m")
     _server, inbox, outbox, task = _start_server(agent)
 
@@ -577,15 +498,15 @@ async def test_set_system_prompt_takes_effect_on_the_next_turn_only() -> None:
     test passes without exercising anything.
     """
     client = Client()
-    captured = _install_turns(
+    captured = install(
         client,
         [
             [
-                _chunk(tool_calls=[_tcd(index=0, id="c1", name="wait", arguments="{}")]),
-                _chunk(finish_reason="tool_calls"),
+                tcall(index=0, id="c1", name="wait", args="{}"),
+                finish("tool_use"),
             ],
-            [_chunk(content="done"), _chunk(finish_reason="stop")],
-            [_chunk(content="second turn"), _chunk(finish_reason="stop")],
+            [say("done"), finish()],
+            [say("second turn"), finish()],
         ],
     )
     release = asyncio.Event()
@@ -674,11 +595,11 @@ async def test_clear_context_clears_history_and_keeps_recording(tmp_path: Path) 
     path = tmp_path / "s.jsonl"
     session = Session.new(path, model="m")
     client = Client()
-    _install_turns(
+    install(
         client,
         [
-            [_chunk(content="first"), _chunk(finish_reason="stop")],
-            [_chunk(content="second"), _chunk(finish_reason="stop")],
+            [say("first"), finish()],
+            [say("second"), finish()],
         ],
     )
     agent = Agent(client=client, model="m")
@@ -719,7 +640,7 @@ async def test_clear_context_clears_history_and_keeps_recording(tmp_path: Path) 
 
 async def test_clear_context_without_a_session_is_fine() -> None:
     client = Client()
-    _install_turns(client, [[_chunk(content="hi"), _chunk(finish_reason="stop")]])
+    install(client, [[say("hi"), finish()]])
     agent = Agent(client=client, model="m")
     _server, inbox, outbox, task = _start_server(agent)
 
@@ -816,7 +737,7 @@ async def test_failed_new_session_leaves_state_untouched(tmp_path: Path) -> None
 
     live = Session.new(tmp_path / "live.jsonl", model="m")
     client = Client()
-    _install_turns(client, [[_chunk(content="hi"), _chunk(finish_reason="stop")]])
+    install(client, [[say("hi"), finish()]])
     agent = Agent(client=client, model="m")
     server = RpcServer(agent, session=live)
     inbox, outbox = _Inbox(), _Outbox()
@@ -895,7 +816,7 @@ async def test_non_object_json_is_a_parse_error() -> None:
 async def test_eof_cancels_an_in_flight_run() -> None:
     client = Client()
     gate = asyncio.Event()
-    _install_slow_stream(client, [_chunk(content="part")], gate)
+    install_gated(client, [say("part")], gate)
     agent = Agent(client=client, model="m")
     _server, inbox, outbox, task = _start_server(agent)
 
@@ -914,8 +835,8 @@ async def test_eof_cancels_an_in_flight_run() -> None:
 
 def _tool_turn(call_id: str = "c1") -> list[Any]:
     return [
-        _chunk(tool_calls=[_tcd(index=0, id=call_id, name="wait", arguments="{}")]),
-        _chunk(finish_reason="tool_calls"),
+        tcall(index=0, id=call_id, name="wait", args="{}"),
+        finish("tool_use"),
     ]
 
 
@@ -931,8 +852,8 @@ def _gated_tool(release: asyncio.Event) -> Any:
 
 async def test_steer_lands_in_the_next_provider_call_of_the_same_run() -> None:
     client = Client()
-    captured = _install_turns(
-        client, [_tool_turn(), [_chunk(content="done"), _chunk(finish_reason="stop")]]
+    captured = install(
+        client, [_tool_turn(), [say("done"), finish()]]
     )
     release = asyncio.Event()
     agent = Agent(client=client, model="m", tools=ToolRegistry([_gated_tool(release)]))
@@ -961,8 +882,8 @@ async def test_steer_never_splits_a_tool_group_on_the_wire() -> None:
     """A user message between an assistant's tool_calls and its results is
     rejected by providers, and `to_openai_messages` does not repair it."""
     client = Client()
-    captured = _install_turns(
-        client, [_tool_turn(), [_chunk(content="done"), _chunk(finish_reason="stop")]]
+    captured = install(
+        client, [_tool_turn(), [say("done"), finish()]]
     )
     release = asyncio.Event()
     agent = Agent(client=client, model="m", tools=ToolRegistry([_gated_tool(release)]))
@@ -990,11 +911,11 @@ async def test_steer_never_splits_a_tool_group_on_the_wire() -> None:
 
 async def test_steer_rearms_a_turn_that_answered_in_text() -> None:
     client = Client()
-    captured = _install_turns(
+    captured = install(
         client,
         [
-            [_chunk(content="first answer"), _chunk(finish_reason="stop")],
-            [_chunk(content="second answer"), _chunk(finish_reason="stop")],
+            [say("first answer"), finish()],
+            [say("second answer"), finish()],
         ],
     )
     agent = Agent(client=client, model="m")
@@ -1015,11 +936,11 @@ async def test_steer_rearms_a_turn_that_answered_in_text() -> None:
 
 async def test_follow_up_runs_after_the_current_run() -> None:
     client = Client()
-    captured = _install_turns(
+    captured = install(
         client,
         [
-            [_chunk(content="first"), _chunk(finish_reason="stop")],
-            [_chunk(content="second"), _chunk(finish_reason="stop")],
+            [say("first"), finish()],
+            [say("second"), finish()],
         ],
     )
     agent = Agent(client=client, model="m")
@@ -1041,7 +962,7 @@ async def test_follow_up_runs_after_the_current_run() -> None:
 
 async def test_agent_settled_fires_when_the_run_errors() -> None:
     client = Client()
-    _install_turns(client, [[_chunk(content=""), _chunk(finish_reason="content_filter")]])
+    install(client, [[say(""), finish("error")]])
     agent = Agent(client=client, model="m")
     _server, inbox, outbox, task = _start_server(agent)
 
@@ -1054,7 +975,7 @@ async def test_agent_settled_fires_when_the_run_errors() -> None:
 async def test_agent_settled_fires_when_aborted() -> None:
     client = Client()
     gate = asyncio.Event()
-    _install_slow_stream(client, [_chunk(content="part")], gate)
+    install_gated(client, [say("part")], gate)
     agent = Agent(client=client, model="m")
     _server, inbox, outbox, task = _start_server(agent)
 
@@ -1073,7 +994,7 @@ async def test_abort_clears_the_queues() -> None:
     pending. "Stop" should mean stop."""
     client = Client()
     gate = asyncio.Event()
-    _install_slow_stream(client, [_chunk(content="part")], gate)
+    install_gated(client, [say("part")], gate)
     agent = Agent(client=client, model="m")
     _server, inbox, outbox, task = _start_server(agent)
 
@@ -1260,7 +1181,7 @@ async def test_command_list_is_stable_across_calls(tmp_path: Path) -> None:
 async def test_skill_command_expands_into_the_envelope(tmp_path: Path) -> None:
     _write_skill(tmp_path / "deploy", "deploy")
     client = Client()
-    captured = _install_turns(client, [[_chunk(content="ok"), _chunk(finish_reason="stop")]])
+    captured = install(client, [[say("ok"), finish()]])
     agent = Agent(client=client, model="m")
     _server, inbox, outbox, task = _server_with_skills(agent, load_skills([tmp_path]))
 
@@ -1278,7 +1199,7 @@ async def test_skill_command_expands_into_the_envelope(tmp_path: Path) -> None:
 async def test_skill_command_appends_trailing_arguments(tmp_path: Path) -> None:
     _write_skill(tmp_path / "deploy", "deploy")
     client = Client()
-    captured = _install_turns(client, [[_chunk(content="ok"), _chunk(finish_reason="stop")]])
+    captured = install(client, [[say("ok"), finish()]])
     agent = Agent(client=client, model="m")
     _server, inbox, outbox, task = _server_with_skills(agent, load_skills([tmp_path]))
 
@@ -1294,7 +1215,7 @@ async def test_skill_command_appends_trailing_arguments(tmp_path: Path) -> None:
 async def test_ordinary_text_is_untouched(tmp_path: Path) -> None:
     _write_skill(tmp_path / "deploy", "deploy")
     client = Client()
-    captured = _install_turns(client, [[_chunk(content="ok"), _chunk(finish_reason="stop")]])
+    captured = install(client, [[say("ok"), finish()]])
     agent = Agent(client=client, model="m")
     _server, inbox, outbox, task = _server_with_skills(agent, load_skills([tmp_path]))
 
@@ -1714,7 +1635,7 @@ async def test_reloading_skills_leaves_the_tool_registry_untouched(tmp_path: Pat
 async def test_reload_is_refused_while_a_run_is_in_flight() -> None:
     client = Client()
     gate = asyncio.Event()
-    _install_slow_stream(client, [_chunk(content="part")], gate)
+    install_gated(client, [say("part")], gate)
     agent = Agent(client=client, model="m")
     _server, inbox, outbox, task = _server_with_sources(agent, extension_sources=[])
     before = agent.tools
@@ -1817,6 +1738,7 @@ def _enum_values(schema: dict[str, Any]) -> list[str]:
 
 _SUBAGENT_EXT = '''
 from midge.subagents import subagent
+from tests.fakes import finish, install, install_gated, say, tcall
 
 
 @subagent(description="Probe something.", prompt="You are a probe.", tools=())
@@ -1832,7 +1754,7 @@ async def test_a_subagent_still_runs_after_a_reload(tmp_path: Path) -> None:
     ext = tmp_path / "ext"
     _write_ext(ext, "probe", _SUBAGENT_EXT)
     client = Client()
-    _install_turns(client, [[_chunk(content="child says hi"), _chunk(finish_reason="stop")]])
+    install(client, [[say("child says hi"), finish()]])
     agent = Agent(client=client, model="m", hooks=Hooks())
     _server, inbox, outbox, task = _server_with_sources(agent, extension_sources=[ext])
     before = agent.tools.get("spawn_probe")

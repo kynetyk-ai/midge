@@ -1,7 +1,16 @@
+"""The streaming state machine and the retry policy — provider-independent.
+
+Driven by `FakeProvider`, so these tests say nothing about any wire format.
+Chunk parsing lives in `test_providers_openai.py`; the last section here runs a
+few SDK-shaped chunks through the real adapter so the seam between `decode` and
+this state machine stays exercised.
+"""
+
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Iterable
+import logging
+from collections.abc import AsyncIterator
 from types import SimpleNamespace
 from typing import Any
 
@@ -21,441 +30,322 @@ from midge.client import (
     ToolCallDelta,
     ToolCallEnd,
     ToolCallStart,
-    is_retryable,
 )
-from midge.messages import TextContent, ToolCall, UserMessage
+from midge.messages import Message, TextContent, ToolCall, UserMessage
+from midge.providers.openai_compat import OpenAIProvider
+from tests.fakes import (
+    FakeProvider,
+    finish,
+    install,
+    install_provider,
+    say,
+    tcall,
+    tokens,
+)
 
-
-def _chunk(
-    *,
-    content: str | None = None,
-    tool_calls: list[Any] | None = None,
-    finish_reason: str | None = None,
-) -> Any:
-    delta = SimpleNamespace(content=content, tool_calls=tool_calls)
-    choice = SimpleNamespace(delta=delta, finish_reason=finish_reason)
-    return SimpleNamespace(choices=[choice])
-
-
-def _tcd(
-    *,
-    index: int,
-    id: str | None = None,
-    name: str | None = None,
-    arguments: str | None = None,
-) -> Any:
-    function = SimpleNamespace(name=name, arguments=arguments)
-    return SimpleNamespace(index=index, id=id, function=function)
-
-
-class _FakeStream:
-    def __init__(self, chunks: Iterable[Any]) -> None:
-        self._chunks = list(chunks)
-        self._raise_after: int | None = None
-        self._exc: BaseException | None = None
-
-    def fail_after(self, n: int, exc: BaseException) -> None:
-        self._raise_after = n
-        self._exc = exc
-
-    def __aiter__(self) -> _FakeStream:
-        return self
-
-    async def __anext__(self) -> Any:
-        if self._raise_after is not None and self._raise_after <= 0 and self._exc:
-            raise self._exc
-        if not self._chunks:
-            raise StopAsyncIteration
-        if self._raise_after is not None:
-            self._raise_after -= 1
-        return self._chunks.pop(0)
-
-
-def _install_fake_stream(client: Client, stream: _FakeStream) -> None:
-    async def create(**kwargs: Any) -> _FakeStream:
-        return stream
-
-    client._client = SimpleNamespace(  # type: ignore[assignment]
-        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
-    )
-
-
-def _install_attempts(client: Client, attempts: list[Any]) -> list[int]:
-    """Install one outcome per attempt. An outcome is either a `_FakeStream`
-    to return or an exception to raise from `create`. Returns a single-element
-    list holding the call count."""
-    calls = [0]
-    queue = list(attempts)
-
-    async def create(**kwargs: Any) -> _FakeStream:
-        calls[0] += 1
-        outcome = queue.pop(0)
-        if isinstance(outcome, BaseException):
-            raise outcome
-        return outcome
-
-    client._client = SimpleNamespace(  # type: ignore[assignment]
-        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
-    )
-    return calls
-
-
-def _status_error(status: int) -> openai.APIStatusError:
-    return openai.APIStatusError(
-        f"status {status}",
-        response=httpx.Response(
-            status_code=status, request=httpx.Request("POST", "http://x/v1")
-        ),
-        body=None,
-    )
+USER: list[Message] = [UserMessage(content="x")]
 
 
 async def _collect(it: AsyncIterator[StreamEvent]) -> list[StreamEvent]:
     return [ev async for ev in it]
 
 
+async def _run(client: Client) -> list[StreamEvent]:
+    return await _collect(client.stream(messages=USER, model="gpt-4o"))
+
+
+def _status_error(status: int) -> openai.APIStatusError:
+    request = httpx.Request("POST", "http://x")
+    response = httpx.Response(status_code=status, request=request)
+    return openai.APIStatusError("boom", response=response, body=None)
+
+
+# --- assembling a response ------------------------------------------------
+
+
 async def test_simple_text_response() -> None:
     client = Client()
-    _install_fake_stream(
-        client,
-        _FakeStream(
-            [
-                _chunk(content="Hello"),
-                _chunk(content=", "),
-                _chunk(content="world"),
-                _chunk(finish_reason="stop"),
-            ]
-        ),
-    )
+    install(client, [[say("hel"), say("lo"), finish()]])
 
-    events = await _collect(
-        client.stream(messages=[UserMessage(content="hi")], model="gpt-4o")
-    )
+    events = await _run(client)
 
-    types = [type(e) for e in events]
-    assert types == [StreamStart, TextStart, TextDelta, TextDelta, TextDelta, TextEnd, Done]
-    assert isinstance(events[-1], Done)
-    assert events[-1].message.stop_reason == "stop"
-    assert isinstance(events[-1].message.content[0], TextContent)
-    assert events[-1].message.content[0].text == "Hello, world"
-    assert isinstance(events[5], TextEnd)
-    assert events[5].content == "Hello, world"
+    assert [type(e) for e in events] == [
+        StreamStart,
+        TextStart,
+        TextDelta,
+        TextDelta,
+        TextEnd,
+        Done,
+    ]
+    done = events[-1]
+    assert isinstance(done, Done)
+    assert isinstance(done.message.content[0], TextContent)
+    assert done.message.content[0].text == "hello"
+    assert done.message.stop_reason == "stop"
 
 
 async def test_tool_call_response() -> None:
     client = Client()
-    _install_fake_stream(
+    install(
         client,
-        _FakeStream(
+        [
             [
-                _chunk(tool_calls=[_tcd(index=0, id="call_1", name="read", arguments='{"path"')]),
-                _chunk(tool_calls=[_tcd(index=0, arguments=': "/etc/hosts"}')]),
-                _chunk(finish_reason="tool_calls"),
+                tcall(index=0, id="c1", name="read", args='{"path"'),
+                tcall(index=0, args=': "/etc/hosts"}'),
+                finish("tool_use"),
             ]
-        ),
+        ],
     )
 
-    events = await _collect(
-        client.stream(messages=[UserMessage(content="read it")], model="gpt-4o")
-    )
+    events = await _run(client)
 
-    types = [type(e) for e in events]
-    assert types == [StreamStart, ToolCallStart, ToolCallDelta, ToolCallDelta, ToolCallEnd, Done]
-
-    end = events[-2]
-    assert isinstance(end, ToolCallEnd)
-    assert end.tool_call.id == "call_1"
-    assert end.tool_call.name == "read"
-    assert end.tool_call.arguments == {"path": "/etc/hosts"}
-
-    done = events[-1]
-    assert isinstance(done, Done)
-    assert done.message.stop_reason == "tool_use"
+    ends = [e for e in events if isinstance(e, ToolCallEnd)]
+    assert len(ends) == 1
+    assert ends[0].tool_call.name == "read"
+    assert ends[0].tool_call.arguments == {"path": "/etc/hosts"}
+    assert any(isinstance(e, ToolCallStart) for e in events)
+    assert any(isinstance(e, ToolCallDelta) for e in events)
 
 
-async def test_text_then_tool_call() -> None:
+async def test_text_then_tool_call_keeps_both_blocks() -> None:
     client = Client()
-    _install_fake_stream(
+    install(
         client,
-        _FakeStream(
+        [
             [
-                _chunk(content="reading "),
-                _chunk(content="now"),
-                _chunk(tool_calls=[_tcd(index=0, id="c1", name="read", arguments='{"path":"a"}')]),
-                _chunk(finish_reason="tool_calls"),
+                say("thinking"),
+                tcall(index=0, id="c1", name="read", args='{"path":"a"}'),
+                finish("tool_use"),
             ]
-        ),
+        ],
     )
 
-    events = await _collect(
-        client.stream(messages=[UserMessage(content="x")], model="gpt-4o")
-    )
-
-    done = events[-1]
+    done = (await _run(client))[-1]
     assert isinstance(done, Done)
-    msg = done.message
-    assert len(msg.content) == 2
-    assert isinstance(msg.content[0], TextContent)
-    assert msg.content[0].text == "reading now"
-    assert isinstance(msg.content[1], ToolCall)
-    assert msg.content[1].arguments == {"path": "a"}
+    assert isinstance(done.message.content[0], TextContent)
+    assert isinstance(done.message.content[1], ToolCall)
 
 
-async def test_multiple_parallel_tool_calls() -> None:
+async def test_parallel_tool_calls_are_tracked_by_index() -> None:
     client = Client()
-    _install_fake_stream(
+    install(
         client,
-        _FakeStream(
+        [
             [
-                _chunk(tool_calls=[_tcd(index=0, id="c1", name="read", arguments='{"path":')]),
-                _chunk(tool_calls=[_tcd(index=1, id="c2", name="read", arguments='{"path":')]),
-                _chunk(tool_calls=[_tcd(index=0, arguments='"a"}')]),
-                _chunk(tool_calls=[_tcd(index=1, arguments='"b"}')]),
-                _chunk(finish_reason="tool_calls"),
+                tcall(index=0, id="c1", name="read", args='{"path":'),
+                tcall(index=1, id="c2", name="read", args='{"path":'),
+                tcall(index=0, args='"a"}'),
+                tcall(index=1, args='"b"}'),
+                finish("tool_use"),
             ]
-        ),
+        ],
     )
 
-    events = await _collect(
-        client.stream(messages=[UserMessage(content="x")], model="gpt-4o")
-    )
-
-    done = events[-1]
+    done = (await _run(client))[-1]
     assert isinstance(done, Done)
-    tool_calls = [c for c in done.message.content if isinstance(c, ToolCall)]
-    assert len(tool_calls) == 2
-    assert tool_calls[0].id == "c1"
-    assert tool_calls[0].arguments == {"path": "a"}
-    assert tool_calls[1].id == "c2"
-    assert tool_calls[1].arguments == {"path": "b"}
+    calls = [c for c in done.message.content if isinstance(c, ToolCall)]
+    assert [c.id for c in calls] == ["c1", "c2"]
+    assert [c.arguments for c in calls] == [{"path": "a"}, {"path": "b"}]
 
 
-async def test_finish_reason_content_filter_maps_to_error() -> None:
+async def test_a_missing_id_falls_back_to_the_index() -> None:
     client = Client()
-    _install_fake_stream(
+    install(client, [[tcall(index=3, name="read", args="{}"), finish("tool_use")]])
+
+    done = (await _run(client))[-1]
+    assert isinstance(done, Done)
+    assert isinstance(done.message.content[0], ToolCall)
+    assert done.message.content[0].id == "call_3"
+
+
+async def test_a_stream_with_no_stop_reason_still_stops() -> None:
+    client = Client()
+    install(client, [[say("hi")]])
+
+    done = (await _run(client))[-1]
+    assert isinstance(done, Done)
+    assert done.message.stop_reason == "stop"
+
+
+async def test_invalid_tool_call_arguments_become_empty_dict() -> None:
+    # Executing a call whose arguments are unknown is worse than failing it, so
+    # the parse error is recorded rather than guessed at.
+    client = Client()
+    install(client, [[tcall(index=0, id="c1", name="x", args="not json"), finish("tool_use")]])
+
+    done = (await _run(client))[-1]
+    assert isinstance(done, Done)
+    tc = done.message.content[0]
+    assert isinstance(tc, ToolCall)
+    assert tc.arguments == {}
+    assert tc.arguments_error is not None
+
+
+async def test_partial_is_the_same_object_in_every_event() -> None:
+    # Consumers hold the reference handed out by StreamStart, so it must never be
+    # rebound.
+    client = Client()
+    install(client, [[say("a"), finish()]])
+
+    events = await _run(client)
+    partials = {id(getattr(e, "partial", None)) for e in events if hasattr(e, "partial")}
+    assert len(partials) == 1
+
+
+# --- usage ----------------------------------------------------------------
+
+
+async def test_usage_is_captured() -> None:
+    client = Client()
+    install(client, [[say("hi"), finish(), tokens(input=1200, output=35, cached=1024)]])
+
+    done = (await _run(client))[-1]
+    assert isinstance(done, Done)
+    assert done.message.usage is not None
+    assert (done.message.usage.input, done.message.usage.cached) == (1200, 1024)
+
+
+async def test_a_usage_only_chunk_does_not_disturb_content() -> None:
+    client = Client()
+    install(client, [[say("hi"), tokens(input=5, output=1), finish()]])
+
+    done = (await _run(client))[-1]
+    assert isinstance(done, Done)
+    assert len(done.message.content) == 1
+    assert isinstance(done.message.content[0], TextContent)
+    assert done.message.content[0].text == "hi"
+
+
+async def test_usage_from_a_failed_attempt_does_not_survive_a_retry() -> None:
+    client = Client(retry_base_delay=0)
+    install(
         client,
-        _FakeStream(
-            [
-                _chunk(content="part"),
-                _chunk(finish_reason="content_filter"),
-            ]
-        ),
+        [
+            [tokens(input=999, output=999), _status_error(503)],
+            [say("ok"), finish()],
+        ],
     )
 
-    events = await _collect(
-        client.stream(messages=[UserMessage(content="x")], model="gpt-4o")
-    )
-
-    done = events[-1]
+    done = (await _run(client))[-1]
     assert isinstance(done, Done)
-    assert done.message.stop_reason == "error"
+    assert done.message.usage is None
 
 
-async def test_finish_reason_length_maps_to_length() -> None:
+# --- failure and cancellation ---------------------------------------------
+
+
+async def test_error_during_stream_emits_an_error_event() -> None:
     client = Client()
-    _install_fake_stream(
-        client,
-        _FakeStream([_chunk(content="x"), _chunk(finish_reason="length")]),
-    )
+    install(client, [[RuntimeError("upstream blew up")]])
 
-    events = await _collect(
-        client.stream(messages=[UserMessage(content="x")], model="gpt-4o")
-    )
-
-    done = events[-1]
-    assert isinstance(done, Done)
-    assert done.message.stop_reason == "length"
+    last = (await _run(client))[-1]
+    assert isinstance(last, Error)
+    assert last.message.stop_reason == "error"
+    assert "upstream blew up" in (last.message.error_message or "")
 
 
-async def test_error_during_stream_emits_error_event() -> None:
+async def test_cancellation_emits_aborted_and_reraises() -> None:
     client = Client()
-    fake = _FakeStream([_chunk(content="hello")])
-    fake.fail_after(1, RuntimeError("network died"))
-    _install_fake_stream(client, fake)
 
-    events = await _collect(
-        client.stream(messages=[UserMessage(content="x")], model="gpt-4o")
-    )
+    class _Hang(FakeProvider):
+        async def open(self, body: dict[str, Any]) -> AsyncIterator[Any]:
+            await asyncio.sleep(3600)
+            raise AssertionError("unreachable")
 
-    assert isinstance(events[-1], Error)
-    assert events[-1].message.stop_reason == "error"
-    assert events[-1].message.error_message == "RuntimeError: network died"
-
-
-async def test_cancelled_during_stream_emits_aborted_and_reraises() -> None:
-    client = Client()
-    fake = _FakeStream([_chunk(content="hello")])
-    fake.fail_after(1, asyncio.CancelledError())
-    _install_fake_stream(client, fake)
-
+    client.provider = _Hang()
     collected: list[StreamEvent] = []
-    with pytest.raises(asyncio.CancelledError):
-        async for ev in client.stream(messages=[UserMessage(content="x")], model="gpt-4o"):
+
+    async def run() -> None:
+        async for ev in client.stream(messages=USER, model="gpt-4o"):
             collected.append(ev)
 
-    assert isinstance(collected[-1], Error)
-    assert collected[-1].message.stop_reason == "aborted"
+    task = asyncio.create_task(run())
+    for _ in range(10):
+        await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        async with asyncio.timeout(1):
+            await task
+
+    last = collected[-1]
+    assert isinstance(last, Error)
+    assert last.message.stop_reason == "aborted"
 
 
-async def test_partial_appears_in_every_event() -> None:
-    client = Client()
-    _install_fake_stream(
-        client,
-        _FakeStream(
-            [
-                _chunk(content="hi"),
-                _chunk(finish_reason="stop"),
-            ]
-        ),
-    )
-
-    events = await _collect(
-        client.stream(messages=[UserMessage(content="x")], model="gpt-4o")
-    )
-
-    partials = [
-        getattr(e, "partial", None) or getattr(e, "message", None)
-        for e in events
-    ]
-    first = partials[0]
-    assert all(p is first for p in partials)
-
-
-def test_is_retryable_classification() -> None:
-    assert is_retryable(_status_error(429))
-    assert is_retryable(_status_error(500))
-    assert is_retryable(_status_error(503))
-    assert is_retryable(openai.APIConnectionError(request=httpx.Request("POST", "http://x")))
-    assert is_retryable(openai.APITimeoutError(request=httpx.Request("POST", "http://x")))
-
-    assert not is_retryable(_status_error(400))
-    assert not is_retryable(_status_error(401))
-    assert not is_retryable(_status_error(404))
-    assert not is_retryable(RuntimeError("boom"))
-
-
-async def test_sdk_retries_disabled() -> None:
-    # The SDK's own backoff sleep ignores cancellation, so the retry must be ours.
-    assert Client()._client.max_retries == 0
+# --- retry policy ---------------------------------------------------------
 
 
 async def test_retries_then_succeeds() -> None:
     client = Client(retry_base_delay=0)
-    calls = _install_attempts(
-        client,
-        [
-            _status_error(503),
-            _status_error(429),
-            _FakeStream([_chunk(content="hi"), _chunk(finish_reason="stop")]),
-        ],
-    )
+    provider = install_provider(client, [[_status_error(503)], [say("second"), finish()]])
 
-    events = await _collect(
-        client.stream(messages=[UserMessage(content="x")], model="gpt-4o")
-    )
+    done = (await _run(client))[-1]
 
-    assert calls[0] == 3
-    done = events[-1]
+    assert provider.attempts == 2
     assert isinstance(done, Done)
-    assert done.message.stop_reason == "stop"
     assert isinstance(done.message.content[0], TextContent)
-    assert done.message.content[0].text == "hi"
-    # Exactly one StreamStart despite three attempts.
-    assert [type(e) for e in events].count(StreamStart) == 1
+    assert done.message.content[0].text == "second"
 
 
 async def test_retry_exhausted_emits_error() -> None:
-    client = Client(max_attempts=3, retry_base_delay=0)
-    calls = _install_attempts(client, [_status_error(500)] * 3)
+    client = Client(retry_base_delay=0, max_attempts=2)
+    provider = install_provider(client, [[_status_error(503)], [_status_error(503)]])
 
-    events = await _collect(
-        client.stream(messages=[UserMessage(content="x")], model="gpt-4o")
-    )
-
-    assert calls[0] == 3
-    assert isinstance(events[-1], Error)
-    assert events[-1].message.stop_reason == "error"
+    assert isinstance((await _run(client))[-1], Error)
+    assert provider.attempts == 2
 
 
-async def test_non_retryable_fails_on_first_attempt() -> None:
+async def test_non_retryable_fails_on_the_first_attempt() -> None:
     client = Client(retry_base_delay=0)
-    calls = _install_attempts(client, [_status_error(401)])
+    provider = install_provider(client, [[_status_error(400)]])
 
-    events = await _collect(
-        client.stream(messages=[UserMessage(content="x")], model="gpt-4o")
-    )
-
-    assert calls[0] == 1
-    assert isinstance(events[-1], Error)
+    assert isinstance((await _run(client))[-1], Error)
+    assert provider.attempts == 1
 
 
 async def test_no_retry_once_content_has_been_yielded() -> None:
-    # A mid-stream drop after deltas escaped cannot be replayed: the consumer
-    # has already seen part of the response.
+    # A mid-stream drop after deltas escaped cannot be replayed: the consumer has
+    # already seen part of the response.
     client = Client(retry_base_delay=0)
-    failing = _FakeStream([_chunk(content="hello")])
-    failing.fail_after(1, _status_error(503))
-    calls = _install_attempts(
-        client,
-        [failing, _FakeStream([_chunk(content="second"), _chunk(finish_reason="stop")])],
-    )
-
-    events = await _collect(
-        client.stream(messages=[UserMessage(content="x")], model="gpt-4o")
-    )
-
-    assert calls[0] == 1
-    assert isinstance(events[-1], Error)
-    assert isinstance(events[-1].message.content[0], TextContent)
-    assert events[-1].message.content[0].text == "hello"
-
-
-async def test_retry_discards_partial_state_from_failed_attempt() -> None:
-    # The first attempt buffers a tool call but dies before any event escapes,
-    # so the retry must not inherit it.
-    class _DropBeforeYield(_FakeStream):
-        async def __anext__(self) -> Any:
-            raise _status_error(503)
-
-    client = Client(retry_base_delay=0)
-    _install_attempts(
+    provider = install_provider(
         client,
         [
-            _DropBeforeYield([]),
-            _FakeStream(
-                [
-                    _chunk(tool_calls=[_tcd(index=0, id="c1", name="read", arguments='{"path":"a"}')]),
-                    _chunk(finish_reason="tool_calls"),
-                ]
-            ),
+            [say("hello"), _status_error(503)],
+            [say("second"), finish()],
         ],
     )
 
-    events = await _collect(
-        client.stream(messages=[UserMessage(content="x")], model="gpt-4o")
-    )
+    events = await _run(client)
 
-    done = events[-1]
+    assert provider.attempts == 1
+    last = events[-1]
+    assert isinstance(last, Error)
+    assert isinstance(last.message.content[0], TextContent)
+    assert last.message.content[0].text == "hello"
+
+
+async def test_retry_discards_partial_state_from_the_failed_attempt() -> None:
+    # The failed attempt buffered nothing that escaped, so the retry starts from
+    # an empty message rather than inheriting it.
+    client = Client(retry_base_delay=0)
+    install(client, [[_status_error(503)], [say("clean"), finish()]])
+
+    done = (await _run(client))[-1]
     assert isinstance(done, Done)
     assert len(done.message.content) == 1
-    tc = done.message.content[0]
-    assert isinstance(tc, ToolCall)
-    assert tc.id == "c1"
-    # Still the object handed out by StreamStart.
-    start = events[0]
-    assert isinstance(start, StreamStart)
-    assert done.message is start.partial
+    assert isinstance(done.message.content[0], TextContent)
+    assert done.message.content[0].text == "clean"
 
 
 async def test_cancellation_during_retry_backoff_propagates() -> None:
-    # The whole reason the backoff sleep is ours rather than the SDK's: the
-    # SDK's sleep ignores cancellation, so Ctrl+C during it would do nothing.
+    # The whole reason the backoff sleep is ours rather than the SDK's: the SDK's
+    # sleep ignores cancellation, so Ctrl+C during it would do nothing.
     client = Client(retry_base_delay=3600)
-    calls = _install_attempts(client, [_status_error(503), _status_error(503)])
+    provider = install_provider(client, [[_status_error(503)], [_status_error(503)]])
     collected: list[StreamEvent] = []
 
     async def run() -> None:
-        async for ev in client.stream(messages=[UserMessage(content="x")], model="gpt-4o"):
+        async for ev in client.stream(messages=USER, model="gpt-4o"):
             collected.append(ev)
 
     task = asyncio.create_task(run())
@@ -463,7 +353,7 @@ async def test_cancellation_during_retry_backoff_propagates() -> None:
         await asyncio.sleep(0)
 
     # Parked in the backoff: the first attempt is spent, the second not started.
-    assert calls[0] == 1
+    assert provider.attempts == 1
     assert not task.done()
 
     task.cancel()
@@ -471,174 +361,100 @@ async def test_cancellation_during_retry_backoff_propagates() -> None:
         async with asyncio.timeout(1):
             await task
 
-    assert calls[0] == 1
-    # Cancelled between attempts, so nothing beyond StreamStart was emitted.
+    assert provider.attempts == 1
     assert [type(e) for e in collected] == [StreamStart]
 
 
-async def test_invalid_tool_call_arguments_become_empty_dict() -> None:
-    client = Client()
-    _install_fake_stream(
-        client,
-        _FakeStream(
+# --- provider selection ---------------------------------------------------
+
+
+def test_the_resolved_provider_is_logged(caplog: pytest.LogCaptureFixture) -> None:
+    # The base_url heuristic is a guess, so a misrouted request must not be a
+    # mystery.
+    with caplog.at_level(logging.INFO, logger="midge.client"):
+        Client(api_key="k", base_url="http://localhost:11434/v1")
+    assert any(
+        "provider_selected name=openai-compatible" in r.getMessage() for r in caplog.records
+    )
+
+
+def test_an_explicit_provider_instance_is_used_as_is() -> None:
+    provider = FakeProvider()
+    assert Client(provider=provider).provider is provider
+
+
+# --- end to end through the real adapter ----------------------------------
+#
+# Everything above fakes the transport. These run SDK-shaped chunks through the
+# real `decode`, so a regression in the seam between the adapter and the state
+# machine cannot hide behind the fake.
+
+
+def _sdk_chunk(*, content: str | None = None, finish_reason: str | None = None) -> Any:
+    delta = SimpleNamespace(content=content, tool_calls=None)
+    return SimpleNamespace(
+        choices=[SimpleNamespace(delta=delta, finish_reason=finish_reason)], usage=None
+    )
+
+
+def _sdk_tool_chunk(*, index: int, id: str, name: str, arguments: str) -> Any:
+    tcd = SimpleNamespace(
+        index=index, id=id, function=SimpleNamespace(name=name, arguments=arguments)
+    )
+    delta = SimpleNamespace(content=None, tool_calls=[tcd])
+    return SimpleNamespace(
+        choices=[SimpleNamespace(delta=delta, finish_reason=None)], usage=None
+    )
+
+
+def _real_provider_yielding(chunks: list[Any]) -> OpenAIProvider:
+    provider = OpenAIProvider(api_key="test")
+
+    async def create(**kwargs: Any) -> Any:
+        async def gen() -> AsyncIterator[Any]:
+            for c in chunks:
+                yield c
+
+        return gen()
+
+    provider._client = SimpleNamespace(  # type: ignore[assignment]
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+    )
+    return provider
+
+
+async def test_real_adapter_text_reaches_the_state_machine() -> None:
+    client = Client(
+        provider=_real_provider_yielding(
             [
-                _chunk(tool_calls=[_tcd(index=0, id="c1", name="x", arguments="not json")]),
-                _chunk(finish_reason="tool_calls"),
+                _sdk_chunk(content="hel"),
+                _sdk_chunk(content="lo"),
+                _sdk_chunk(finish_reason="stop"),
             ]
-        ),
+        )
     )
 
-    events = await _collect(
-        client.stream(messages=[UserMessage(content="x")], model="gpt-4o")
+    done = (await _run(client))[-1]
+    assert isinstance(done, Done)
+    assert isinstance(done.message.content[0], TextContent)
+    assert done.message.content[0].text == "hello"
+    assert done.message.stop_reason == "stop"
+
+
+async def test_real_adapter_tool_call_reaches_the_state_machine() -> None:
+    client = Client(
+        provider=_real_provider_yielding(
+            [
+                _sdk_tool_chunk(index=0, id="c1", name="read", arguments='{"path":'),
+                _sdk_tool_chunk(index=0, id="c1", name="read", arguments='"a"}'),
+                _sdk_chunk(finish_reason="tool_calls"),
+            ]
+        )
     )
 
-    done = events[-1]
+    done = (await _run(client))[-1]
     assert isinstance(done, Done)
     tc = done.message.content[0]
     assert isinstance(tc, ToolCall)
-    assert tc.arguments == {}
-
-
-# ---- token usage ----
-
-
-def _usage_chunk(*, prompt: int, completion: int, cached: int = 0) -> Any:
-    """The provider's final chunk: usage present, `choices` empty."""
-    return SimpleNamespace(
-        choices=[],
-        usage=SimpleNamespace(
-            prompt_tokens=prompt,
-            completion_tokens=completion,
-            prompt_tokens_details=SimpleNamespace(cached_tokens=cached),
-        ),
-    )
-
-
-async def test_usage_is_captured_from_the_final_chunk() -> None:
-    client = Client()
-    _install_fake_stream(
-        client,
-        _FakeStream(
-            [
-                _chunk(content="hi"),
-                _chunk(finish_reason="stop"),
-                _usage_chunk(prompt=1200, completion=35, cached=1024),
-            ]
-        ),
-    )
-
-    events = await _collect(client.stream(messages=[UserMessage(content="hi")], model="m"))
-    done = events[-1]
-    assert isinstance(done, Done)
-    assert done.message.usage is not None
-    assert done.message.usage.input == 1200
-    assert done.message.usage.output == 35
-    assert done.message.usage.cached == 1024
-
-
-async def test_usage_chunk_does_not_disturb_content() -> None:
-    client = Client()
-    _install_fake_stream(
-        client,
-        _FakeStream(
-            [
-                _chunk(content="a"),
-                _usage_chunk(prompt=5, completion=1),
-                _chunk(content="b"),
-                _chunk(finish_reason="stop"),
-            ]
-        ),
-    )
-
-    events = await _collect(client.stream(messages=[UserMessage(content="hi")], model="m"))
-    done = events[-1]
-    assert isinstance(done, Done)
-    assert isinstance(done.message.content[0], TextContent)
-    assert done.message.content[0].text == "ab"
-
-
-async def test_stream_options_requested_by_default() -> None:
-    client = Client()
-    captured: list[dict[str, Any]] = []
-
-    async def create(**kwargs: Any) -> _FakeStream:
-        captured.append(kwargs)
-        return _FakeStream([_chunk(finish_reason="stop")])
-
-    client._client = SimpleNamespace(  # type: ignore[assignment]
-        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
-    )
-    await _collect(client.stream(messages=[UserMessage(content="hi")], model="m"))
-
-    assert captured[0]["stream_options"] == {"include_usage": True}
-
-
-async def test_stream_options_can_be_switched_off() -> None:
-    # Some OpenAI-compatible servers 400 on stream_options, which would fail
-    # the whole turn.
-    client = Client(include_usage=False)
-    captured: list[dict[str, Any]] = []
-
-    async def create(**kwargs: Any) -> _FakeStream:
-        captured.append(kwargs)
-        return _FakeStream([_chunk(finish_reason="stop")])
-
-    client._client = SimpleNamespace(  # type: ignore[assignment]
-        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
-    )
-    await _collect(client.stream(messages=[UserMessage(content="hi")], model="m"))
-
-    assert "stream_options" not in captured[0]
-
-
-async def test_include_usage_env_opt_out(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("MIDGE_INCLUDE_USAGE", "0")
-    assert Client()._include_usage is False
-    monkeypatch.setenv("MIDGE_INCLUDE_USAGE", "1")
-    assert Client()._include_usage is True
-
-
-async def test_usage_absent_when_the_server_omits_it() -> None:
-    client = Client()
-    _install_fake_stream(
-        client, _FakeStream([_chunk(content="hi"), _chunk(finish_reason="stop")])
-    )
-
-    events = await _collect(client.stream(messages=[UserMessage(content="hi")], model="m"))
-    done = events[-1]
-    assert isinstance(done, Done)
-    assert done.message.usage is None
-
-
-class _FailingStream:
-    """Emits chunks, then raises — a provider dying after reporting usage."""
-
-    def __init__(self, chunks: list[Any], error: BaseException) -> None:
-        self._chunks = list(chunks)
-        self._error = error
-
-    def __aiter__(self) -> _FailingStream:
-        return self
-
-    async def __anext__(self) -> Any:
-        if self._chunks:
-            return self._chunks.pop(0)
-        raise self._error
-
-
-async def test_usage_from_a_failed_attempt_does_not_survive_a_retry() -> None:
-    # Each attempt resets per-attempt state; usage counted against a request
-    # that then failed must not be attributed to the one that succeeded.
-    client = Client(retry_base_delay=0)
-    _install_attempts(
-        client,
-        [
-            _FailingStream([_usage_chunk(prompt=999, completion=999)], _status_error(429)),
-            _FakeStream([_chunk(content="ok"), _chunk(finish_reason="stop")]),
-        ],
-    )
-
-    events = await _collect(client.stream(messages=[UserMessage(content="hi")], model="m"))
-    done = events[-1]
-    assert isinstance(done, Done)
-    assert done.message.usage is None
+    assert tc.arguments == {"path": "a"}
+    assert done.message.stop_reason == "tool_use"

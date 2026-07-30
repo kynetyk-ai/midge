@@ -1,9 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterable
-from types import SimpleNamespace
-from typing import Any
 
 import pytest
 
@@ -22,61 +19,12 @@ from midge.messages import (
     TextContent,
     ToolResultMessage,
     UserMessage,
-    to_openai_messages,
+    repair_history,
 )
+from midge.providers import Delta, ToolCallFragment
+from midge.providers.openai_compat import encode_messages
 from midge.tools import ToolRegistry, tool
-
-
-def _chunk(
-    *,
-    content: str | None = None,
-    tool_calls: list[Any] | None = None,
-    finish_reason: str | None = None,
-) -> Any:
-    delta = SimpleNamespace(content=content, tool_calls=tool_calls)
-    choice = SimpleNamespace(delta=delta, finish_reason=finish_reason)
-    return SimpleNamespace(choices=[choice])
-
-
-def _tcd(
-    *,
-    index: int,
-    id: str | None = None,
-    name: str | None = None,
-    arguments: str | None = None,
-) -> Any:
-    function = SimpleNamespace(name=name, arguments=arguments)
-    return SimpleNamespace(index=index, id=id, function=function)
-
-
-class _FakeStream:
-    def __init__(self, chunks: Iterable[Any]) -> None:
-        self._chunks = list(chunks)
-
-    def __aiter__(self) -> _FakeStream:
-        return self
-
-    async def __anext__(self) -> Any:
-        if not self._chunks:
-            raise StopAsyncIteration
-        return self._chunks.pop(0)
-
-
-def _install_turns(
-    client: Client, turns: list[list[Any]]
-) -> list[dict[str, Any]]:
-    """Pre-canned per-turn chunk sequences. Returns a captured list of `create()` kwargs."""
-    captured: list[dict[str, Any]] = []
-    iterator = iter(turns)
-
-    async def create(**kwargs: Any) -> _FakeStream:
-        captured.append(kwargs)
-        return _FakeStream(next(iterator))
-
-    client._client = SimpleNamespace(  # type: ignore[assignment]
-        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
-    )
-    return captured
+from tests.fakes import finish, install, install_provider, say, tcall
 
 
 async def _collect(agent: Agent, user_input: str) -> list[AgentEvent]:
@@ -85,10 +33,10 @@ async def _collect(agent: Agent, user_input: str) -> list[AgentEvent]:
 
 async def test_single_turn_text_only() -> None:
     client = Client()
-    _install_turns(
+    install(
         client,
         [
-            [_chunk(content="hello"), _chunk(finish_reason="stop")],
+            [say("hello"), finish()],
         ],
     )
     agent = Agent(client=client, model="gpt-4o")
@@ -110,18 +58,16 @@ async def test_single_tool_call_then_finish() -> None:
         return f"echoed:{text}"
 
     client = Client()
-    _install_turns(
+    install(
         client,
         [
             # turn 1: tool call
             [
-                _chunk(
-                    tool_calls=[_tcd(index=0, id="c1", name="echo", arguments='{"text":"hi"}')]
-                ),
-                _chunk(finish_reason="tool_calls"),
+                tcall(index=0, id="c1", name="echo", args='{"text":"hi"}'),
+                finish("tool_use"),
             ],
             # turn 2: final text
-            [_chunk(content="done"), _chunk(finish_reason="stop")],
+            [say("done"), finish()],
         ],
     )
     agent = Agent(client=client, model="gpt-4o", tools=ToolRegistry([echo]))
@@ -148,19 +94,15 @@ async def test_parallel_tool_calls() -> None:
         return text.upper()
 
     client = Client()
-    _install_turns(
+    install(
         client,
         [
             [
-                _chunk(
-                    tool_calls=[_tcd(index=0, id="c1", name="echo", arguments='{"text":"a"}')]
-                ),
-                _chunk(
-                    tool_calls=[_tcd(index=1, id="c2", name="echo", arguments='{"text":"b"}')]
-                ),
-                _chunk(finish_reason="tool_calls"),
+                tcall(index=0, id="c1", name="echo", args='{"text":"a"}'),
+                tcall(index=1, id="c2", name="echo", args='{"text":"b"}'),
+                finish("tool_use"),
             ],
-            [_chunk(content="ok"), _chunk(finish_reason="stop")],
+            [say("ok"), finish()],
         ],
     )
     agent = Agent(client=client, model="gpt-4o", tools=ToolRegistry([echo]))
@@ -183,18 +125,14 @@ async def test_tool_raising_exception_becomes_error_result() -> None:
         raise RuntimeError("kaboom")
 
     client = Client()
-    _install_turns(
+    install(
         client,
         [
             [
-                _chunk(
-                    tool_calls=[
-                        _tcd(index=0, id="c1", name="explode", arguments='{"x":1}')
-                    ]
-                ),
-                _chunk(finish_reason="tool_calls"),
+                tcall(index=0, id="c1", name="explode", args='{"x":1}'),
+                finish("tool_use"),
             ],
-            [_chunk(content="acknowledged"), _chunk(finish_reason="stop")],
+            [say("acknowledged"), finish()],
         ],
     )
     agent = Agent(client=client, model="gpt-4o", tools=ToolRegistry([explode]))
@@ -210,18 +148,14 @@ async def test_tool_raising_exception_becomes_error_result() -> None:
 
 async def test_unknown_tool_becomes_error_result() -> None:
     client = Client()
-    _install_turns(
+    install(
         client,
         [
             [
-                _chunk(
-                    tool_calls=[
-                        _tcd(index=0, id="c1", name="ghost", arguments="{}")
-                    ]
-                ),
-                _chunk(finish_reason="tool_calls"),
+                tcall(index=0, id="c1", name="ghost", args="{}"),
+                finish("tool_use"),
             ],
-            [_chunk(content="ok"), _chunk(finish_reason="stop")],
+            [say("ok"), finish()],
         ],
     )
     agent = Agent(client=client, model="gpt-4o")  # no tools registered
@@ -241,18 +175,14 @@ async def test_invalid_tool_arguments_become_error_result() -> None:
         return a + b
 
     client = Client()
-    _install_turns(
+    install(
         client,
         [
             [
-                _chunk(
-                    tool_calls=[
-                        _tcd(index=0, id="c1", name="add", arguments='{"a":"oops"}')
-                    ]
-                ),
-                _chunk(finish_reason="tool_calls"),
+                tcall(index=0, id="c1", name="add", args='{"a":"oops"}'),
+                finish("tool_use"),
             ],
-            [_chunk(content="ok"), _chunk(finish_reason="stop")],
+            [say("ok"), finish()],
         ],
     )
     agent = Agent(client=client, model="gpt-4o", tools=ToolRegistry([add]))
@@ -269,43 +199,23 @@ async def test_error_stop_reason_terminates_loop() -> None:
     async def echo(text: str) -> str:
         return text
 
-    captured_calls = 0
-
-    class FailFirstStream:
-        def __init__(self) -> None:
-            self._raised = False
-
-        def __aiter__(self) -> FailFirstStream:
-            return self
-
-        async def __anext__(self) -> Any:
-            if not self._raised:
-                self._raised = True
-                raise RuntimeError("upstream blew up")
-            raise StopAsyncIteration
-
-    async def create(**kwargs: Any) -> FailFirstStream:
-        nonlocal captured_calls
-        captured_calls += 1
-        return FailFirstStream()
-
     client = Client()
-    client._client = SimpleNamespace(  # type: ignore[assignment]
-        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
-    )
+    # A RuntimeError is not retryable, so exactly one request is made and the
+    # loop must stop rather than take another turn on an errored message.
+    provider = install_provider(client, [[RuntimeError("upstream blew up")]])
     agent = Agent(client=client, model="gpt-4o", tools=ToolRegistry([echo]))
 
     msg = await agent.run("trigger error")
 
     assert msg.stop_reason == "error"
-    assert captured_calls == 1  # loop did not retry
+    assert provider.attempts == 1
 
 
 async def test_system_prompt_passed_to_client() -> None:
     client = Client()
-    captured = _install_turns(
+    captured = install(
         client,
-        [[_chunk(content="hi"), _chunk(finish_reason="stop")]],
+        [[say("hi"), finish()]],
     )
     agent = Agent(
         client=client,
@@ -323,11 +233,11 @@ async def test_system_prompt_passed_to_client() -> None:
 
 async def test_multi_turn_history_grows() -> None:
     client = Client()
-    _install_turns(
+    install(
         client,
         [
-            [_chunk(content="first"), _chunk(finish_reason="stop")],
-            [_chunk(content="second"), _chunk(finish_reason="stop")],
+            [say("first"), finish()],
+            [say("second"), finish()],
         ],
     )
     agent = Agent(client=client, model="gpt-4o")
@@ -347,16 +257,14 @@ async def test_agent_end_event_has_only_this_turns_messages() -> None:
         return text
 
     client = Client()
-    _install_turns(
+    install(
         client,
         [
             [
-                _chunk(
-                    tool_calls=[_tcd(index=0, id="c1", name="echo", arguments='{"text":"x"}')]
-                ),
-                _chunk(finish_reason="tool_calls"),
+                tcall(index=0, id="c1", name="echo", args='{"text":"x"}'),
+                finish("tool_use"),
             ],
-            [_chunk(content="ok"), _chunk(finish_reason="stop")],
+            [say("ok"), finish()],
         ],
     )
     agent = Agent(client=client, model="gpt-4o", tools=ToolRegistry([echo]))
@@ -372,9 +280,9 @@ async def test_agent_end_event_has_only_this_turns_messages() -> None:
 
 async def test_event_sequence_for_simple_run() -> None:
     client = Client()
-    _install_turns(
+    install(
         client,
-        [[_chunk(content="hi"), _chunk(finish_reason="stop")]],
+        [[say("hi"), finish()]],
     )
     agent = Agent(client=client, model="gpt-4o")
 
@@ -390,9 +298,9 @@ async def test_event_sequence_for_simple_run() -> None:
 
 async def test_run_no_tools_calls_client_once() -> None:
     client = Client()
-    captured = _install_turns(
+    captured = install(
         client,
-        [[_chunk(content="hi"), _chunk(finish_reason="stop")]],
+        [[say("hi"), finish()]],
     )
     agent = Agent(client=client, model="gpt-4o")
     await agent.run("ping")
@@ -403,9 +311,9 @@ async def test_run_no_tools_calls_client_once() -> None:
 
 async def test_user_message_can_be_passed_directly() -> None:
     client = Client()
-    _install_turns(
+    install(
         client,
-        [[_chunk(content="hi"), _chunk(finish_reason="stop")]],
+        [[say("hi"), finish()]],
     )
     agent = Agent(client=client, model="gpt-4o")
 
@@ -429,16 +337,12 @@ async def test_cancel_during_tool_execution_closes_out_tool_calls() -> None:
     registry.add(slow)
 
     client = Client()
-    _install_turns(
+    install(
         client,
         [
             [
-                _chunk(
-                    tool_calls=[
-                        _tcd(index=0, id="c1", name="slow", arguments='{"x":"1"}')
-                    ]
-                ),
-                _chunk(finish_reason="tool_calls"),
+                tcall(index=0, id="c1", name="slow", args='{"x":"1"}'),
+                finish("tool_use"),
             ]
         ],
     )
@@ -462,11 +366,11 @@ async def test_cancel_during_tool_execution_closes_out_tool_calls() -> None:
     assert result.content[0].text == INTERRUPTED_MESSAGE
 
     # The next request must carry a `tool` message for every `tool_call` id.
-    captured = _install_turns(
-        client, [[_chunk(content="hi"), _chunk(finish_reason="stop")]]
+    captured = install(
+        client, [[say("hi"), finish()]]
     )
     await agent.run("next")
-    sent = to_openai_messages(agent.history[:-1])
+    sent = encode_messages(repair_history(agent.history[:-1]))
     answered = {m["tool_call_id"] for m in sent if m.get("role") == "tool"}
     requested = {
         tc["id"]
@@ -496,17 +400,19 @@ async def test_cancel_only_closes_out_unfinished_tool_calls() -> None:
     registry.add(slow)
 
     client = Client()
-    _install_turns(
+    install(
         client,
         [
             [
-                _chunk(
-                    tool_calls=[
-                        _tcd(index=0, id="c1", name="fast", arguments='{"x":"1"}'),
-                        _tcd(index=1, id="c2", name="slow", arguments='{"x":"2"}'),
-                    ]
+                # Both calls in one chunk, which is what a provider does when it
+                # emits parallel calls together rather than one per chunk.
+                Delta(
+                    tool_calls=(
+                        ToolCallFragment(index=0, id="c1", name="fast", arguments='{"x":"1"}'),
+                        ToolCallFragment(index=1, id="c2", name="slow", arguments='{"x":"2"}'),
+                    )
                 ),
-                _chunk(finish_reason="tool_calls"),
+                finish("tool_use"),
             ]
         ],
     )
@@ -543,12 +449,12 @@ async def test_reentrant_stream_is_rejected() -> None:
 
     registry = ToolRegistry()
     registry.add(slow)
-    _install_turns(
+    install(
         client,
         [
             [
-                _chunk(tool_calls=[_tcd(index=0, id="c1", name="slow", arguments='{"x":"1"}')]),
-                _chunk(finish_reason="tool_calls"),
+                tcall(index=0, id="c1", name="slow", args='{"x":"1"}'),
+                finish("tool_use"),
             ]
         ],
     )
@@ -570,7 +476,7 @@ async def test_reentrant_stream_is_rejected() -> None:
         await task
 
     # And the guard releases, so the next turn works.
-    _install_turns(client, [[_chunk(content="ok"), _chunk(finish_reason="stop")]])
+    install(client, [[say("ok"), finish()]])
     await agent.run("third")
 
 
@@ -586,12 +492,12 @@ async def test_truncated_message_fails_tool_calls_unexecuted() -> None:
     registry = ToolRegistry()
     registry.add(touch)
     client = Client()
-    _install_turns(
+    install(
         client,
         [
             [
-                _chunk(tool_calls=[_tcd(index=0, id="t1", name="touch", arguments='{"pa')]),
-                _chunk(finish_reason="length"),
+                tcall(index=0, id="t1", name="touch", args='{"pa'),
+                finish("length"),
             ]
         ],
     )
@@ -617,14 +523,14 @@ async def test_unparseable_tool_arguments_are_not_executed() -> None:
     registry = ToolRegistry()
     registry.add(maybe)
     client = Client()
-    _install_turns(
+    install(
         client,
         [
             [
-                _chunk(tool_calls=[_tcd(index=0, id="m1", name="maybe", arguments='{"path": "trunc')]),
-                _chunk(finish_reason="tool_calls"),
+                tcall(index=0, id="m1", name="maybe", args='{"path": "trunc'),
+                finish("tool_use"),
             ],
-            [_chunk(content="ok"), _chunk(finish_reason="stop")],
+            [say("ok"), finish()],
         ],
     )
     agent = Agent(client=client, model="gpt-4o", tools=registry)
@@ -647,14 +553,14 @@ async def test_oversized_tool_result_is_truncated() -> None:
     registry = ToolRegistry()
     registry.add(big)
     client = Client()
-    _install_turns(
+    install(
         client,
         [
             [
-                _chunk(tool_calls=[_tcd(index=0, id="b1", name="big", arguments="{}")]),
-                _chunk(finish_reason="tool_calls"),
+                tcall(index=0, id="b1", name="big", args="{}"),
+                finish("tool_use"),
             ],
-            [_chunk(content="ok"), _chunk(finish_reason="stop")],
+            [say("ok"), finish()],
         ],
     )
     agent = Agent(client=client, model="gpt-4o", tools=registry)
@@ -680,12 +586,12 @@ async def test_generator_exit_closes_out_tool_calls() -> None:
     registry = ToolRegistry()
     registry.add(slow)
     client = Client()
-    _install_turns(
+    install(
         client,
         [
             [
-                _chunk(tool_calls=[_tcd(index=0, id="g1", name="slow", arguments='{"x":"1"}')]),
-                _chunk(finish_reason="tool_calls"),
+                tcall(index=0, id="g1", name="slow", args='{"x":"1"}'),
+                finish("tool_use"),
             ]
         ],
     )
@@ -707,7 +613,7 @@ async def test_generator_exit_closes_out_tool_calls() -> None:
     for _ in range(3):
         await asyncio.sleep(0)
 
-    wire = to_openai_messages(agent.history)
+    wire = encode_messages(repair_history(agent.history))
     requested = {
         tc["id"]
         for m in wire

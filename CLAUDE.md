@@ -38,7 +38,7 @@ message, so the model chooses inputs but never the child's prompt, tools, or mod
 
 - **Poetry** for env and dependency management (`poetry install`, `poetry run <cmd>`, `poetry add <pkg>`). Never `pip`, `uv`, `pip-tools`, or `hatch`. `poetry.lock` is committed.
 - **Python 3.11+**. Use `asyncio.TaskGroup`, exception groups, and modern type hints.
-- **`openai` SDK with configurable `base_url`** is the LLM client. This covers OpenAI plus all OpenAI-compatible local servers (ollama, vLLM, LM Studio, llama.cpp). Do not introduce LangChain or LiteLLM without checking with the user first — the harness loop is small enough that they add weight without buying anything.
+- **Providers live in `src/midge/providers/`.** A provider owns one wire format — `encode` / `open` / `decode` / `is_retryable` — and nothing else. The streaming state machine and the retry policy stay in `client.py`, written once; `Delta` is the normalization point. Two names are registered against the OpenAI adapter today (`openai`, `openai-compatible`) because they share a format and differ only in declared `Capabilities`. Do not introduce LangChain or LiteLLM without checking with the user first — the harness loop is small enough that they add weight without buying anything.
 - **Pydantic v2** for tool-arg schemas.
 - **Textual** for the TUI.
 - **Lint:** `ruff`. **Type-check:** `pyright`. **Test:** `pytest` + `pytest-asyncio`.
@@ -46,7 +46,7 @@ message, so the model chooses inputs but never the child's prompt, tools, or mod
 
 ## Out of scope (do not propose without checking)
 
-- Multi-provider zoo beyond `openai`+`base_url` (Anthropic native, Bedrock, Vertex, Mistral, Azure)
+- ~~Multi-provider zoo beyond `openai`+`base_url`~~ — **reversed.** `src/midge/providers/` now has a protocol and a registry, so a second wire format is a declaration rather than an `if`. Adding one is in scope; the constraint is that it must fit the existing contract without the core learning about it. A new adapter needs a real reason, not symmetry.
 - OAuth flows
 - Faithful port of `pi-tui`
 - `pi-mom` (Slack), `pi-pods`, `pi-web-ui`
