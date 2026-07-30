@@ -354,7 +354,8 @@ class Session:
         """Record that `cut_index` messages were discarded from the front.
 
         The messages stay in the file — it is the record of what happened, and
-        `export_html` still renders them. What changes is what a resume replays.
+        anything reading the JSONL still sees them. What changes is what a
+        resume replays.
         """
         self._append_record({"type": "clear", "cut_index": cut_index})
         self.messages = self.messages[cut_index:]

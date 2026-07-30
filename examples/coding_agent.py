@@ -7,7 +7,6 @@ Options:
     --extension-dir DIR   Add an extensions directory (repeatable).
     --skill-dir DIR       Add a SKILL.md skills directory (repeatable).
     --skill NAME          Force a skill; the prompt becomes its instructions.
-    --export-html PATH    Write HTML transcript on completion.
     --session PATH        Append turns to a JSONL session file. If the file
                           exists, the agent resumes from it, re-using the model
                           from its header. Tool and skill availability is
@@ -22,7 +21,6 @@ import argparse
 import asyncio
 import logging
 import sys
-from collections.abc import Sequence
 from pathlib import Path
 
 from midge.agent import Agent, AgentEnd, ToolExecutionEnd, ToolExecutionStart
@@ -35,8 +33,7 @@ from midge.hooks import Hooks
 from midge.logs import configure as configure_logging
 from midge.logs import provider_host
 from midge.messages import TextContent, UserMessage
-from midge.persistence import Session, TranscriptEntry, read_transcript
-from midge.session import export_html
+from midge.persistence import Session
 from midge.skills import default_skill_dirs, load_skills, skill_message, skills_prompt
 from midge.subagents import bind_subagents
 
@@ -81,12 +78,6 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--export-html",
-        type=Path,
-        metavar="PATH",
-        help="After the run completes, write a single-file HTML transcript to PATH.",
-    )
-    parser.add_argument(
         "--session",
         type=Path,
         metavar="PATH",
@@ -122,7 +113,6 @@ async def amain(
     extension_dirs: list[Path],
     skill_dirs: list[Path] | None = None,
     force_skill: str | None = None,
-    export_html_path: Path | None = None,
     session_path: Path | None = None,
     compaction_threshold: int | None = None,
     compaction_keep_recent: int = 20_000,
@@ -249,22 +239,6 @@ async def amain(
         if session is not None:
             session.close()
 
-        if export_html_path is not None:
-            # `agent.history` is post-compaction; the session file still holds
-            # every message, so export from it whenever there is one.
-            entries: Sequence[TranscriptEntry] = agent.history
-            if session is not None:
-                entries = read_transcript(session.path)[1]
-            export_html_path.write_text(
-                export_html(
-                    entries,
-                    title=f"midge · {prompt[:60]}",
-                    model=agent.model,
-                ),
-                encoding="utf-8",
-            )
-            sys.stdout.write(f"[exported HTML transcript to {export_html_path}]\n")
-
     return 130 if interrupted else 0
 
 
@@ -279,7 +253,6 @@ def main() -> None:
                 list(args.extension_dir),
                 skill_dirs=list(args.skill_dir),
                 force_skill=args.skill,
-                export_html_path=args.export_html,
                 session_path=args.session,
                 compaction_threshold=args.compaction_threshold,
                 compaction_keep_recent=args.compaction_keep_recent,

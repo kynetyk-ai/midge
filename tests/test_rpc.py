@@ -11,7 +11,7 @@ from midge.client import Client
 from midge.config import ProviderConfig
 from midge.extensions import load_extensions
 from midge.hooks import Hooks, ToolCallEvent, ToolCallResult
-from midge.messages import AssistantMessage, TextContent, ToolCall, UserMessage
+from midge.messages import ToolCall
 from midge.persistence import Session, read_transcript
 from midge.profiles import ProfileSet
 from midge.profiles import validate as validate_profiles
@@ -683,7 +683,7 @@ async def test_clear_context_clears_history_and_keeps_recording(tmp_path: Path) 
     session.close()
 
     # Everything is still on disk — the file is the record of what happened, so
-    # the export still shows the cleared turns.
+    # anything reading the JSONL still sees the cleared turns.
     _, entries = read_transcript(path)
     assert any("before" in str(getattr(e, "content", "")) for e in entries)
 
@@ -722,46 +722,6 @@ async def test_new_session_opens_a_fresh_log(tmp_path: Path) -> None:
     assert path.exists()
     inbox.close()
     await task
-
-
-async def test_export_html_without_a_session_fails() -> None:
-    agent = Agent(client=Client(), model="m")
-    _server, inbox, outbox, task = _start_server(agent)
-
-    resp = await _command(inbox, outbox, {"id": "e", "type": "export_html"})
-
-    assert resp["success"] is False
-    assert "session" in resp["error"]
-    inbox.close()
-    await task
-
-
-async def test_export_html_renders_pre_compaction_messages(tmp_path: Path) -> None:
-    """Exports from the file, not `agent.history`, which compaction has pruned."""
-    path = tmp_path / "s.jsonl"
-    session = Session.new(path, model="m")
-    session.append(UserMessage(content="the original question"))
-    session.append(AssistantMessage(content=[TextContent(text="the original answer")]))
-    session.append_compaction(summary="they talked", cut_index=2)
-    session.append(UserMessage(content="a later question"))
-
-    agent = Agent(client=Client(), model="m")
-    agent.history = list(session.messages)
-    server = RpcServer(agent, session=session)
-    inbox, outbox = _Inbox(), _Outbox()
-    task = asyncio.create_task(server.serve(read_line=inbox.read_line, write=outbox.write))
-
-    resp = await _command(inbox, outbox, {"id": "e", "type": "export_html"})
-
-    assert resp["success"] is True
-    html = Path(resp["data"]["path"]).read_text(encoding="utf-8")
-    assert "the original question" in html
-    assert "the original answer" in html
-    assert "a later question" in html
-    assert "the original question" not in str(agent.history)
-    inbox.close()
-    await task
-    session.close()
 
 
 async def test_new_session_header_stores_the_base_not_the_composed_prompt(
@@ -1160,9 +1120,9 @@ async def test_required_and_optional_arguments_are_distinguishable() -> None:
     assert set_model["required"] == ["model"]
     assert set_model["properties"]["model"]["type"] == "string"
 
-    export = by_name["export_html"]["parameters"]
-    assert "output_path" in export["properties"]
-    assert "output_path" not in export.get("required", [])
+    reload = by_name["reload"]["parameters"]
+    assert "targets" in reload["properties"]
+    assert "targets" not in reload.get("required", [])
     inbox.close()
     await task
 
@@ -2016,26 +1976,6 @@ async def test_an_empty_session_name_is_rejected(tmp_path: Path) -> None:
     resp = await _command(inbox, outbox, {"id": "n", "type": "set_session_name", "name": "   "})
 
     assert resp["success"] is False
-    inbox.close()
-    await task
-    session.close()
-
-
-async def test_export_html_titles_the_page_with_the_session_name(tmp_path: Path) -> None:
-    path = tmp_path / "s.jsonl"
-    session = Session.new(path, model="m")
-    session.append(UserMessage(content="hi"))
-    agent = Agent(client=Client(), model="m")
-    _server, inbox, outbox, task = _session_server(agent, session)
-
-    await _command(inbox, outbox, {"id": "n", "type": "set_session_name", "name": "auth refactor"})
-    out = tmp_path / "t.html"
-    resp = await _command(
-        inbox, outbox, {"id": "e", "type": "export_html", "output_path": str(out)}
-    )
-
-    assert resp["success"] is True
-    assert "auth refactor" in out.read_text(encoding="utf-8")
     inbox.close()
     await task
     session.close()

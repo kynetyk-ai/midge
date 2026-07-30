@@ -2,7 +2,7 @@
 
 A hackable Python agent harness originally ported from [`pi-mono`](https://github.com/badlogic/pi-mono) (TypeScript) for personal preference, readability, and domain-adaptability.
 
-The core harness is under 3.5k lines of code — blank lines, comments and docstrings excluded — and **CI holds it under 5k** (`scripts/loc.py`). The agent loop, OpenAI-compatible client, tool registry, extension loader, RPC server, HTML exporter, JSONL session save/load, context compaction, and Textual TUI are all small enough to read in a sitting and modify with confidence.
+The core harness is under 3.5k lines of code — blank lines, comments and docstrings excluded — and **CI holds it under 5k** (`scripts/loc.py`). The agent loop, OpenAI-compatible client, tool registry, extension loader, RPC server, JSONL session save/load, context compaction, and Textual TUI are all small enough to read in a sitting and modify with confidence.
 
 The budget covers `src/midge/*.py`, the harness itself. `providers/`, `tools/` and `tui/` are excluded and reported separately: a provider adapter grows with the number of vendors, built-in tools with the domain, and the TUI is a presentation layer. Prose is free, so hitting the cap means simplifying code rather than deleting the explanation of why it works that way. Run `poetry run python scripts/loc.py` for the per-file table.
 
@@ -16,7 +16,7 @@ The budget covers `src/midge/*.py`, the harness itself. `providers/`, `tools/` a
 - **Built-in coding tools**: `read`, `write`, `edit`, `bash`.
 - **Lifecycle hooks** — block or rewrite a tool call before it runs, transform context, patch results, observe every event. See [`notes/hooks.md`](./notes/hooks.md) and `examples/approval_extension/`.
 - **Textual TUI** for interactive use, plus a JSON-on-stdio RPC mode for embedding the agent in external tools.
-- **JSONL session save/resume** and a single-file HTML transcript exporter. The format is append-only: a rename or a context clear is a record appended and replayed on load, never a rewrite, so a crash can only ever damage the final line.
+- **JSONL session save/resume.** The format is append-only and documented: a rename or a context clear is a record appended and replayed on load, never a rewrite, so a crash can only ever damage the final line. Anything that wants to view or watch a session reads the transcript directly.
 - **Context compaction** that summarizes old turns when a session gets long.
 - **Provider retry** with a cancellable backoff — rate limits, 5xx, and transport failures get a few attempts before the turn fails. Retries stop once the response has started streaming, so nothing the model already emitted is replayed.
 - **Retargetable** — `examples/notes_agent.py` demonstrates a non-coding domain (personal-knowledge KB) running on the same harness with no core changes.
@@ -54,10 +54,10 @@ Against a local OpenAI-compatible server:
 ```bash
 OPENAI_BASE_URL=http://127.0.0.1:1234/v1 \
 MIDGE_MODEL=ibm/granite-3.2-8b \
-poetry run python -m examples.coding_agent --session run.jsonl --export-html run.html "summarize the README"
+poetry run python -m examples.coding_agent --session run.jsonl "summarize the README"
 ```
 
-`model` defaults to `gpt-4o-mini` — see [Configuration](#configuration). Other flags: `--extension-dir DIR`, `--skill-dir DIR`, `--skill NAME`, `--session PATH` (resumes if file exists), `--export-html PATH`, `--compaction-threshold N`.
+`model` defaults to `gpt-4o-mini` — see [Configuration](#configuration). Other flags: `--extension-dir DIR`, `--skill-dir DIR`, `--skill NAME`, `--session PATH` (resumes if file exists), `--compaction-threshold N`.
 
 ### Configuration
 
@@ -298,7 +298,6 @@ src/midge/
 ├── agent.py           # the loop: stream → dispatch tools → repeat
 ├── compaction.py      # post-turn summarize-and-replace
 ├── persistence.py     # JSONL session save / load / resume
-├── session.py         # single-file HTML transcript exporter
 ├── rpc.py             # JSON-on-stdio RPC server
 ├── extensions.py      # load_extensions(dirs) → (ToolRegistry, prompt_addition)
 ├── config.py          # .midge/config.toml → a Config the entrypoint passes inward
@@ -334,7 +333,7 @@ If you want to understand how the harness works, the files in dependency order:
 5. `src/midge/tools/coding/` — four real tools.
 6. `src/midge/extensions.py` — the loader.
 7. `src/midge/hooks.py` — lifecycle interception.
-8. Anything else, in any order: `compaction.py`, `persistence.py`, `session.py`, `rpc.py`, `tui/app.py`.
+8. Anything else, in any order: `compaction.py`, `persistence.py`, `rpc.py`, `tui/app.py`.
 
 ## License
 

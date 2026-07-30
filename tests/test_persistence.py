@@ -339,8 +339,8 @@ def test_a_clear_keeps_the_tail_it_was_told_to_keep(tmp_path: Path) -> None:
 
 
 def test_cleared_messages_are_still_in_the_file(tmp_path: Path) -> None:
-    """A clear changes what a resume replays, not what happened. `export_html`
-    reads the transcript, so the discarded turns stay visible there."""
+    """A clear changes what a resume replays, not what happened. Anything
+    reading the transcript still sees the discarded turns."""
     p = tmp_path / "s.jsonl"
     with Session.new(p, model="m") as s:
         s.append(UserMessage(content="before"))

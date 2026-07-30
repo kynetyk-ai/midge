@@ -61,10 +61,9 @@ from midge.compaction import compact
 from midge.config import emit as emit_diagnostics
 from midge.extensions import load_extensions
 from midge.messages import AssistantMessage, TextContent, ToolCall, UserMessage
-from midge.persistence import Session, read_transcript
+from midge.persistence import Session
 from midge.profiles import ProfileSet
 from midge.profiles import validate as validate_profiles
-from midge.session import export_html
 from midge.skills import Skill, load_skills, skill_message, skills_prompt
 from midge.subagents import bind_subagents
 
@@ -202,12 +201,6 @@ class _SessionNameParams(_CommandParams):
     name: str = Field(description="Display name for the current session")
 
 
-class _ExportHtmlParams(_CommandParams):
-    output_path: str | None = Field(
-        default=None, description="Where to write; defaults to the session path with .html"
-    )
-
-
 RELOAD_TARGETS = ("skills", "extensions")
 
 
@@ -235,7 +228,6 @@ BUILTIN_COMMANDS: tuple[BuiltinCommand, ...] = (
     BuiltinCommand("compact", "Summarize older turns to reclaim context"),
     BuiltinCommand("clear_context", "Forget the conversation; keep recording to the same log"),
     BuiltinCommand("new_session", "Close the current log and start a fresh one", _NewSessionParams),
-    BuiltinCommand("export_html", "Write an HTML transcript of the session", _ExportHtmlParams),
     BuiltinCommand("set_model", "Switch the model used for subsequent turns", _SetModelParams),
     BuiltinCommand(
         "set_system_prompt", "Replace the agent's base system prompt", _SetSystemPromptParams
@@ -268,8 +260,8 @@ class RpcServer:
         skill_sources: Sequence[Path] | None = None,
     ) -> None:
         self.agent = agent
-        # `client` and `model` come off the agent; `session` is what the export
-        # and persistence commands need and cannot reach otherwise.
+        # `client` and `model` come off the agent; `session` is what the
+        # persistence commands need and cannot reach otherwise.
         self.session = session
         self.compaction_keep_recent = compaction_keep_recent
         # The agent's prompt is composed: a durable base the operator owns, then
@@ -371,8 +363,6 @@ class RpcServer:
                 await self._handle_set_system_prompt(cmd_id, cmd)
             case "set_model":
                 await self._handle_set_model(cmd_id, cmd)
-            case "export_html":
-                await self._handle_export_html(cmd_id, cmd)
             case "compact":
                 await self._handle_compact(cmd_id)
             case "clear_context":
@@ -745,40 +735,6 @@ class RpcServer:
             cmd_id, "set_model", success=True, data={"durable": self.session is not None}
         )
 
-    async def _handle_export_html(self, cmd_id: str | None, cmd: dict[str, Any]) -> None:
-        raw_path = cmd.get("output_path")
-        if raw_path is not None and not isinstance(raw_path, str):
-            await self._respond(
-                cmd_id, "export_html", success=False,
-                error="`output_path` must be a string",
-            )
-            return
-        if self.session is None:
-            await self._respond(
-                cmd_id, "export_html", success=False,
-                error="no session; export needs a transcript on disk",
-            )
-            return
-
-        out = Path(raw_path) if raw_path else self.session.path.with_suffix(".html")
-        # From the file, not `agent.history`: history is post-compaction and
-        # loses every message a compaction folded away.
-        _, entries = read_transcript(self.session.path)
-        try:
-            out.write_text(
-                export_html(
-                    entries,
-                    model=self.agent.model,
-                    **({"title": self.session.name} if self.session.name else {}),
-                ),
-                encoding="utf-8",
-            )
-        except OSError as e:
-            await self._respond(cmd_id, "export_html", success=False, error=str(e))
-            return
-        _logger.info("rpc_exported path=%s entries=%d", out, len(entries))
-        await self._respond(cmd_id, "export_html", success=True, data={"path": str(out)})
-
     async def _handle_compact(self, cmd_id: str | None) -> None:
         result = await compact(
             self.agent.history,
@@ -810,8 +766,8 @@ class RpcServer:
         """Forget the conversation; keep recording to the same log.
 
         Durable. The messages stay in the file — it is the record of what
-        happened, and `export_html` still renders them — but a `clear` marker is
-        appended so a resume does not replay them. Clearing because a
+        happened, and anything reading the JSONL still sees them — but a `clear`
+        marker is appended so a resume does not replay them. Clearing because a
         conversation went sideways and finding it restored on the next resume
         was the surprising behaviour. Use `new_session` for a fresh log.
         """
