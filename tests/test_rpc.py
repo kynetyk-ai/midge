@@ -2049,6 +2049,60 @@ async def test_a_subagent_still_runs_after_a_reload(tmp_path: Path) -> None:
     await task
 
 
+async def test_a_nested_agents_activity_reaches_the_wire(tmp_path: Path) -> None:
+    """#51: a `spawn_*` call used to take ninety seconds, produce one paragraph
+    and say nothing in between. The child's turns still stay out of the
+    parent's context — that is what delegating is for — but not out of its
+    observability."""
+    ext = tmp_path / "ext"
+    _write_ext(ext, "probe", _SUBAGENT_EXT)
+    client = Client()
+    install(
+        client,
+        [
+            # The parent delegates, the child answers, the parent wraps up.
+            [tcall(index=0, id="c1", name="spawn_probe", args='{"question":"why"}'),
+             finish("tool_use")],
+            [say("child says hi"), finish()],
+            [say("all done"), finish()],
+        ],
+    )
+    agent = Agent(client=client, model="m", hooks=Hooks())
+    _server, inbox, outbox, task = _server_with_sources(agent, extension_sources=[ext])
+
+    await _command(inbox, outbox, {"id": "p", "type": "prompt", "message": "go"})
+    await _wait_for(lambda: any(x.get("type") == "agent_settled" for x in outbox.lines))
+
+    nested = [x for x in outbox.lines if x.get("agent")]
+    # The envelope rides as a sibling key, so a client that ignores it sees
+    # exactly the frames it saw before.
+    assert nested[0]["agent"] == {
+        "agent": "probe",
+        "agent_id": "c1",
+        "parent_id": None,
+        "depth": 1,
+    }
+    assert "type" in nested[0], "still an ordinary event, envelope aside"
+    inbox.close()
+    await task
+
+
+async def test_top_level_events_carry_no_envelope() -> None:
+    client = Client()
+    install(client, [[say("hi"), finish()]])
+    agent = Agent(client=client, model="m")
+    _server, inbox, outbox, task = _start_server(agent)
+
+    await _command(inbox, outbox, {"id": "p", "type": "prompt", "message": "go"})
+    await _wait_for(lambda: any(x.get("type") == "agent_settled" for x in outbox.lines))
+
+    events = [x for x in outbox.lines if x.get("type") != "response"]
+    assert events, "the run produced events"
+    assert all("agent" not in x for x in events)
+    inbox.close()
+    await task
+
+
 async def test_a_subagent_follows_new_session_to_the_new_file(tmp_path: Path) -> None:
     """Sub-agents hold the parent session, so `new_session` has to re-bind them.
     Without it the runtime keeps the session just closed, and the next spawn

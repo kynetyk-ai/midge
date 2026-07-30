@@ -51,12 +51,12 @@ import inspect
 import logging
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from typing import Any
 
-from midge.agent import Agent
-from midge.client import Client
+from midge.agent import Agent, AgentEnd, ToolExecutionEnd, ToolExecutionStart
+from midge.client import Client, Done, Error
 from midge.config import Diagnostic
 from midge.hooks import Hooks
 from midge.messages import AssistantMessage, TextContent, ToolCall
@@ -70,6 +70,22 @@ DEFAULT_MAX_CONCURRENT = 4
 # for more, but nothing runs longer than this — a delegation that never returns
 # is the failure worth bounding unconditionally.
 DEFAULT_MAX_TIMEOUT = 900.0
+
+# A nested agent's events, each with the envelope that says which run produced
+# it. `Any` rather than `AgentEvent` because this module does not care what the
+# events are — it only relays them.
+SubagentEvent = Callable[[Any, dict[str, Any]], Awaitable[None]]
+
+# What a client needs to see a delegation happening, and nothing more. Text and
+# tool-argument deltas are excluded on purpose: a child emits hundreds per turn,
+# nothing renders its prose today, and its full stream is in its own transcript
+# for anyone who wants it.
+FORWARDED_EVENTS = (
+    ToolExecutionStart,
+    ToolExecutionEnd,
+    Error,
+    AgentEnd,
+)
 
 _SPAWN_PREFIX = "spawn_"
 _UNSAFE = re.compile(r"[^A-Za-z0-9_-]+")
@@ -111,6 +127,16 @@ class SubagentRuntime:
     # set, so no path is longer than the number of agents declared.
     ancestors: frozenset[str] = frozenset()
     max_timeout: float = DEFAULT_MAX_TIMEOUT
+    # The tool call that spawned the agent this runtime belongs to, or None at
+    # the top level. Deliberately the *same* id the transcript already uses as
+    # `parent_tool_call_id`, so a wire envelope and a session file name the run
+    # identically rather than inventing a second scheme.
+    agent_id: str | None = None
+    # Where a nested agent's events go. Raw events plus an envelope, never
+    # wire-shaped: `event_to_wire` is the one mapping layer and it stays in
+    # `rpc.py`. Dumping internal events straight onto the wire is how pi ended
+    # up with TUI-only events in its protocol.
+    on_event: SubagentEvent | None = None
 
 
 # A child inherits tool policy and nothing else. `tool_call` and `tool_result`
@@ -243,6 +269,7 @@ def bind_subagents(
     session: Session | None = None,
     max_concurrent: int = DEFAULT_MAX_CONCURRENT,
     max_timeout: float = DEFAULT_MAX_TIMEOUT,
+    on_event: SubagentEvent | None = None,
 ) -> None:
     """Give every `SubagentTool` in `registry` what it needs to run a child.
 
@@ -258,6 +285,7 @@ def bind_subagents(
         session=session,
         depth=0,
         max_timeout=max_timeout,
+        on_event=on_event,
     )
     bound = 0
     for t in registry:
@@ -354,11 +382,16 @@ def _cycles(agents: dict[str, SubagentTool]) -> list[list[str]]:
     return found
 
 
-def _child_registry(spec: SubagentSpec, runtime: SubagentRuntime) -> ToolRegistry:
+def _child_registry(
+    spec: SubagentSpec, runtime: SubagentRuntime, call_id: str | None = None
+) -> ToolRegistry:
     child_runtime = replace(
         runtime,
         depth=runtime.depth + 1,
         ancestors=runtime.ancestors | {spec.name},
+        # A grandchild's `parent_id` is this call, which is what makes the
+        # envelope a chain rather than a flat pair.
+        agent_id=call_id if call_id is not None else runtime.agent_id,
     )
     allowed = ToolRegistry()
     for t in runtime.registry:
@@ -380,6 +413,54 @@ def _child_registry(spec: SubagentSpec, runtime: SubagentRuntime) -> ToolRegistr
     return allowed
 
 
+async def _drain(
+    child: Agent,
+    opening: str,
+    spec: SubagentSpec,
+    runtime: SubagentRuntime,
+    call_id: str | None,
+) -> AssistantMessage:
+    """Run the child, relaying the events worth seeing.
+
+    `Agent.run` is this loop with the events thrown away, which is exactly the
+    gap: a delegation that takes ninety seconds and returns one paragraph, with
+    nothing on the wire in between. The child's turns still stay out of the
+    parent's *context* — that is what delegating is for — but they no longer
+    have to stay out of its *observability*.
+
+    The envelope rides alongside rather than inside the event, so `event_to_wire`
+    keeps mapping exactly what it mapped before and correlation is a separate
+    concern a client can ignore.
+    """
+    envelope = {
+        "agent": spec.name,
+        "agent_id": call_id,
+        "parent_id": runtime.agent_id,
+        "depth": runtime.depth + 1,
+    }
+    last: AssistantMessage | None = None
+    async for ev in child.stream(opening):
+        if isinstance(ev, Done | Error):
+            last = ev.message
+        if runtime.on_event is not None and isinstance(ev, FORWARDED_EVENTS):
+            try:
+                await runtime.on_event(ev, envelope)
+            except Exception as e:
+                # Losing a frame is a worse outcome than losing the delegation
+                # only if you value the telemetry above the work. A relay that
+                # is closed, full or broken must not take the child down with
+                # it.
+                _logger.warning(
+                    "subagent_event_relay_failed agent=%s call=%s error=%s",
+                    spec.name,
+                    call_id or "-",
+                    e,
+                    exc_info=e,
+                )
+    assert last is not None
+    return last
+
+
 async def _run(
     spec: SubagentSpec,
     opening: str,
@@ -395,7 +476,7 @@ async def _run(
     child = Agent(
         client=runtime.client,
         model=spec.model or runtime.model,
-        tools=_child_registry(spec, runtime),
+        tools=_child_registry(spec, runtime, call_id),
         system_prompt=spec.prompt,
         # Tool policy is inherited so a blocked call stays blocked when it is
         # delegated; everything else is dropped. See `INHERITED_EVENTS`.
@@ -419,7 +500,9 @@ async def _run(
             # Awaited inline, not spawned: the parent's interrupt path harvests
             # tool tasks rather than cancelling them, so a detached child would
             # outlive the turn that asked for it.
-            final = await asyncio.wait_for(child.run(opening), timeout=budget)
+            final = await asyncio.wait_for(
+                _drain(child, opening, spec, runtime, call_id), timeout=budget
+            )
         except TimeoutError:
             _logger.warning(
                 "subagent_timeout agent=%s call=%s seconds=%.0f",
