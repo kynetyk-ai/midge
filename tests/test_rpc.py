@@ -11,7 +11,7 @@ from midge.client import Client
 from midge.config import ProviderConfig
 from midge.extensions import load_extensions
 from midge.hooks import Hooks, ToolCallEvent, ToolCallResult
-from midge.messages import ToolCall
+from midge.messages import ToolCall, UserMessage
 from midge.persistence import Session, read_transcript, session_continuations
 from midge.profiles import ProfileSet
 from midge.profiles import validate as validate_profiles
@@ -721,6 +721,148 @@ async def test_new_session_opens_a_fresh_log(tmp_path: Path) -> None:
 
     assert resp["data"] == {"session": str(path)}
     assert path.exists()
+    inbox.close()
+    await task
+
+
+# ---- open_session: attaching to an existing transcript (#63) ----
+#
+# Startup could bind a transcript and hold it until exit; nothing could move a
+# running process to another one. That is what makes an excursion a round trip
+# instead of a one-way door.
+
+
+async def _open(inbox: _Inbox, outbox: _Outbox, path: Path) -> dict[str, Any]:
+    cmd_id = f"os{len(outbox.lines)}"
+    return await _command(inbox, outbox, {"id": cmd_id, "type": "open_session", "path": str(path)})
+
+
+async def test_open_session_restores_the_conversation(tmp_path: Path) -> None:
+    path = tmp_path / "earlier.jsonl"
+    with Session.new(path, model="m") as s:
+        s.append(UserMessage(content="what did we decide?"))
+
+    agent = Agent(client=Client(), model="m")
+    _server, inbox, outbox, task = _start_server(agent)
+    assert agent.history == []
+
+    resp = await _open(inbox, outbox, path)
+
+    assert resp["success"] is True
+    assert resp["data"]["messages"] == 1
+    assert resp["data"]["reopened"] is True
+    assert [str(m.content) for m in agent.history] == ["what did we decide?"]
+    inbox.close()
+    await task
+
+
+async def test_open_session_restores_the_base_prompt_but_not_the_model(tmp_path: Path) -> None:
+    """The asymmetry: a prompt is part of what the conversation *is*, so a
+    reviewer's transcript resumed without it would leave its own history
+    misleading. A model is infrastructure, and mid-run the running one is a live
+    choice a recorded value must not silently override."""
+    path = tmp_path / "reviewer.jsonl"
+    with Session.new(path, model="recorded-model", system_prompt="you are adversarial"):
+        pass
+
+    agent = Agent(client=Client(), model="running-model", system_prompt="base")
+    _server, inbox, outbox, task = _start_server(agent)
+
+    resp = await _open(inbox, outbox, path)
+
+    assert agent.model == "running-model"
+    assert "you are adversarial" in (agent.system_prompt or "")
+    assert resp["data"]["model_differs"] is True
+    assert resp["data"]["recorded_model"] == "recorded-model"
+    inbox.close()
+    await task
+
+
+async def test_open_session_creates_a_missing_file(tmp_path: Path) -> None:
+    """`resume_last` needs open-or-create in one call: a profile's first use in
+    a session has nothing to resume, and that is an ordinary first run rather
+    than an error for the caller to sequence around."""
+    path = tmp_path / "not-yet.jsonl"
+    agent = Agent(client=Client(), model="m")
+    _server, inbox, outbox, task = _start_server(agent)
+
+    resp = await _open(inbox, outbox, path)
+
+    assert resp["success"] is True
+    assert path.exists()
+    assert resp["data"]["messages"] == 0
+    inbox.close()
+    await task
+
+
+async def test_opening_the_current_session_changes_nothing(tmp_path: Path) -> None:
+    path = tmp_path / "s.jsonl"
+    session = Session.new(path, model="m")
+    agent = Agent(client=Client(), model="m")
+    server, inbox, outbox, task = _session_server(agent, session)
+
+    resp = await _open(inbox, outbox, path)
+
+    assert resp["success"] is True
+    assert resp["data"]["reopened"] is False
+    assert server.session is session, "the open handle was swapped for no reason"
+    inbox.close()
+    await task
+
+
+async def test_a_return_writes_no_forward_link(tmp_path: Path) -> None:
+    """`continued` means another transcript *started* here. A return starts
+    nothing, and recording one would make the chain cyclic — which is what #67
+    walks to resolve `resume_last`."""
+    root = tmp_path / "root.jsonl"
+    excursion = tmp_path / "excursion.jsonl"
+    Session.new(excursion, model="m").close()
+    session = Session.new(root, model="m")
+    agent = Agent(client=Client(), model="m")
+    _server, inbox, outbox, task = _session_server(agent, session)
+
+    await _open(inbox, outbox, excursion)
+
+    assert session_continuations(read_transcript(root)[1]) == []
+    assert session_continuations(read_transcript(excursion)[1]) == []
+    inbox.close()
+    await task
+
+
+async def test_open_session_is_refused_mid_turn(tmp_path: Path) -> None:
+    path = tmp_path / "other.jsonl"
+    Session.new(path, model="m").close()
+    client = Client()
+    install(client, [[say("working"), finish()]])
+    agent = Agent(client=client, model="m")
+    server, inbox, outbox, task = _start_server(agent)
+
+    # A run that has not settled, exactly as the reload guard tests set up.
+    pending = asyncio.create_task(asyncio.Event().wait())
+    server._current_run = pending  # type: ignore[assignment]
+    resp = await _open(inbox, outbox, path)
+
+    assert resp["success"] is False
+    assert "in flight" in resp["error"]
+    pending.cancel()
+    inbox.close()
+    await task
+
+
+async def test_a_failed_open_leaves_the_server_untouched(tmp_path: Path) -> None:
+    directory = tmp_path / "a-directory"
+    directory.mkdir()
+    original = tmp_path / "s.jsonl"
+    session = Session.new(original, model="m")
+    agent = Agent(client=Client(), model="m")
+    agent.history = [UserMessage(content="keep me")]
+    server, inbox, outbox, task = _session_server(agent, session)
+
+    resp = await _open(inbox, outbox, directory)
+
+    assert resp["success"] is False
+    assert server.session is session
+    assert [str(m.content) for m in agent.history] == ["keep me"]
     inbox.close()
     await task
 

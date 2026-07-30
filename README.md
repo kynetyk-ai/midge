@@ -130,7 +130,9 @@ echo '{"id":"1","type":"prompt","message":"say hi"}' | \
 poetry run python -m examples.rpc_agent
 ```
 
-Newline-delimited JSON. `get_commands` enumerates everything invocable — built-in commands and `SKILL.md` skills alike — each with a JSON Schema for its arguments, so a client can build a command palette without hardcoding the protocol. `reload` re-scans skills and extensions from disk, so a new `SKILL.md` or an edited tool takes effect without restarting. Protocol details in [`notes/rpc.md`](./notes/rpc.md).
+Newline-delimited JSON. `get_commands` enumerates everything invocable — built-in commands and `SKILL.md` skills alike — each with a JSON Schema for its arguments, so a client can build a command palette without hardcoding the protocol. `reload` re-scans skills and extensions from disk, so a new `SKILL.md` or an edited tool takes effect without restarting. `open_session` attaches a running agent to another transcript, creating it if the path is free, which is what lets a client leave a conversation and come back to it. Protocol details in [`notes/rpc.md`](./notes/rpc.md).
+
+**A resumed transcript restores the conversation, not your configuration.** History and the base system prompt come back — resuming a reviewer's session under a coding assistant's instructions would make its own history misleading. The model does not: it is infrastructure with its own config key, so a recorded one beats a default and loses to a model you asked for this run, and a disagreement is reported rather than silently resolved. That also means a session recorded against a model the vendor has since retired warns and falls back instead of refusing to start.
 
 ### Second domain (notes / personal knowledge)
 

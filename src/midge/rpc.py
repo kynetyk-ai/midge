@@ -197,6 +197,10 @@ class _NewSessionParams(_CommandParams):
     path: str = Field(description="Path for the new session log")
 
 
+class _OpenSessionParams(_CommandParams):
+    path: str = Field(description="Session log to attach to; created if it does not exist")
+
+
 class _SessionNameParams(_CommandParams):
     name: str = Field(description="Display name for the current session")
 
@@ -228,6 +232,11 @@ BUILTIN_COMMANDS: tuple[BuiltinCommand, ...] = (
     BuiltinCommand("compact", "Summarize older turns to reclaim context"),
     BuiltinCommand("clear_context", "Forget the conversation; keep recording to the same log"),
     BuiltinCommand("new_session", "Close the current log and start a fresh one", _NewSessionParams),
+    BuiltinCommand(
+        "open_session",
+        "Attach to an existing session log, restoring its conversation",
+        _OpenSessionParams,
+    ),
     BuiltinCommand("set_model", "Switch the model used for subsequent turns", _SetModelParams),
     BuiltinCommand(
         "set_system_prompt", "Replace the agent's base system prompt", _SetSystemPromptParams
@@ -369,6 +378,8 @@ class RpcServer:
                 await self._handle_clear_context(cmd_id)
             case "new_session":
                 await self._handle_new_session(cmd_id, cmd)
+            case "open_session":
+                await self._handle_open_session(cmd_id, cmd)
             case "reload":
                 await self._handle_reload(cmd_id, cmd)
             case "set_session_name":
@@ -834,6 +845,118 @@ class RpcServer:
         _logger.info("rpc_new_session path=%s", raw_path)
         await self._respond(
             cmd_id, "new_session", success=True, data={"session": str(opened.path)}
+        )
+
+    async def _handle_open_session(self, cmd_id: str | None, cmd: dict[str, Any]) -> None:
+        """Attach to an existing transcript, restoring its conversation.
+
+        The gap this closes: `--session PATH` bound a transcript at startup and
+        held it until exit, so a running process could not move to another one.
+        `new_session` only creates. Reopening is what makes an excursion a round
+        trip rather than a one-way door — `use_profile(..., fork)` leaves the
+        thread you were on, and something has to get you back to it (#67).
+
+        **History and the base prompt come back; the model does not.** The
+        prompt is part of what the conversation *is*, so restoring a reviewer's
+        transcript without it would leave its own history misleading. The model
+        is infrastructure, and mid-run whatever the agent is on is a live choice
+        — possibly a `set_model` a minute ago — which a recorded value should
+        not silently override. A disagreement is reported instead, so a client
+        can offer to apply it. Same rule `resume_identity` follows at startup,
+        where "asked for this run" is answered by config provenance rather than
+        by there being a running agent.
+        """
+        raw_path = cmd.get("path")
+        if not isinstance(raw_path, str) or not raw_path:
+            await self._respond(
+                cmd_id,
+                "open_session",
+                success=False,
+                error="`path` is required and must be a non-empty string",
+            )
+            return
+
+        # Same refusal `reload` makes, for the same reason: swapping the session
+        # under a running turn puts two writers on one history.
+        if self._current_run is not None and not self._current_run.done():
+            await self._respond(
+                cmd_id,
+                "open_session",
+                success=False,
+                error="cannot open a session while a run is in flight",
+            )
+            return
+
+        path = Path(raw_path)
+        if self.session is not None and self.session.path == path:
+            # Already attached. Closing and reloading the file we are writing to
+            # would be a no-op at best, so say so rather than doing it.
+            await self._respond(
+                cmd_id,
+                "open_session",
+                success=True,
+                data={"session": str(path), "reopened": False, "messages": len(self.agent.history)},
+            )
+            return
+
+        # Opened before anything is discarded, so a failure leaves the server
+        # exactly as it was — the sequencing `new_session` already uses.
+        try:
+            opened = Session.open(
+                path, model=self.agent.model, system_prompt=self._base_prompt or None
+            )
+        except (OSError, ValueError) as e:
+            await self._respond(cmd_id, "open_session", success=False, error=str(e))
+            return
+
+        recorded = opened.model
+        if recorded != self.agent.model:
+            _logger.warning(
+                "open_session_model_differs recorded=%s running=%s path=%s",
+                recorded,
+                self.agent.model,
+                path,
+            )
+        self.agent.history = list(opened.messages)
+        if opened.system_prompt:
+            # Not re-recorded: it came from this transcript, so appending an
+            # `identity` record would only restate what the file already says.
+            self._base_prompt = opened.system_prompt
+            self.agent.system_prompt = self._compose_prompt()
+        if self.session is not None:
+            # No forward record: a return is not a branch. `continued` means
+            # another transcript *started* here, and writing one would make the
+            # chain cyclic — which is what #67 walks to resolve `resume_last`.
+            self.session.close()
+        self.session = opened
+        bind_subagents(
+            self.agent.tools,
+            client=self.agent.client,
+            model=self.agent.model,
+            hooks=self.agent.hooks,
+            session=opened,
+        )
+        _logger.info(
+            "rpc_open_session path=%s messages=%d name=%s",
+            path,
+            len(self.agent.history),
+            opened.name or "-",
+        )
+        await self._respond(
+            cmd_id,
+            "open_session",
+            success=True,
+            data={
+                "session": str(opened.path),
+                "reopened": True,
+                "name": opened.name,
+                "messages": len(self.agent.history),
+                "model": self.agent.model,
+                "recorded_model": recorded,
+                # So a client can say "this ran under X, you are on Y" and offer
+                # to apply it, rather than the switch doing it silently.
+                "model_differs": recorded != self.agent.model,
+            },
         )
 
     async def _handle_reload(self, cmd_id: str | None, cmd: dict[str, Any]) -> None:

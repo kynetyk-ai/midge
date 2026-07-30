@@ -383,6 +383,22 @@ with the defaults visible.
   separate `identity` and `model_change` entries.
 - **`switch_session` is not a primitive** — it is "apply profile, open session",
   and it requires #57.
+
+> **Footnote, #63.** `open_session` exists, and reopening restores history and
+> the base prompt but **not** the model. The two halves of "identity" are not
+> the same kind of thing: a prompt is part of what the conversation *is*, while
+> a model is infrastructure with its own config key. So a recorded model is a
+> *stored prior choice* that takes part in precedence — it beats a default and
+> loses to one the operator asked for this run — rather than overriding
+> everything the way #57 left it. Mid-run the running model always wins, since
+> a `set_model` a minute ago is unambiguously a live choice. Disagreements warn
+> rather than block, which also means a session recorded against a since-retired
+> model no longer refuses to start.
+>
+> This is what Decision 5 will supersede: once a switch records a profile, the
+> profile is the better thing to restore, and the base prompt becomes its
+> fallback. A recorded profile that is no longer discovered should warn, on the
+> same principle — report the mismatch, let the operator reconsider the config.
 - **Sub-agents are the existing proof of this shape**: file-per-run, parent
   pointer, own prompt, own tool subset. They stay a separate concept (Decision 8).
 - **`Hooks` grows source-scoped activation**, the one new mechanism.
