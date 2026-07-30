@@ -31,6 +31,7 @@ from midge.providers import Capabilities, ModelRegistry
 from midge.rpc import RpcServer, serve_stdio
 from midge.skills import default_skill_dirs, load_skills, skills_prompt
 from midge.subagents import bind_subagents
+from midge.tools import ToolRegistry
 from midge.tui import run_tui, tui_log_handler
 
 _logger = logging.getLogger(__name__)
@@ -250,6 +251,58 @@ def main(argv: list[str] | None = None) -> None:
             registry=model_registry,
         )
 
+    # After every source is loaded, because a profile may name a tool declared
+    # in another file — and after the model registry, which is the third thing
+    # a profile can name. A profile that fails is dropped, so the selection
+    # below sees only profiles that would really work.
+    discovered = set(profiles.names())
+    emit_config_diagnostics(
+        validate_profiles(
+            profiles,
+            tools=registry,
+            hook_names=hooks.source_names(),
+            models=model_registry,
+        )
+    )
+    # Flag, then what the session was running under, then the configured
+    # default. The middle term is the same rule the model follows: a session's
+    # own record beats a global default and loses to something asked for this
+    # run. Unlike the model it is restored rather than degraded — a profile is a
+    # deliberate named identity, not an incidental setting.
+    recorded = session.profile if session is not None else None
+    if recorded is not None and recorded not in profiles:
+        _logger.warning(
+            "resume_profile_unavailable profile=%s using=%s",
+            recorded,
+            "the recorded prompt and model",
+        )
+        recorded = None
+    selected = args.profile or recorded or config.default_profile
+    if selected is not None and selected not in profiles:
+        available = ", ".join(profiles.names()) or "none"
+        # Dropped and never-there are different mistakes with different fixes —
+        # a broken profile file versus a wrong name — so they do not share a
+        # message. Saying "not discovered" about a profile that was discovered
+        # and then rejected sends the reader to the wrong file.
+        if selected in discovered:
+            _logger.error("startup_profile_invalid profile=%s available=%s", selected, available)
+            raise SystemExit(
+                f"profile {selected!r} was found but failed validation — see the "
+                f"profile_* warnings above; usable profiles: {available}"
+            )
+        _logger.error("startup_profile_unknown profile=%s available=%s", selected, available)
+        raise SystemExit(f"profile {selected!r} was not discovered; available: {available}")
+
+    active = profiles.get(selected) if selected is not None else None
+    if active is not None:
+        durable = active.prompt
+        model = active.model or model
+        registry = ToolRegistry([t for t in registry if t.name in active.tools])
+        hooks.set_active_sources({n for n, on in active.hooks.items() if on})
+        if session is not None:
+            session.set_profile(name=active.name, model=model, system_prompt=durable)
+    _logger.info("profiles_loaded count=%d selected=%s", len(profiles), selected or "-")
+
     # The header records the agent's identity. Which tools and skills exist is a
     # fact about this machine right now, so it is recomposed on every start
     # rather than restored — otherwise a skill added after the session began is
@@ -281,39 +334,6 @@ def main(argv: list[str] | None = None) -> None:
             f"{', '.join(model_registry.names())}"
         )
 
-    # After every source is loaded, because a profile may name a tool declared
-    # in another file — and after the model registry, which is the third thing
-    # a profile can name. A profile that fails is dropped, so the selection
-    # check below sees only profiles that would really work.
-    discovered = set(profiles.names())
-    emit_config_diagnostics(
-        validate_profiles(
-            profiles,
-            tools=registry,
-            hook_names=hooks.source_names(),
-            models=model_registry,
-        )
-    )
-    selected = args.profile or config.default_profile
-    if selected is not None and selected not in profiles:
-        # Nothing applies a profile yet (#67), but a name that resolves to
-        # nothing is a mistake either way, and saying so now beats saying it
-        # once switching exists.
-        #
-        # Dropped and never-there are different mistakes with different fixes —
-        # a broken profile file versus a wrong name — so they are not allowed to
-        # share a message. Saying "not discovered" about a profile that was
-        # discovered and then rejected sends the reader to the wrong file.
-        available = ", ".join(profiles.names()) or "none"
-        if selected in discovered:
-            _logger.error("startup_profile_invalid profile=%s available=%s", selected, available)
-            raise SystemExit(
-                f"profile {selected!r} was found but failed validation — see the "
-                f"profile_* warnings above; usable profiles: {available}"
-            )
-        _logger.error("startup_profile_unknown profile=%s available=%s", selected, available)
-        raise SystemExit(f"profile {selected!r} was not discovered; available: {available}")
-    _logger.info("profiles_loaded count=%d selected=%s", len(profiles), selected or "-")
 
     # No api_key: the fallback provider reads `OPENAI_API_KEY` itself and a
     # registered one names its own variable, so a credential never passes
@@ -362,6 +382,7 @@ def main(argv: list[str] | None = None) -> None:
             extension_prompt=prompt_addition,
             skills=skills,
             profiles=profiles,
+            resume_fallback="continue" if config.resume_fallback == "continue" else "fork",
             # The same lists the loaders above were given, so `reload` repeats
             # that call rather than rebuilding it.
             extension_sources=extension_sources,

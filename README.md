@@ -285,10 +285,37 @@ poetry run midge --extension-dir examples/profile_extension \
   --extension-dir examples/approval_extension --profile adversarial-reviewer
 ```
 
-Today profiles are declared, validated and enumerable — over RPC, `get_profiles` returns the full
-set. **Applying one at runtime is not implemented yet** (`use_profile`, issue #67). See
-[`docs/adr/0001-session-profiles.md`](./docs/adr/0001-session-profiles.md) for the design and what
-was deliberately rejected along with it.
+`--profile` starts under one. Over RPC, `use_profile` switches at runtime — **every dimension or
+none**, refused mid-turn, and recorded, so any message is attributable to the configuration that
+produced it. That it is one operation is the point: a client hand-orchestrating a switch gets
+`success: true` from `set_system_prompt` while the entire previous toolset and every hook stay
+active, and no client discipline fixes that.
+
+`transcript` says where the turns go, and the three values exist because the round trip needs
+them:
+
+```jsonc
+{"type":"use_profile","name":"builder"}                              // continue
+{"type":"use_profile","name":"reviewer","transcript":"fork"}         // excursion
+{"type":"use_profile","name":"builder","transcript":"resume_last"}   // and back
+```
+
+`fork` opens a linked transcript so a review's turns do not land in the build thread's file;
+`resume_last` returns to this session's most recent thread under the named profile, which is what
+makes the excursion a round trip rather than a one-way door. It walks the session's own transcript
+chain — never a directory scan, never another session — and excludes sub-agent runs by their
+`origin`. A profile used for the first time has nothing to resume, which is an ordinary first run:
+the switch still succeeds, falling back per `[profiles] resume_fallback` (default `fork`), and the
+response says which happened.
+
+**There is no revert.** Going back is naming the other profile, so the operation stays stateless
+and a client never reasons about how deep it is in a sequence of excursions. **History is
+untouched** — `fork` changes which file the turns are written to, not what the agent still holds;
+compose `clear_context` after if you want a clean slate.
+
+Resuming a session brings its profile back, and warns rather than refusing if that profile is no
+longer discovered. See [`docs/adr/0001-session-profiles.md`](./docs/adr/0001-session-profiles.md)
+for the design and what was deliberately rejected along with it.
 
 ### Extensions — new tools
 

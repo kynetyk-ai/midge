@@ -91,6 +91,16 @@ model = "gpt-4o-mini"
 # Flag: --profile   Env: MIDGE_PROFILE
 # default = "adversarial-reviewer"
 
+# What `use_profile(..., resume_last)` does when the named profile has no prior
+# transcript in this session — "fork" or "continue". That is an ordinary first
+# use of a profile rather than an error, so the switch still succeeds and the
+# response says which happened.
+#
+# "fork" because a caller reaching for `resume_last` is working
+# thread-per-profile, and forking is that model's first-run behaviour;
+# "continue" would silently merge two threads the option exists to keep apart.
+resume_fallback = "fork"
+
 
 [session]
 # Every run records a JSONL transcript. Set false to record nothing, or pass

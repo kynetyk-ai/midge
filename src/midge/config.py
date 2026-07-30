@@ -129,6 +129,12 @@ class Config:
     # The profile to start under, by name. Discovery supplies the set; this
     # names one of them. `--profile` outranks it.
     default_profile: str | None = None
+    # What `use_profile(..., resume_last)` does when the named profile has no
+    # prior transcript in this session. `fork` because a caller reaching for
+    # `resume_last` is working thread-per-profile, and `fork` is that model's
+    # first-run behaviour — `continue` would merge two threads the option exists
+    # to keep apart.
+    resume_fallback: str = "fork"
     compaction_threshold: int | None = None
     compaction_keep_recent: int = DEFAULT_KEEP_RECENT
     log: LogConfig = LogConfig()
@@ -153,6 +159,9 @@ class Config:
             base_url=src.text("provider", "base_url", "OPENAI_BASE_URL"),
             include_usage=src.flag("provider", "include_usage", "MIDGE_INCLUDE_USAGE"),
             default_profile=src.text("profiles", "default", "MIDGE_PROFILE"),
+            resume_fallback=src.choice(
+                "profiles", "resume_fallback", ("fork", "continue"), default="fork"
+            ),
             compaction_threshold=src.integer("compaction", "threshold"),
             compaction_keep_recent=src.integer(
                 "compaction", "keep_recent", default=DEFAULT_KEEP_RECENT
@@ -429,6 +438,19 @@ class _Source:
         if isinstance(table, dict) and key in table:
             return table[key], key if section is None else f"{section}.{key}"
         return None, ""
+
+    def choice(
+        self, section: str | None, key: str, allowed: tuple[str, ...], *, default: str
+    ) -> str:
+        """A string from a fixed set. Anything else degrades to `default` and
+        says so, the rule everywhere else here: a typo must not stop the harness
+        from starting, and must not silently change what it does either."""
+        raw = self.text(section, key)
+        if raw is None:
+            return default
+        if raw in allowed:
+            return raw
+        return self._bad(section, key, raw, " | ".join(allowed), default)
 
     def origin(self, section: str | None, key: str, env: str | None = None) -> str:
         """Where a value came from, or `""` if nothing set it and the default is

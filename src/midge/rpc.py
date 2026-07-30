@@ -71,6 +71,7 @@ import contextlib
 import io
 import json
 import logging
+import re
 import signal
 import sys
 from collections.abc import Awaitable, Callable, Sequence
@@ -103,15 +104,23 @@ from midge.compaction import compact
 from midge.config import emit as emit_diagnostics
 from midge.extensions import load_extensions
 from midge.messages import AssistantMessage, TextContent, ToolCall, UserMessage
-from midge.persistence import Session
-from midge.profiles import ProfileSet
+from midge.persistence import (
+    ProfileRecord,
+    Session,
+    read_transcript,
+    session_chain,
+)
+from midge.profiles import Profile, ProfileSet
 from midge.profiles import validate as validate_profiles
 from midge.skills import Skill, load_skills, skill_message, skills_prompt
 from midge.subagents import bind_subagents
+from midge.tools import ToolRegistry
 
 _logger = logging.getLogger(__name__)
 
 READ_LIMIT = 16 * 1024 * 1024
+# A profile name reaches the filesystem when a fork names a transcript after it.
+_UNSAFE = re.compile(r"[^A-Za-z0-9_-]+")
 # Roughly ten ordinary answers' worth of frames — deep enough that a client
 # pausing to render or collect garbage never stalls anything, shallow enough
 # that a client which has died applies backpressure instead of exhausting memory.
@@ -247,6 +256,21 @@ class _SessionNameParams(_CommandParams):
     name: str = Field(description="Display name for the current session")
 
 
+TRANSCRIPT_OPTIONS = ("continue", "fork", "resume_last")
+
+
+class _UseProfileParams(_CommandParams):
+    name: str = Field(description="Name of a discovered profile")
+    transcript: Literal["continue", "fork", "resume_last"] = Field(
+        default="continue",
+        description=(
+            "continue: stay on this transcript. fork: open a new one, linked to "
+            "it. resume_last: reopen this session's most recent transcript under "
+            "the profile, falling back per `[profiles] resume_fallback`."
+        ),
+    )
+
+
 RELOAD_TARGETS = ("skills", "extensions")
 
 
@@ -289,6 +313,11 @@ BUILTIN_COMMANDS: tuple[BuiltinCommand, ...] = (
     BuiltinCommand(
         "set_session_name", "Give the current session a display name", _SessionNameParams
     ),
+    BuiltinCommand(
+        "use_profile",
+        "Retarget the agent to a named profile — prompt, model, tools and hooks at once",
+        _UseProfileParams,
+    ),
 )
 
 _NO_PARAMS: dict[str, Any] = {"type": "object", "properties": {}, "additionalProperties": False}
@@ -307,6 +336,7 @@ class RpcServer:
         extension_prompt: str = "",
         skills: Sequence[Skill] | None = None,
         profiles: ProfileSet | None = None,
+        resume_fallback: Literal["fork", "continue"] = "fork",
         extension_sources: Sequence[Path] | None = None,
         skill_sources: Sequence[Path] | None = None,
     ) -> None:
@@ -323,10 +353,16 @@ class RpcServer:
         self._base_prompt = base_prompt if base_prompt is not None else (agent.system_prompt or "")
         self._extension_prompt = extension_prompt
         self._skills: Sequence[Skill] = skills or ()
-        # Enumerable but not yet applicable: `use_profile` is #67. Held as the
-        # set rather than a list because the source path is part of what a
-        # client is shown, and only the set knows it.
+        # Held as the set rather than a list because the source path is part of
+        # what a client is shown, and only the set knows it.
         self._profiles = profiles if profiles is not None else ProfileSet()
+        # Everything discovered, kept apart from `agent.tools` because a profile
+        # *projects* a subset onto the latter. Switching from a two-tool profile
+        # to a five-tool one has to project from the whole set; projecting from
+        # the already-narrowed one would make each switch a ratchet.
+        self._discovered_tools = agent.tools
+        self._profile: str | None = session.profile if session is not None else None
+        self._resume_fallback: Literal["fork", "continue"] = resume_fallback
         # The exact source lists the entrypoint loaded from, so `reload` re-runs
         # the same call rather than reconstructing one. Reconstructing would mean
         # knowing which sources are built-in, and an embedder that handed the
@@ -422,6 +458,8 @@ class RpcServer:
                 await self._handle_new_session(cmd_id, cmd)
             case "open_session":
                 await self._handle_open_session(cmd_id, cmd)
+            case "use_profile":
+                await self._handle_use_profile(cmd_id, cmd)
             case "reload":
                 await self._handle_reload(cmd_id, cmd)
             case "set_session_name":
@@ -539,16 +577,22 @@ class RpcServer:
     def _builtin_schema(self, command: BuiltinCommand) -> dict[str, Any]:
         """A built-in's declared schema, narrowed by what this process knows.
 
-        `set_model` is the only one so far: with a non-empty registry the set of
-        models is a fact the server holds, so it becomes an `enum` and a client
-        renders a picker with nothing hardcoded — the same projection `reload`
-        does for its targets. Absent a registry the field stays a free string,
-        which is what an empty registry means everywhere else too.
+        With a non-empty model registry the set of models is a fact the server
+        holds, so `set_model` becomes an `enum` and a client renders a picker
+        with nothing hardcoded — the same projection `reload` does for its
+        targets. Absent a registry the field stays a free string, which is what
+        an empty registry means everywhere else too.
+
+        `use_profile` is narrowed on the same principle but unconditionally:
+        discovery is the *only* source of profiles, so an empty set is an empty
+        enum rather than "anything goes". A profile name is never a free string.
         """
         schema = command.params.model_json_schema() if command.params else dict(_NO_PARAMS)
         registry = self.agent.client.registry
         if command.name == "set_model" and registry:
             schema["properties"]["model"]["enum"] = registry.names()
+        if command.name == "use_profile":
+            schema["properties"]["name"]["enum"] = self._profiles.names()
         return schema
 
     async def _handle_get_commands(self, cmd_id: str | None) -> None:
@@ -889,6 +933,214 @@ class RpcServer:
             cmd_id, "new_session", success=True, data={"session": str(opened.path)}
         )
 
+    async def _handle_use_profile(self, cmd_id: str | None, cmd: dict[str, Any]) -> None:
+        """Retarget the agent to a named profile — every dimension or none.
+
+        One operation rather than documented guidance, because no client
+        discipline can substitute: hand-orchestrating a switch gets `success:
+        true` from `set_system_prompt` while the whole previous toolset and
+        every hook stay active. A partial switch reporting success is worse than
+        no switch.
+
+        Refused mid-turn, as `reload` is. **There is no revert** — going back is
+        naming the other profile, so the operation stays stateless and a client
+        never reasons about how deep it is in a sequence of excursions.
+
+        **History is untouched**, per ADR Decision 4. `fork` changes which file
+        the turns are written to, not what the agent still has in context; a
+        caller wanting a clean slate composes `clear_context` after.
+        """
+        try:
+            params = _UseProfileParams.model_validate(
+                {k: v for k, v in cmd.items() if k not in ("id", "type")}
+            )
+        except ValueError as e:
+            await self._respond(cmd_id, "use_profile", success=False, error=str(e))
+            return
+
+        if self._current_run is not None and not self._current_run.done():
+            await self._respond(
+                cmd_id,
+                "use_profile",
+                success=False,
+                error="cannot switch profile while a run is in flight",
+            )
+            return
+
+        profile = self._profiles.get(params.name)
+        if profile is None:
+            available = ", ".join(self._profiles.names()) or "none"
+            await self._respond(
+                cmd_id,
+                "use_profile",
+                success=False,
+                error=f"unknown profile {params.name!r}; available: {available}",
+            )
+            return
+
+        # Everything that can fail happens before anything is applied.
+        transcript = params.transcript
+        resolved = transcript
+        target: Path | None = None
+        if transcript == "resume_last":
+            target = self._resume_target(params.name)
+            if target is None:
+                # An ordinary first use of a profile, not an error: a client
+                # cannot know whether one has been used before without asking.
+                resolved = self._resume_fallback
+                transcript = self._resume_fallback
+        if transcript == "fork" and self.session is None:
+            # Nothing to fork from. Degrading beats refusing — the caller asked
+            # to be retargeted, and which file the turns land in is the part
+            # that cannot be honoured.
+            _logger.warning("use_profile_fork_without_session profile=%s", params.name)
+            resolved = "continue"
+            transcript = "continue"
+
+        opened: Session | None = None
+        try:
+            if transcript == "fork":
+                assert self.session is not None
+                path = self._fork_path(self.session.path, params.name)
+                opened = Session.new(
+                    path,
+                    model=profile.model or self.agent.model,
+                    system_prompt=profile.prompt,
+                    origin="profile",
+                    parent_session=str(self.session.path),
+                )
+                self.session.append_continued(path=path.name, reason="profile")
+            elif transcript == "resume_last" and target is not None:
+                opened = Session.open(
+                    target,
+                    model=profile.model or self.agent.model,
+                    system_prompt=profile.prompt,
+                )
+        except (OSError, ValueError) as e:
+            await self._respond(cmd_id, "use_profile", success=False, error=str(e))
+            return
+
+        if opened is not None:
+            if self.session is not None:
+                self.session.close()
+            self.session = opened
+            if transcript == "resume_last":
+                # Only a resume brings a conversation with it; a fork is a new
+                # file for the turns this agent is already mid-way through.
+                self.agent.history = list(opened.messages)
+
+        model = self._apply_profile(profile)
+        if self.session is not None:
+            self.session.set_profile(
+                name=profile.name, model=model, system_prompt=profile.prompt
+            )
+        _logger.info(
+            "rpc_use_profile profile=%s transcript=%s model=%s tools=%d session=%s",
+            profile.name,
+            resolved,
+            model,
+            len(self.agent.tools),
+            self.session.path if self.session is not None else "-",
+        )
+        await self._respond(
+            cmd_id,
+            "use_profile",
+            success=True,
+            data={
+                "profile": profile.name,
+                # What was asked for and what happened can differ — a
+                # `resume_last` with nothing to resume, or a `fork` with no
+                # transcript — so a client can render which it got.
+                "requested": params.transcript,
+                "transcript": resolved,
+                "model": model,
+                "tools": sorted(t.name for t in self.agent.tools),
+                "session": str(self.session.path) if self.session is not None else None,
+                "messages": len(self.agent.history),
+                "durable": self.session is not None,
+            },
+        )
+
+    def _apply_profile(self, profile: Profile) -> str:
+        """Set every dimension a profile owns. Returns the model applied.
+
+        Called only once nothing fallible remains, which is what makes the
+        switch atomic: a profile that does not exist, or a transcript that will
+        not open, has already failed before any of this runs.
+
+        An empty `model` means "whatever the agent is already running" — a
+        profile is often a prompt and a toolset with no opinion about the
+        provider — so the *applied* model is returned for recording, never the
+        declared one.
+        """
+        model = profile.model or self.agent.model
+        self._base_prompt = profile.prompt
+        self.agent.system_prompt = self._compose_prompt()
+        self.agent.model = model
+        # Projection, not re-discovery: which sources are loaded never changes,
+        # so an embedder's deliberately restricted registry cannot be widened by
+        # a switch. Same shape `_child_registry` uses for a sub-agent.
+        projected = ToolRegistry([t for t in self._discovered_tools if t.name in profile.tools])
+        self.agent.tools = projected
+        # Re-bound to the *projected* registry, so a sub-agent's own allowlist
+        # is intersected with what this profile can see. Otherwise a reviewer
+        # with no `write` could delegate to a child that has one.
+        bind_subagents(
+            projected,
+            client=self.agent.client,
+            model=model,
+            hooks=self.agent.hooks,
+            session=self.session,
+        )
+        hooks = self.agent.hooks
+        if hooks is not None:
+            hooks.set_active_sources({n for n, on in profile.hooks.items() if on})
+        self._profile = profile.name
+        return model
+
+    def _fork_path(self, parent: Path, profile: str) -> Path:
+        stem = _UNSAFE.sub("-", profile).strip("-")[:64]
+        for i in range(100):
+            candidate = parent.with_name(f"{parent.stem}.{stem}-{i}{parent.suffix}")
+            if not candidate.exists():
+                return candidate
+        raise OSError(f"no free transcript name beside {parent}")
+
+    def _resume_target(self, name: str) -> Path | None:
+        """This session's most recent transcript running under `name`.
+
+        The chain, never a directory scan — which is what keeps `resume_last`
+        independent of session discovery. Sub-agent runs are excluded by their
+        `origin`: they are delegations, not profile excursions, and resuming one
+        as though it were a thread would be wrong rather than untidy.
+
+        Recency is the timestamp of the *last profile record*, not the file's
+        creation: a transcript opened first but switched back into most recently
+        is the one "where I left off" means. That also makes a thread which has
+        since switched away no candidate at all, which is ADR Decision 5 read
+        backwards.
+        """
+        if self.session is None:
+            return None
+        best: tuple[int, Path] | None = None
+        for path in session_chain(self.session.path):
+            try:
+                header, entries = read_transcript(path)
+            except (OSError, ValueError):
+                continue
+            if header.origin == "subagent":
+                continue
+            last = None
+            for entry in reversed(entries):
+                if isinstance(entry, ProfileRecord):
+                    last = entry
+                    break
+            if last is None or last.name != name:
+                continue
+            if best is None or last.timestamp > best[0]:
+                best = (last.timestamp, path)
+        return best[1] if best is not None else None
+
     async def _handle_open_session(self, cmd_id: str | None, cmd: dict[str, Any]) -> None:
         """Attach to an existing transcript, restoring its conversation.
 
@@ -1118,7 +1370,17 @@ class RpcServer:
             hooks=hooks,
             session=self.session,
         )
+        self._discovered_tools = registry
         self.agent.tools = registry
+        # A reload under a profile re-projects rather than silently widening the
+        # agent back to everything on disk. `set_active_sources` likewise: the
+        # wipe above cleared it, and the profile's decisions have to be reapplied
+        # against the freshly registered sources.
+        active = self._profiles.get(self._profile) if self._profile else None
+        if active is not None:
+            self._apply_profile(active)
+        elif hooks is not None:
+            hooks.set_active_sources(None)
 
     def _reload_skills(self) -> None:
         assert self._skill_sources is not None

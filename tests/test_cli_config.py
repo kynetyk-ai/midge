@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pytest
 
+from midge import cli
+from midge.agent import Agent
 from midge.cli import BASE_SYSTEM_PROMPT, _parse_args, main, resume_identity
 from midge.config import DEFAULT_KEEP_RECENT, Config, ProviderConfig
 from midge.persistence import Session
@@ -140,6 +142,98 @@ def test_a_retired_model_warns_and_degrades_rather_than_refusing(
         )
     assert model == "current"
     assert "resume_model_unregistered" in caplog.text
+
+
+# --- a profile is applied at startup, not merely checked (#67) ---
+
+
+_REVIEWER_EXT = (
+    "from midge.profiles import Profile\n"
+    "P = Profile(name='rev', description='d', prompt='You are adversarial.',\n"
+    "            tools=('read',), hooks={})\n"
+)
+
+
+def _start(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, argv: list[str]) -> Agent:
+    """Drive `main` far enough to inspect the composed agent."""
+    captured: list[Agent] = []
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "run_tui", lambda agent, **kw: captured.append(agent))
+    main(argv)
+    return captured[0]
+
+
+def test_a_selected_profile_is_applied(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """#61 shipped discovery and validation; nothing applied one. This is what
+    made `--profile` more than a spelling check."""
+    ext = tmp_path / "ext"
+    ext.mkdir()
+    (ext / "rev.py").write_text(_REVIEWER_EXT)
+
+    agent = _start(tmp_path, monkeypatch, ["--extension-dir", str(ext), "--profile", "rev"])
+
+    assert "You are adversarial." in (agent.system_prompt or "")
+    assert sorted(t.name for t in agent.tools) == ["read"]
+
+
+def test_a_resumed_session_comes_back_under_its_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A profile is a deliberate named identity, unlike a loose model id — so
+    unlike the model it is restored rather than degraded."""
+    ext = tmp_path / "ext"
+    ext.mkdir()
+    (ext / "rev.py").write_text(_REVIEWER_EXT)
+    resumed = tmp_path / "prior.jsonl"
+    with Session.new(resumed, model="m") as s:
+        s.set_profile(name="rev", model="m", system_prompt="You are adversarial.")
+
+    agent = _start(
+        tmp_path, monkeypatch, ["--extension-dir", str(ext), "--session", str(resumed)]
+    )
+
+    assert sorted(t.name for t in agent.tools) == ["read"]
+
+
+def test_a_recorded_profile_that_vanished_warns_and_carries_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Report the mismatch and let the operator reconsider, rather than
+    refusing to start on a profile file someone deleted."""
+    resumed = tmp_path / "prior.jsonl"
+    with Session.new(resumed, model="m") as s:
+        s.set_profile(name="gone", model="m", system_prompt="You are adversarial.")
+
+    with caplog.at_level(logging.WARNING, logger="midge.cli"):
+        agent = _start(tmp_path, monkeypatch, ["--session", str(resumed)])
+
+    assert "resume_profile_unavailable" in caplog.text
+    # The recorded prompt is the fallback, so the conversation still reads right.
+    assert "You are adversarial." in (agent.system_prompt or "")
+
+
+def test_the_flag_beats_a_recorded_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ext = tmp_path / "ext"
+    ext.mkdir()
+    (ext / "rev.py").write_text(_REVIEWER_EXT)
+    (ext / "wide.py").write_text(
+        "from midge.profiles import Profile\n"
+        "P = Profile(name='wide', description='d', prompt='Wide open.',\n"
+        "            tools=('read', 'write'), hooks={})\n"
+    )
+    resumed = tmp_path / "prior.jsonl"
+    with Session.new(resumed, model="m") as s:
+        s.set_profile(name="rev", model="m", system_prompt="You are adversarial.")
+
+    agent = _start(
+        tmp_path,
+        monkeypatch,
+        ["--extension-dir", str(ext), "--session", str(resumed), "--profile", "wide"],
+    )
+
+    assert sorted(t.name for t in agent.tools) == ["read", "write"]
 
 
 # --- the startup profile refusal ---

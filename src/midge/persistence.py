@@ -9,6 +9,7 @@ File layout (one JSON object per line):
     {"type":"identity","system_prompt":"...","timestamp":...}
     {"type":"compaction","summary":"...","cut_index":N,"timestamp":...}
     {"type":"clear","cut_index":N,"timestamp":...}
+    {"type":"profile","name":"...","model":"...","system_prompt":"...","timestamp":...}
     {"type":"continued","path":"...","reason":"subagent","timestamp":...}
     {"type":"message","data":{...}}
 
@@ -65,6 +66,11 @@ from midge.messages import Message, make_summary_message
 # `continued` and the header's `origin` pass that test too: skipping a
 # `continued` leaves a reader with no forward link, which is what every build
 # before this one had, and restores nothing.
+#
+# `profile` passes it too, and more comfortably than most: an older build
+# skipping it leaves the model and prompt at whatever the `identity` and
+# `model_change` records before it said, which is that build's own reading of
+# the session. It never restores anything discarded.
 #
 # That promise is why `origin` declares its whole vocabulary now rather than
 # only `subagent`, the one value with a producer today. Not moving VERSION means
@@ -146,6 +152,33 @@ class IdentityRecord(BaseModel):
     timestamp: int = 0
 
 
+class ProfileRecord(BaseModel):
+    """The agent was retargeted to a named profile.
+
+    One record rather than an `identity` plus a `model_change`, because a switch
+    is one act: reading two entries and inferring they were the same decision is
+    exactly what naming a profile exists to avoid.
+
+    It carries the model and prompt **as applied**, not just the name, because a
+    profile is a `.py` file that can be edited or deleted afterwards — a
+    transcript whose meaning depends on the current contents of a file outside
+    it is not an audit trail. Restoring a session whose profile has since
+    vanished falls back to these.
+
+    It does **not** carry `tools` or `hooks`, and the line is the one this module
+    already draws: tools and extensions are rebuilt from the registry at load,
+    never persisted. Model and prompt are *values* and restore themselves;
+    tools and hooks are *references* into a registry that may no longer contain
+    them, so recording them would not make a vanished profile restorable.
+    """
+
+    type: Literal["profile"] = "profile"
+    name: str
+    model: str
+    system_prompt: str
+    timestamp: int = 0
+
+
 class ContinuedRecord(BaseModel):
     """Another transcript of this session started here.
 
@@ -181,6 +214,7 @@ SessionRecord = (
     | ModelChangeRecord
     | IdentityRecord
     | ContinuedRecord
+    | ProfileRecord
 )
 
 # What the file literally holds, before the records are folded into history.
@@ -286,6 +320,8 @@ def read_transcript(path: str | Path) -> tuple[SessionHeader, list[TranscriptEnt
             entries.append(IdentityRecord.model_validate(raw))
         elif entry_type == "continued":
             entries.append(ContinuedRecord.model_validate(raw))
+        elif entry_type == "profile":
+            entries.append(ProfileRecord.model_validate(raw))
         else:
             _logger.warning("session_unknown_entry_type type=%r path=%s", entry_type, p)
 
@@ -326,13 +362,26 @@ def session_model(entries: Sequence[TranscriptEntry]) -> str | None:
     None rather than the header's model: the caller holds the header and can
     decide, and conflating "never changed" with a value would make this look
     like the authority on what the model is.
+
+    A profile switch counts, because it sets the model as much as `set_model`
+    does — whichever came last wins, read positionally.
     """
-    return _last(entries, ModelChangeRecord, "model")
+    return _last(entries, (ModelChangeRecord, ProfileRecord), "model")
 
 
 def session_prompt(entries: Sequence[TranscriptEntry]) -> str | None:
     """The most recent *base* system prompt, or None if it was never replaced."""
-    return _last(entries, IdentityRecord, "system_prompt")
+    return _last(entries, (IdentityRecord, ProfileRecord), "system_prompt")
+
+
+def session_profile(entries: Sequence[TranscriptEntry]) -> str | None:
+    """The profile this transcript is running under, or None if it never was.
+
+    The *last* one recorded, per ADR Decision 5 — a thread that has since
+    switched away is running under whatever it switched to. Read backwards for
+    the same reason everything else here is.
+    """
+    return _last(entries, ProfileRecord, "name")
 
 
 def session_continuations(entries: Sequence[TranscriptEntry]) -> list[ContinuedRecord]:
@@ -344,8 +393,61 @@ def session_continuations(entries: Sequence[TranscriptEntry]) -> list[ContinuedR
     return [e for e in entries if isinstance(e, ContinuedRecord)]
 
 
-def _last(entries: Sequence[TranscriptEntry], kind: type, field: str) -> str | None:
-    """The last record of `kind`, read backwards — last write wins."""
+def session_chain(path: str | Path) -> list[Path]:
+    """Every transcript of the session `path` belongs to, root first.
+
+    Up through `parent_session` to the root, then down through the `continued`
+    records — which is why both directions exist (#62). A back-pointer alone
+    would make this a directory scan, and a session has no directory it owns.
+
+    Unreadable links are skipped rather than raising: a chain is an audit
+    convenience, and a caller asking "where else have I been" should not be
+    stopped by one deleted file. A `visited` set guards cycles even though
+    nothing writes one — a return is deliberately not recorded as a branch, and
+    a walk that could hang on a malformed file would be worse than one that
+    quietly stops.
+    """
+    start = Path(path)
+    root = start
+    seen_up: set[Path] = set()
+    while root not in seen_up:
+        seen_up.add(root)
+        try:
+            header, _entries = read_transcript(root)
+        except (OSError, ValueError):
+            break
+        if not header.parent_session:
+            break
+        root = Path(header.parent_session)
+
+    order: list[Path] = []
+    visited: set[Path] = set()
+    queue = [root]
+    while queue:
+        current = queue.pop(0)
+        if current in visited:
+            continue
+        visited.add(current)
+        try:
+            _header, entries = read_transcript(current)
+        except (OSError, ValueError):
+            continue
+        order.append(current)
+        queue.extend(current.parent / link.path for link in session_continuations(entries))
+    return order
+
+
+def _last(
+    entries: Sequence[TranscriptEntry],
+    kind: type | tuple[type, ...],
+    field: str,
+) -> str | None:
+    """The last record of `kind`, read backwards — last write wins.
+
+    A tuple where more than one record type can set the same value: a model
+    comes from either a `model_change` or a `profile`, and which one is
+    authoritative is simply which came last.
+    """
     for entry in reversed(entries):
         if isinstance(entry, kind):
             return getattr(entry, field)
@@ -363,12 +465,17 @@ class Session:
         name: str | None = None,
         model: str | None = None,
         system_prompt: str | None = None,
+        profile: str | None = None,
     ) -> None:
         self.path = path
         self._file = file
         self.header = header
         self.messages = messages
         self.name = name
+        # The profile this transcript is running under, or None if it never was
+        # retargeted. No header fallback: unlike model and prompt, "no profile"
+        # is a real state rather than a value the header supplies.
+        self.profile = profile
         # The header records what the session *started* as and is never
         # rewritten. These are what it is *now* — the header's value unless a
         # record superseded it. Read these, not `header.model`.
@@ -421,6 +528,7 @@ class Session:
             name=session_name(entries),
             model=session_model(entries),
             system_prompt=session_prompt(entries),
+            profile=session_profile(entries),
         )
 
     @classmethod
@@ -463,6 +571,25 @@ class Session:
         """
         self._append_record({"type": "clear", "cut_index": cut_index})
         self.messages = self.messages[cut_index:]
+
+    def set_profile(self, *, name: str, model: str, system_prompt: str) -> None:
+        """Record a retargeting, and fold it the way a resume would.
+
+        Sets `self.model` and `self.system_prompt` as well as appending, because
+        a profile switch *is* a model and prompt change — leaving them stale
+        would make an in-process read disagree with what a reload rebuilds.
+        """
+        self._append_record(
+            {
+                "type": "profile",
+                "name": name,
+                "model": model,
+                "system_prompt": system_prompt,
+            }
+        )
+        self.profile = name
+        self.model = model
+        self.system_prompt = system_prompt
 
     def append_continued(
         self, *, path: str | Path, reason: Literal["subagent", "profile", "fork"]
