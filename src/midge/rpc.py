@@ -6,8 +6,20 @@ Wire format: newline-delimited JSON, LF-only. Each emitted record is
 Two outbound shapes:
     - Responses correlated to inbound commands by an optional `id`:
       {"id": "...", "type": "response", "command": "...", "success": bool, ...}
-    - Async events streamed during a prompt run, uncorrelated:
+    - Async events streamed during a prompt run:
       {"type": "assistant_text_delta" | "tool_call_start" | ... }
+
+An event from a *nested* agent carries an `agent` envelope naming which run
+produced it — `{"agent": {"agent": "explore", "agent_id": "call_1",
+"parent_id": null, "depth": 1}}`. It is absent on top-level events, so a client
+that ignores the key sees exactly the stream it saw before, and one that reads
+it can build the tree. `agent_id` is the id of the tool call that spawned the
+run, which is deliberately the same id the child's transcript records as
+`parent_tool_call_id` — one scheme, not two.
+
+Only the events that say what a delegation is *doing* are forwarded: tool
+executions, errors, and its end. Text and tool-argument deltas are not, because
+a child emits hundreds per turn and its prose is in its own transcript.
 
 Stdout is the protocol; stderr is for diagnostics. Call `claim_stdout()` before
 anything else can write, so a stray `print()` anywhere in the process lands on
@@ -101,6 +113,7 @@ from midge.client import (
     ToolCallStart,
 )
 from midge.compaction import compact
+from midge.config import SubagentConfig
 from midge.config import emit as emit_diagnostics
 from midge.extensions import load_extensions
 from midge.messages import AssistantMessage, TextContent, ToolCall, UserMessage
@@ -336,6 +349,7 @@ class RpcServer:
         extension_prompt: str = "",
         skills: Sequence[Skill] | None = None,
         profiles: ProfileSet | None = None,
+        subagents: SubagentConfig | None = None,
         resume_fallback: Literal["fork", "continue"] = "fork",
         extension_sources: Sequence[Path] | None = None,
         skill_sources: Sequence[Path] | None = None,
@@ -363,6 +377,11 @@ class RpcServer:
         self._discovered_tools = agent.tools
         self._profile: str | None = session.profile if session is not None else None
         self._resume_fallback: Literal["fork", "continue"] = resume_fallback
+        # Held rather than taken once, because a reload, a `new_session` and a
+        # profile switch all re-bind — and each used to reset the operator's
+        # limits to the library defaults on the way past.
+        self._subagents = subagents if subagents is not None else SubagentConfig()
+        self._bind_subagents(agent.tools)
         # The exact source lists the entrypoint loaded from, so `reload` re-runs
         # the same call rather than reconstructing one. Reconstructing would mean
         # knowing which sources are built-in, and an embedder that handed the
@@ -921,17 +940,50 @@ class RpcServer:
         # Sub-agents hold the parent session to write their transcripts beside
         # it and to record the forward link in it. Without this they would keep
         # the one just closed, and the next spawn would write to a closed file.
-        bind_subagents(
-            self.agent.tools,
-            client=self.agent.client,
-            model=self.agent.model,
-            hooks=self.agent.hooks,
-            session=opened,
-        )
+        self._bind_subagents(self.agent.tools)
         _logger.info("rpc_new_session path=%s", raw_path)
         await self._respond(
             cmd_id, "new_session", success=True, data={"session": str(opened.path)}
         )
+
+    def _bind_subagents(
+        self, registry: ToolRegistry, *, model: str | None = None
+    ) -> None:
+        """Every re-bind goes through here so none of them can forget a setting.
+
+        A re-import produces new `SubagentTool` instances and a session swap
+        invalidates the old handle, so binding happens more than once — and
+        each site rebuilding the argument list by hand is how the operator's
+        limits used to get reset to the defaults.
+        """
+        bind_subagents(
+            registry,
+            client=self.agent.client,
+            model=model if model is not None else self.agent.model,
+            hooks=self.agent.hooks,
+            session=self.session,
+            max_concurrent=self._subagents.max_concurrent,
+            max_timeout=self._subagents.max_timeout,
+            on_event=self.subagent_event,
+        )
+
+    async def subagent_event(self, event: Any, envelope: dict[str, Any]) -> None:
+        """Relay a nested agent's event, correlated.
+
+        Hand this to `bind_subagents(on_event=...)`. It is the mapping seam
+        doing its job: the child's events go through the same `event_to_wire`
+        the parent's do, so nothing internal reaches the protocol and a client
+        has one vocabulary rather than two.
+
+        The envelope is a sibling key, not a merge, so an existing client that
+        ignores `agent` sees exactly the frames it saw before — and a new one
+        can build the tree from `agent_id` / `parent_id` / `depth` without
+        parsing anything else.
+        """
+        wire = event_to_wire(event)
+        if wire is None:
+            return
+        await self._emit({**wire, "agent": envelope})
 
     async def _handle_use_profile(self, cmd_id: str | None, cmd: dict[str, Any]) -> None:
         """Retarget the agent to a named profile — every dimension or none.
@@ -1085,13 +1137,7 @@ class RpcServer:
         # Re-bound to the *projected* registry, so a sub-agent's own allowlist
         # is intersected with what this profile can see. Otherwise a reviewer
         # with no `write` could delegate to a child that has one.
-        bind_subagents(
-            projected,
-            client=self.agent.client,
-            model=model,
-            hooks=self.agent.hooks,
-            session=self.session,
-        )
+        self._bind_subagents(projected, model=model)
         hooks = self.agent.hooks
         if hooks is not None:
             hooks.set_active_sources({n for n, on in profile.hooks.items() if on})
@@ -1223,13 +1269,7 @@ class RpcServer:
             # chain cyclic — which is what #67 walks to resolve `resume_last`.
             self.session.close()
         self.session = opened
-        bind_subagents(
-            self.agent.tools,
-            client=self.agent.client,
-            model=self.agent.model,
-            hooks=self.agent.hooks,
-            session=opened,
-        )
+        self._bind_subagents(self.agent.tools)
         _logger.info(
             "rpc_open_session path=%s messages=%d name=%s",
             path,
@@ -1363,13 +1403,7 @@ class RpcServer:
         # Re-import produces new `SubagentTool` instances, so this binds the
         # fresh ones. The model comes off the agent so a `set_model` since
         # startup is respected rather than reverted.
-        bind_subagents(
-            registry,
-            client=self.agent.client,
-            model=self.agent.model,
-            hooks=hooks,
-            session=self.session,
-        )
+        self._bind_subagents(registry)
         self._discovered_tools = registry
         self.agent.tools = registry
         # A reload under a profile re-projects rather than silently widening the

@@ -235,8 +235,14 @@ The decorated function's **signature is the tool schema** and its **return value
 opening message** — so the model supplies the declared inputs and nothing else. It cannot choose
 the child's system prompt, its tools, or its model.
 
-Only the child's final answer reaches the parent, which is the point: a search that reads thirty
-files costs the main conversation one paragraph. The child's own turns go to a sibling transcript
+Only the child's final answer reaches the parent's **context**, which is the point: a search that
+reads thirty files costs the main conversation one paragraph. Its **activity** is still visible —
+over RPC, a nested agent's tool executions carry an `agent` envelope naming which run produced
+them, so a client can show what a ninety-second delegation is doing rather than watching a spinner.
+The envelope is a sibling key (`agent_id`, `parent_id`, `depth`) and is absent on top-level events,
+so a client that ignores it sees the stream it always saw. `agent_id` is the id of the spawning
+tool call — the same id the child's transcript records — so the wire and the session name a run
+identically. The child's own turns go to a sibling transcript
 named for the tool call that spawned it, so the delegated work stays inspectable. The link is
 recorded both ways — the child's header carries `origin: "subagent"` and a pointer to the parent,
 and the parent appends a `continued` record naming the child — so "which transcripts belong to

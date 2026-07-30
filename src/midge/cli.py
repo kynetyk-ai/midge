@@ -390,6 +390,10 @@ def main(argv: list[str] | None = None) -> None:
             extension_prompt=prompt_addition,
             skills=skills,
             profiles=profiles,
+            # The server re-binds sub-agents on reload, `new_session` and a
+            # profile switch, so it needs the limits rather than reaching for
+            # the library defaults each time.
+            subagents=config.subagents,
             resume_fallback="continue" if config.resume_fallback == "continue" else "fork",
             # The same lists the loaders above were given, so `reload` repeats
             # that call rather than rebuilding it.

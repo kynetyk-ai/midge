@@ -433,6 +433,108 @@ def test_an_empty_model_registry_is_permissive() -> None:
     assert "spawn_explore" in registry
 
 
+# ---- the child's activity reaches the wire, correlated (#51) ----
+#
+# Keeping the child's turns out of the parent's *context* is the point of
+# delegating. Keeping them out of its *observability* was an accident: a
+# `spawn_*` call took ninety seconds, produced one paragraph, and said nothing
+# in between.
+
+
+def _relay() -> tuple[list[tuple[Any, dict[str, Any]]], Any]:
+    seen: list[tuple[Any, dict[str, Any]]] = []
+
+    async def on_event(ev: Any, envelope: dict[str, Any]) -> None:
+        seen.append((ev, envelope))
+
+    return seen, on_event
+
+
+async def test_a_childs_tool_activity_is_forwarded() -> None:
+    seen, on_event = _relay()
+    registry, _ = _bound(
+        _explorer(),
+        turns=[
+            [tcall(index=0, id="t1", name="read", args='{"path":"foo.py"}'), finish("tool_use")],
+            _says("found it"),
+        ],
+        on_event=on_event,
+    )
+
+    await registry.invoke("spawn_explore", {"question": "q"}, call_id="c1")
+
+    kinds = [type(ev).__name__ for ev, _ in seen]
+    assert "ToolExecutionStart" in kinds
+    assert "ToolExecutionEnd" in kinds
+    assert "AgentEnd" in kinds
+
+
+async def test_deltas_are_not_forwarded() -> None:
+    """A child emits hundreds per turn and nothing renders its prose; the full
+    stream is in its own transcript for anyone who wants it."""
+    seen, on_event = _relay()
+    registry, _ = _bound(_explorer(), turns=[_says("a long answer")], on_event=on_event)
+
+    await registry.invoke("spawn_explore", {"question": "q"}, call_id="c1")
+
+    kinds = {type(ev).__name__ for ev, _ in seen}
+    assert "TextDelta" not in kinds
+    assert "ToolCallDelta" not in kinds
+
+
+async def test_the_envelope_names_the_run() -> None:
+    seen, on_event = _relay()
+    registry, _ = _bound(_explorer(), turns=[_says("ok")], on_event=on_event)
+
+    await registry.invoke("spawn_explore", {"question": "q"}, call_id="c1")
+
+    _ev, envelope = seen[0]
+    assert envelope == {
+        "agent": "explore",
+        # The same id the child's transcript records as `parent_tool_call_id`,
+        # so the wire and the session file name the run identically.
+        "agent_id": "c1",
+        "parent_id": None,
+        "depth": 1,
+    }
+
+
+async def test_a_grandchild_points_at_its_parent() -> None:
+    """`parent_id` is what makes the envelope a chain rather than a flat pair."""
+    seen, on_event = _relay()
+    alpha = _explorer(name="alpha", tools=("spawn_beta",))
+    beta = _explorer(name="beta", tools=("read",))
+    registry, _ = _bound(
+        alpha,
+        turns=[
+            [
+                tcall(index=0, id="c2", name="spawn_beta", args='{"question":"inner"}'),
+                finish("tool_use"),
+            ],
+            _says("inner done"),
+            _says("outer done"),
+        ],
+        extra=[beta],
+        on_event=on_event,
+    )
+
+    await registry.invoke("spawn_alpha", {"question": "q"}, call_id="c1")
+
+    by_agent = {e["agent"]: e for _ev, e in seen}
+    assert by_agent["alpha"]["agent_id"] == "c1"
+    assert by_agent["alpha"]["parent_id"] is None
+    assert by_agent["beta"]["agent_id"] == "c2"
+    assert by_agent["beta"]["parent_id"] == "c1"
+    assert by_agent["beta"]["depth"] == 2
+
+
+async def test_nothing_is_forwarded_without_a_relay() -> None:
+    # The default: an embedder that wants none of this pays nothing for it.
+    registry, _ = _bound(_explorer(), turns=[_says("ok")])
+    out = await registry.invoke("spawn_explore", {"question": "q"}, call_id="c1")
+    assert out == "ok"
+
+
 # ---- concurrency ----
 
 
