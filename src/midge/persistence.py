@@ -5,6 +5,8 @@ File layout (one JSON object per line):
     {"type":"header","version":2,"created_at":"...","model":"...","system_prompt":...}
     {"type":"message","data":{...}}
     {"type":"session_info","name":"auth refactor","timestamp":...}
+    {"type":"model_change","model":"...","timestamp":...}
+    {"type":"identity","system_prompt":"...","timestamp":...}
     {"type":"compaction","summary":"...","cut_index":N,"timestamp":...}
     {"type":"clear","cut_index":N,"timestamp":...}
     {"type":"message","data":{...}}
@@ -47,6 +49,10 @@ from midge.messages import Message, make_summary_message
 # specifically: an older build skips an unknown entry type, and skipping a
 # clear silently restores messages the user cleared. Skipping a `session_info`
 # would only lose a name, which would not have justified this on its own.
+#
+# `model_change` and `identity` were added without a bump, by the same test: an
+# older build skipping them degrades to "the change did not happen", which is
+# exactly what that build did anyway. Nothing is restored that a user discarded.
 VERSION = 2
 
 
@@ -94,9 +100,33 @@ class SessionInfoRecord(BaseModel):
     timestamp: int = 0
 
 
+class ModelChangeRecord(BaseModel):
+    """The model switched mid-session. Last record wins over the header."""
+
+    type: Literal["model_change"] = "model_change"
+    model: str
+    timestamp: int = 0
+
+
+class IdentityRecord(BaseModel):
+    """The base system prompt was replaced.
+
+    The **base**, never the composed prompt. What tools and skills exist is a
+    fact about this machine right now — `cli.py` recomposes it on every start —
+    so storing the composed string would duplicate the skills catalogue on every
+    resume and carry absolute paths that may point at another machine.
+    """
+
+    type: Literal["identity"] = "identity"
+    system_prompt: str
+    timestamp: int = 0
+
+
 # Everything that is not a message. Spelled as a plain union so it works with
 # `isinstance`, which the `Annotated` `Message` alias does not.
-SessionRecord = CompactionRecord | ClearRecord | SessionInfoRecord
+SessionRecord = (
+    CompactionRecord | ClearRecord | SessionInfoRecord | ModelChangeRecord | IdentityRecord
+)
 
 # What the file literally holds, before the records are folded into history.
 TranscriptEntry = Message | SessionRecord
@@ -159,6 +189,10 @@ def read_transcript(path: str | Path) -> tuple[SessionHeader, list[TranscriptEnt
             entries.append(ClearRecord.model_validate(raw))
         elif entry_type == "session_info":
             entries.append(SessionInfoRecord.model_validate(raw))
+        elif entry_type == "model_change":
+            entries.append(ModelChangeRecord.model_validate(raw))
+        elif entry_type == "identity":
+            entries.append(IdentityRecord.model_validate(raw))
         else:
             _logger.warning("session_unknown_entry_type type=%r path=%s", entry_type, p)
 
@@ -181,8 +215,8 @@ def fold_history(entries: Sequence[TranscriptEntry]) -> list[Message]:
             ]
         elif isinstance(entry, ClearRecord):
             messages = messages[entry.cut_index :]
-        elif isinstance(entry, SessionInfoRecord):
-            continue
+        elif isinstance(entry, SessionRecord):
+            continue  # not history; folded by `session_name` / `identity`
         else:
             messages.append(entry)
     return messages
@@ -190,9 +224,29 @@ def fold_history(entries: Sequence[TranscriptEntry]) -> list[Message]:
 
 def session_name(entries: Sequence[TranscriptEntry]) -> str | None:
     """The most recent name, or None if the session was never named."""
+    return _last(entries, SessionInfoRecord, "name")
+
+
+def session_model(entries: Sequence[TranscriptEntry]) -> str | None:
+    """The most recent model, or None if it was never changed after the header.
+
+    None rather than the header's model: the caller holds the header and can
+    decide, and conflating "never changed" with a value would make this look
+    like the authority on what the model is.
+    """
+    return _last(entries, ModelChangeRecord, "model")
+
+
+def session_prompt(entries: Sequence[TranscriptEntry]) -> str | None:
+    """The most recent *base* system prompt, or None if it was never replaced."""
+    return _last(entries, IdentityRecord, "system_prompt")
+
+
+def _last(entries: Sequence[TranscriptEntry], kind: type, field: str) -> str | None:
+    """The last record of `kind`, read backwards — last write wins."""
     for entry in reversed(entries):
-        if isinstance(entry, SessionInfoRecord):
-            return entry.name
+        if isinstance(entry, kind):
+            return getattr(entry, field)
     return None
 
 
@@ -205,12 +259,21 @@ class Session:
         header: SessionHeader,
         messages: list[Message],
         name: str | None = None,
+        model: str | None = None,
+        system_prompt: str | None = None,
     ) -> None:
         self.path = path
         self._file = file
         self.header = header
         self.messages = messages
         self.name = name
+        # The header records what the session *started* as and is never
+        # rewritten. These are what it is *now* — the header's value unless a
+        # record superseded it. Read these, not `header.model`.
+        self.model = model if model is not None else header.model
+        self.system_prompt = (
+            system_prompt if system_prompt is not None else header.system_prompt
+        )
 
     @classmethod
     def new(
@@ -252,6 +315,8 @@ class Session:
             header=header,
             messages=fold_history(entries),
             name=session_name(entries),
+            model=session_model(entries),
+            system_prompt=session_prompt(entries),
         )
 
     @classmethod
@@ -297,6 +362,20 @@ class Session:
     def set_name(self, name: str) -> None:
         self._append_record({"type": "session_info", "name": name})
         self.name = name
+
+    def set_model(self, model: str) -> None:
+        self._append_record({"type": "model_change", "model": model})
+        self.model = model
+
+    def set_system_prompt(self, system_prompt: str) -> None:
+        """Record a new *base* prompt — never the composed one.
+
+        `cli.py` recomposes the extension and skills halves on every start, so
+        persisting the composed string would duplicate the catalogue on each
+        resume and bake in absolute paths from this machine.
+        """
+        self._append_record({"type": "identity", "system_prompt": system_prompt})
+        self.system_prompt = system_prompt
 
     def _append_record(self, entry: dict[str, Any]) -> None:
         stamped: dict[str, Any] = {

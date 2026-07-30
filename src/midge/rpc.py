@@ -648,12 +648,26 @@ class RpcServer:
         # lands on the next turn rather than corrupting the one in flight.
         self._base_prompt = prompt
         self.agent.system_prompt = self._compose_prompt()
+        # Appended, not written to the header: the header is never rewritten,
+        # so an identity that only lived in this process would silently revert
+        # on the next resume, with nothing on the wire saying so.
+        if self.session is not None:
+            self.session.set_system_prompt(prompt)
         _logger.info(
-            "rpc_system_prompt_set base_chars=%d composed_chars=%d",
+            "rpc_system_prompt_set base_chars=%d composed_chars=%d durable=%s",
             len(prompt),
             len(self.agent.system_prompt or ""),
+            self.session is not None,
         )
-        await self._respond(cmd_id, "set_system_prompt", success=True)
+        # `durable` because the caveat #57 fixed was invisible: the command
+        # reported success either way, and a client had no way to learn whether
+        # the change would outlive the process.
+        await self._respond(
+            cmd_id,
+            "set_system_prompt",
+            success=True,
+            data={"durable": self.session is not None},
+        )
 
     async def _handle_set_model(self, cmd_id: str | None, cmd: dict[str, Any]) -> None:
         model = cmd.get("model")
@@ -680,8 +694,12 @@ class RpcServer:
             )
             return
         self.agent.model = model
-        _logger.info("rpc_model_set model=%s", model)
-        await self._respond(cmd_id, "set_model", success=True)
+        if self.session is not None:
+            self.session.set_model(model)
+        _logger.info("rpc_model_set model=%s durable=%s", model, self.session is not None)
+        await self._respond(
+            cmd_id, "set_model", success=True, data={"durable": self.session is not None}
+        )
 
     async def _handle_export_html(self, cmd_id: str | None, cmd: dict[str, Any]) -> None:
         raw_path = cmd.get("output_path")
