@@ -119,6 +119,11 @@ class ToolRegistry:
     def get(self, name: str) -> Tool | None:
         return self._tools.get(name)
 
+    def remove(self, name: str) -> None:
+        """Forget a tool. Silent on a name that is not there, so a validator
+        dropping several can do it without checking each one first."""
+        self._tools.pop(name, None)
+
     def schemas(self) -> list[dict[str, Any]]:
         return [t.schema() for t in self._tools.values()]
 

@@ -118,6 +118,29 @@ enabled = true
 # dir = "~/.midge/sessions"
 
 
+[subagents]
+# The two limits an operator owns. Everything else about a sub-agent — its
+# prompt, tools, model and its own timeout — is declared in the `.py` file,
+# next to the prompt it belongs to. See `examples/subagent_extension/`.
+
+# How many nested agents may run at once.
+max_concurrent = 4
+
+# The hard ceiling on a delegation, in seconds. Not a default: the author sets
+# a budget per agent, and a `spawn_*` tool may offer the *caller* a `timeout`
+# parameter for a job that needs longer — but nothing gets past this. A
+# delegation that never returns is the failure worth bounding unconditionally.
+max_timeout = 900.0
+
+# There is deliberately no `max_depth`. Whether a sub-agent may spawn another is
+# decided by its own `tools` allowlist, in its own file — a global cap would
+# only override that. Recursion with no end is denied precisely instead: a child
+# never gets a spawn tool for an agent already running above it, so a cycle is
+# refused exactly where it would close and the same declaration works anywhere
+# else. A cyclic allowlist is reported at startup as the bug it is, but costs
+# you nothing.
+
+
 [retry]
 # How many times a request may be attempted in total, and the base for the
 # exponential backoff between attempts, in seconds. Only errors the provider

@@ -11,6 +11,7 @@ from pydantic import ValidationError
 
 from midge.agent import Agent
 from midge.client import Client
+from midge.config import ProviderConfig
 from midge.hooks import (
     Hooks,
     ProviderRequestResult,
@@ -20,12 +21,14 @@ from midge.hooks import (
 )
 from midge.messages import AssistantMessage, TextContent, ToolCall, UserMessage
 from midge.persistence import Session, read_transcript, session_continuations
+from midge.providers import ModelRegistry
 from midge.subagents import (
     SubagentTool,
     _ChildHooks,
     bind_subagents,
     subagent,
 )
+from midge.subagents import validate as subagent_validate
 from midge.tools import Tool, ToolRegistry, tool
 from tests.fakes import FakeProvider, ScriptedProvider, finish, install, say, tcall
 
@@ -229,36 +232,205 @@ async def test_timeout_returns_a_tool_error_string() -> None:
     assert "timed out" in out
 
 
-# ---- depth ----
+# ---- the timeout has three owners ----
+#
+# The author sets a budget for this agent; the caller may say this job is
+# bigger; the operator caps the lot. The clamp is what makes the caller's say
+# safe to offer, since "specify a timeout" would otherwise mean "specify none".
 
 
-async def test_child_gets_spawn_tools_rebound_one_deeper() -> None:
+def _slow_agent(**kw: Any) -> SubagentTool:
+    """An explorer that offers `timeout` in its signature — the opt-in."""
+    opts: dict[str, Any] = {"description": "d", "prompt": PROMPT, "tools": ("read",)}
+    opts.update(kw)
+
+    @subagent(**opts)
+    async def explore(question: str, timeout: float | None = None) -> str:
+        return f"Question: {question}"
+
+    return explore
+
+
+def test_a_caller_timeout_appears_only_when_the_author_offers_it() -> None:
+    # "The function signature is the tool schema" with no exception: an author
+    # who wants a fixed budget simply does not declare the parameter.
+    assert "timeout" in _slow_agent().schema()["parameters"]["properties"]
+    assert "timeout" not in _explorer().schema()["parameters"]["properties"]
+
+
+async def test_the_caller_can_ask_for_longer_than_the_author_set() -> None:
+    client = Client()
+
+    async def on_open(body: Any) -> list[Any]:
+        await asyncio.sleep(0.2)
+        return []
+
+    client.provider = ScriptedProvider(on_open)
+    registry = ToolRegistry([read, _slow_agent(timeout=0.05)])
+    bind_subagents(registry, client=client, model="m")
+
+    out = await registry.invoke(
+        "spawn_explore", {"question": "q", "timeout": 5.0}, call_id="c1"
+    )
+    # Would have timed out at the author's 0.05s; the caller's 5s let it run.
+    assert "timed out" not in out
+
+
+async def test_the_operator_ceiling_clamps_the_caller() -> None:
+    client = Client()
+
+    async def on_open(body: Any) -> list[Any]:
+        await asyncio.sleep(10)
+        return []
+
+    client.provider = ScriptedProvider(on_open)
+    registry = ToolRegistry([read, _slow_agent(timeout=60)])
+    bind_subagents(registry, client=client, model="m", max_timeout=0.05)
+
+    out = await registry.invoke(
+        "spawn_explore", {"question": "q", "timeout": 3600}, call_id="c1"
+    )
+    assert "timed out after 0s" in out
+
+
+# ---- recursion is denied where it would close, and nowhere else ----
+#
+# No depth cap: an author who names a `spawn_*` tool has granted nesting on
+# purpose, and a global number would only override a declaration sitting in
+# their file. What must not happen is recursion with no end, so a child never
+# receives a spawn tool for an agent already running above it. Termination
+# follows anyway — the ancestor set grows one name per level from a finite
+# declared set.
+
+
+def _kids(t: SubagentTool) -> ToolRegistry:
     from midge.subagents import _child_registry
 
-    t = _explorer(tools=("read", "spawn_explore"))
-    _bound(t, turns=[_says("ok")], max_depth=2)
     assert t.runtime is not None
+    return _child_registry(t.spec, t.runtime)
 
-    child = _child_registry(t.spec, t.runtime)
-    nested = child.get("spawn_explore")
+
+async def test_a_granted_spawn_tool_is_rebound_one_deeper() -> None:
+    alpha = _explorer(name="alpha", tools=("read", "spawn_beta"))
+    beta = _explorer(name="beta", tools=("read",))
+    _bound(alpha, turns=[_says("ok")], extra=[beta])
+
+    nested = _kids(alpha).get("spawn_beta")
 
     assert isinstance(nested, SubagentTool)
-    assert nested is not t, "the parent's tool must not be reused"
+    assert nested is not beta, "the parent's tool must not be reused"
     assert nested.runtime is not None
     assert nested.runtime.depth == 1
-    assert t.runtime.depth == 0, "the parent's runtime must be untouched"
+    assert nested.runtime.ancestors == frozenset({"alpha"})
+    assert alpha.runtime is not None and alpha.runtime.depth == 0
 
 
-async def test_spawn_tools_vanish_at_max_depth() -> None:
-    from midge.subagents import _child_registry
-
+async def test_an_agent_cannot_spawn_itself() -> None:
     t = _explorer(tools=("read", "spawn_explore"))
-    _bound(t, turns=[_says("ok")], max_depth=1)
-    assert t.runtime is not None
+    _bound(t, turns=[_says("ok")])
 
-    child = _child_registry(t.spec, t.runtime)
+    child = _kids(t)
+    assert "spawn_explore" not in child
+    assert "read" in child, "the rest of the allowlist is untouched"
+
+
+async def test_an_agent_running_above_is_excluded_but_survives_elsewhere() -> None:
+    """The whole point of checking ancestry rather than editing the graph:
+    `beta -> alpha` is denied only where alpha is on the stack."""
+    alpha = _explorer(name="alpha", tools=("spawn_beta",))
+    beta = _explorer(name="beta", tools=("spawn_alpha",))
+    gamma = _explorer(name="gamma", tools=("spawn_alpha",))
+    _bound(alpha, turns=[_says("ok")], extra=[beta, gamma])
+
+    # alpha is running, so the beta beneath it cannot come back to alpha.
+    under_alpha = _kids(alpha).get("spawn_beta")
+    assert isinstance(under_alpha, SubagentTool)
+    assert "spawn_alpha" not in _kids(under_alpha)
+
+    # gamma is not alpha, so the same declaration works there.
+    assert "spawn_alpha" in _kids(gamma)
+
+
+async def test_an_allowlist_without_a_spawn_tool_cannot_recurse() -> None:
+    t = _explorer(tools=("read", "bash"))
+    _bound(t, turns=[_says("ok")])
+
+    child = _kids(t)
     assert "spawn_explore" not in child
     assert "read" in child
+
+
+def test_a_cyclic_allowlist_is_reported_but_costs_nothing() -> None:
+    """A bug in the declaration worth telling the author about. Taking their
+    agents away is not the same as telling them, and the recursion cannot
+    happen regardless."""
+    a = _explorer(name="alpha", tools=("spawn_beta",))
+    b = _explorer(name="beta", tools=("spawn_alpha",))
+    registry = ToolRegistry([a, b])
+
+    diagnostics = subagent_validate(registry)
+
+    assert [d.event for d in diagnostics] == ["subagent_cycle"]
+    assert "alpha -> beta -> alpha" in diagnostics[0].fields["agents"]
+    assert len(registry) == 2, "both agents still load"
+
+
+def test_a_self_reference_is_reported_too() -> None:
+    t = _explorer(tools=("read", "spawn_explore"))
+    registry = ToolRegistry([read, t])
+
+    diagnostics = subagent_validate(registry)
+
+    assert [d.event for d in diagnostics] == ["subagent_cycle"]
+    assert "spawn_explore" in registry
+
+
+def test_an_acyclic_chain_says_nothing() -> None:
+    # A -> B -> C is a design, not a mistake.
+    a = _explorer(name="alpha", tools=("spawn_beta",))
+    b = _explorer(name="beta", tools=("spawn_gamma",))
+    c = _explorer(name="gamma", tools=("read",))
+    registry = ToolRegistry([read, a, b, c])
+
+    assert subagent_validate(registry) == []
+
+
+def test_an_unknown_tool_name_is_a_warning_not_a_death() -> None:
+    """Nothing checked this before, so `tools=("raed",)` silently yielded a
+    smaller child registry. A typo in one name should not cost the agent."""
+    t = _explorer(tools=("read", "raed"))
+    registry = ToolRegistry([read, t])
+
+    diagnostics = subagent_validate(registry)
+
+    assert [d.event for d in diagnostics] == ["subagent_tool_unknown"]
+    assert diagnostics[0].fields["tool"] == "raed"
+    assert "spawn_explore" in registry
+
+
+def test_a_declared_model_is_checked_against_the_registry() -> None:
+    """It used to fail at the first delegation, inside a turn, as the vendor's
+    404 dressed up as a tool result. Dropped rather than warned: unlike a cycle
+    or a typo, this agent cannot run at all."""
+    t = _explorer(model="gtp-4o")
+    registry = ToolRegistry([read, t])
+    models = ModelRegistry(
+        models={"gpt-4o": "p"}, providers={"p": ProviderConfig(kind="openai")}
+    )
+
+    diagnostics = subagent_validate(registry, models=models)
+
+    assert [d.event for d in diagnostics] == ["subagent_model_unregistered"]
+    assert "spawn_explore" not in registry
+    assert "read" in registry, "an unrelated tool is untouched"
+
+
+def test_an_empty_model_registry_is_permissive() -> None:
+    t = _explorer(model="anything-at-all")
+    registry = ToolRegistry([read, t])
+
+    assert subagent_validate(registry) == []
+    assert "spawn_explore" in registry
 
 
 # ---- concurrency ----
