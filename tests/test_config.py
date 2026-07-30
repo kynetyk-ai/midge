@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterator
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -72,6 +73,18 @@ def _project(tmp_path: Path, body: str) -> Path:
     cwd.mkdir(exist_ok=True)
     _write(cwd, body)
     return cwd
+
+
+def _settings(config: Config) -> Config:
+    """The settings alone, with provenance dropped.
+
+    `model_source` records *where* the model came from, which by construction
+    cannot round-trip: writing `model = "gpt-4o-mini"` is an explicit choice
+    even though it names the default, and that difference is the whole point of
+    the field. So whole-object comparisons against a `Config()` literal have to
+    exclude it.
+    """
+    return replace(config, model_source="")
 
 
 def _diagnose(tmp_path: Path, body: str) -> tuple[Config, list[str]]:
@@ -206,7 +219,7 @@ def test_every_field_is_reachable_from_the_file(tmp_path: Path) -> None:
         payload_chars = 0
         """,
     )
-    assert config == Config(
+    assert _settings(config) == Config(
         model="granite",
         provider="openai-compatible",
         base_url="http://localhost:11434/v1",
@@ -227,7 +240,7 @@ def test_the_shipped_example_parses_with_no_diagnostics(tmp_path: Path) -> None:
     example = Path(__file__).parent.parent / "examples" / "config.toml"
     config = _load(tmp_path, project=example.read_text(encoding="utf-8"))
     # Everything uncommented in the example is a default, so this round-trips.
-    assert config == Config()
+    assert _settings(config) == Config()
 
 
 def test_the_default_profile_is_named_in_the_file(tmp_path: Path) -> None:

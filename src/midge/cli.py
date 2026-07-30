@@ -119,7 +119,13 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def resume_identity(session: Session) -> tuple[str, str]:
+def resume_identity(
+    session: Session,
+    *,
+    configured: str,
+    configured_explicitly: bool = False,
+    registry: ModelRegistry | None = None,
+) -> tuple[str, str]:
     """The model and base prompt to resume a session with.
 
     Not `header.model` / `header.system_prompt`: the header is what the session
@@ -127,8 +133,45 @@ def resume_identity(session: Session) -> tuple[str, str]:
     append records that supersede it, which `Session.load` has already folded
     onto these attributes. Reading the header instead is the defect in #57 —
     both commands reported success and then silently reverted.
+
+    **The two halves are not the same kind of thing**, and are treated
+    differently on purpose.
+
+    The **base prompt** is part of what the conversation *is*. Resuming a
+    reviewer's transcript under a coding assistant's instructions would make its
+    own history misleading, so it is always restored. Once a profile is recorded
+    (#67) that is the better thing to restore, and this becomes its fallback.
+
+    The **model** is infrastructure — interchangeable, machine-specific, and it
+    has its own config key. So it is a *stored prior choice* that takes part in
+    precedence rather than sitting above it: it beats a default, and loses to a
+    model the operator asked for this run. That fixes two things. An operator
+    who sets `MIDGE_MODEL` and resumes no longer has it silently discarded; and
+    a session recorded against a model since retired no longer refuses to
+    start, because a value nobody chose this run should degrade rather than
+    block. Both warn, so a disagreement is visible and the config can be
+    reconsidered.
     """
-    return session.model, session.system_prompt or BASE_SYSTEM_PROMPT
+    durable = session.system_prompt or BASE_SYSTEM_PROMPT
+    recorded = session.model
+    if configured_explicitly:
+        if recorded != configured:
+            _logger.warning(
+                "resume_model_overridden recorded=%s using=%s", recorded, configured
+            )
+        return configured, durable
+    if registry and recorded not in registry:
+        # A warning rather than the refusal an operator-named model gets: they
+        # did not choose this one this run, so blocking startup would strand
+        # the session on a model id that has simply been retired.
+        _logger.warning(
+            "resume_model_unregistered recorded=%s using=%s registered=%s",
+            recorded,
+            configured,
+            ",".join(registry.names()),
+        )
+        return configured, durable
+    return recorded, durable
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -175,6 +218,14 @@ def main(argv: list[str] | None = None) -> None:
     model = config.model
     durable = BASE_SYSTEM_PROMPT
 
+    # Before the session opens, because resuming one consults it: a recorded
+    # model that is no longer registered degrades to the configured one rather
+    # than refusing to start. The registry validates its own wiring — a model
+    # naming a provider that was never defined, or a provider naming an adapter
+    # that does not exist — and reports it the way config parsing does.
+    model_registry = ModelRegistry(models=config.models, providers=config.providers)
+    emit_config_diagnostics(model_registry.diagnostics)
+
     if args.no_session and args.session is not None:
         # Contradictory, so say which won rather than silently picking. Same
         # treatment `Config.load` gives `[providers.*]` colliding with the
@@ -192,7 +243,12 @@ def main(argv: list[str] | None = None) -> None:
         session = Session.open(session_file, model=model, system_prompt=durable)
         # Unconditional: on a session just created these read back exactly what
         # was passed in, so there is nothing to branch on.
-        model, durable = resume_identity(session)
+        model, durable = resume_identity(
+            session,
+            configured=config.model,
+            configured_explicitly=bool(config.model_source),
+            registry=model_registry,
+        )
 
     # The header records the agent's identity. Which tools and skills exist is a
     # fact about this machine right now, so it is recomposed on every start
@@ -209,15 +265,12 @@ def main(argv: list[str] | None = None) -> None:
         len(skills),
         session_file or "-",
     )
-    # The registry validates its own wiring — a model naming a provider that was
-    # never defined, or a provider naming an adapter that does not exist — and
-    # reports it the same way config parsing does.
-    model_registry = ModelRegistry(models=config.models, providers=config.providers)
-    emit_config_diagnostics(model_registry.diagnostics)
     if model_registry and model not in model_registry:
-        # The startup model is a selection like any other, so it is subject to
-        # the same rule as `set_model`. Refusing here beats a first turn that
-        # fails with the vendor's 404.
+        # Only reachable for a model the *operator* named — `resume_identity`
+        # has already degraded a recorded one to the configured model with a
+        # warning. A selection made this run is subject to the same rule as
+        # `set_model`, and refusing beats a first turn that fails with the
+        # vendor's 404.
         _logger.error(
             "startup_model_unregistered model=%s registered=%s",
             model,

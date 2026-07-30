@@ -115,6 +115,11 @@ class ProviderConfig:
 @dataclass(frozen=True, slots=True)
 class Config:
     model: str = DEFAULT_MODEL
+    # Where `model` came from — `MIDGE_MODEL`, `model`, or `""` when nobody set
+    # it. Not a setting; the one piece of provenance anything needs, because a
+    # resumed session's recorded model must beat a default and lose to a model
+    # the operator actually asked for this run.
+    model_source: str = ""
     # None means "infer": no base_url is OpenAI, a base_url is something
     # OpenAI-compatible. `providers.resolve` owns that heuristic.
     provider: str | None = None
@@ -143,6 +148,7 @@ class Config:
         src = _Source(merged, diagnostics)
         config = cls(
             model=src.text(None, "model", "MIDGE_MODEL", default=DEFAULT_MODEL),
+            model_source=src.origin(None, "model", "MIDGE_MODEL"),
             provider=src.text("provider", "name", "MIDGE_PROVIDER"),
             base_url=src.text("provider", "base_url", "OPENAI_BASE_URL"),
             include_usage=src.flag("provider", "include_usage", "MIDGE_INCLUDE_USAGE"),
@@ -423,6 +429,15 @@ class _Source:
         if isinstance(table, dict) and key in table:
             return table[key], key if section is None else f"{section}.{key}"
         return None, ""
+
+    def origin(self, section: str | None, key: str, env: str | None = None) -> str:
+        """Where a value came from, or `""` if nothing set it and the default is
+        in play. `_raw` has always computed this and every accessor discarded
+        it; the difference between "the operator asked for this" and "nobody
+        said anything" is what lets a stored prior choice — a session's recorded
+        model — take part in precedence rather than sit above it."""
+        _value, where = self._raw(section, key, env)
+        return where
 
     def _bad(self, section: str | None, key: str, raw: Any, want: str, default: Any) -> Any:
         self._diagnostics.append(

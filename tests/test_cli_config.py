@@ -8,13 +8,15 @@ argparse default that is not `None`.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
 
 from midge.cli import BASE_SYSTEM_PROMPT, _parse_args, main, resume_identity
-from midge.config import DEFAULT_KEEP_RECENT, Config
+from midge.config import DEFAULT_KEEP_RECENT, Config, ProviderConfig
 from midge.persistence import Session
+from midge.providers import ModelRegistry
 
 
 def test_unset_flags_are_none_so_config_can_win() -> None:
@@ -59,19 +61,85 @@ def test_resume_reads_the_folded_identity_not_the_header(tmp_path: Path) -> None
         s.set_model("switched-to")
         s.set_system_prompt("adversarial reviewer")
 
-    assert resume_identity(Session.load(path)) == ("switched-to", "adversarial reviewer")
+    assert resume_identity(Session.load(path), configured="default-model") == (
+        "switched-to",
+        "adversarial reviewer",
+    )
 
 
 def test_resume_falls_back_to_the_header_and_then_the_built_in(tmp_path: Path) -> None:
     path = tmp_path / "s.jsonl"
     with Session.new(path, model="m", system_prompt="from-header"):
         pass
-    assert resume_identity(Session.load(path)) == ("m", "from-header")
+    assert resume_identity(Session.load(path), configured="c") == ("m", "from-header")
 
     bare = tmp_path / "b.jsonl"
     with Session.new(bare, model="m"):
         pass
-    assert resume_identity(Session.load(bare)) == ("m", BASE_SYSTEM_PROMPT)
+    assert resume_identity(Session.load(bare), configured="c") == ("m", BASE_SYSTEM_PROMPT)
+
+
+# --- the model is a stored prior choice, not an override ---
+#
+# The prompt is part of what the conversation *is*, so it always comes back.
+# The model is infrastructure with its own config key, so it takes part in
+# precedence: it beats a default and loses to a model asked for this run.
+
+
+def test_a_model_asked_for_this_run_beats_the_recorded_one(tmp_path: Path) -> None:
+    """Previously the transcript won unconditionally, so an operator who set
+    `MIDGE_MODEL` and resumed had it discarded with nothing said."""
+    path = tmp_path / "s.jsonl"
+    with Session.new(path, model="recorded", system_prompt="reviewer"):
+        pass
+
+    model, durable = resume_identity(
+        Session.load(path), configured="asked-for", configured_explicitly=True
+    )
+    # The prompt still comes back: it is not a setting the operator overrode.
+    assert (model, durable) == ("asked-for", "reviewer")
+
+
+def test_the_recorded_model_wins_over_a_mere_default(tmp_path: Path) -> None:
+    path = tmp_path / "s.jsonl"
+    with Session.new(path, model="recorded"):
+        pass
+
+    model, _durable = resume_identity(
+        Session.load(path), configured="the-default", configured_explicitly=False
+    )
+    assert model == "recorded"
+
+
+def test_an_override_is_announced(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    path = tmp_path / "s.jsonl"
+    with Session.new(path, model="recorded"):
+        pass
+
+    with caplog.at_level(logging.WARNING, logger="midge.cli"):
+        resume_identity(Session.load(path), configured="asked-for", configured_explicitly=True)
+    assert "resume_model_overridden" in caplog.text
+
+
+def test_a_retired_model_warns_and_degrades_rather_than_refusing(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The trap this removes: a session recorded against a model the vendor has
+    since retired used to make midge refuse to start, on an id nobody chose
+    this run and with no flag to override it."""
+    path = tmp_path / "s.jsonl"
+    with Session.new(path, model="retired-by-the-vendor"):
+        pass
+    registry = ModelRegistry(
+        models={"current": "p"}, providers={"p": ProviderConfig(kind="openai")}
+    )
+
+    with caplog.at_level(logging.WARNING, logger="midge.cli"):
+        model, _durable = resume_identity(
+            Session.load(path), configured="current", registry=registry
+        )
+    assert model == "current"
+    assert "resume_model_unregistered" in caplog.text
 
 
 # --- the startup profile refusal ---
