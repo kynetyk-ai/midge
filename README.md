@@ -254,7 +254,7 @@ ADVERSARIAL = Profile(
     name="adversarial-reviewer",
     description="Reviews work that has just been done, looking for what is wrong with it.",
     tools=("read", "bash"),      # read-only: a reviewer that can edit fixes instead of reporting
-    hooks=("approve",),          # named by the extension file's stem
+    hooks={"approve": True},     # a decision for every hook source, keyed by file stem
     prompt="Assume the work is wrong and find out how. Cite `path:line` for every claim.",
 )
 ```
@@ -266,6 +266,11 @@ to start under with `--profile NAME` or `[profiles] default` in the config file.
 Validation is strict where the rest of the harness is lenient: a profile naming a tool, a hook, or
 (with a `[models]` table configured) a model that does not exist is **dropped with a diagnostic**
 rather than loaded, so it can never silently grant less than it claims.
+
+`hooks` is stricter still — it must decide **every** discovered hook source, and a profile that
+leaves one out does not load. The asymmetry with `tools` is deliberate: omitting a tool yields a
+less capable agent, while omitting a hook would yield an unguarded one. Requiring a decision per
+source means disabling an approval gate is something you write, never something you forget.
 
 ```bash
 poetry run midge --extension-dir examples/profile_extension \

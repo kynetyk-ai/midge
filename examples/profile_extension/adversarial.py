@@ -9,11 +9,13 @@ three changes a reader has to correlate. See
           --extension-dir examples/approval_extension \\
           --profile adversarial-reviewer
 
-Both directories, because this profile names the `approve` hook: a profile that
-names a tool, hook or registered model which does not exist is dropped at
+Both directories, because this profile decides the `approve` hook: a profile
+that names a tool, hook or registered model which does not exist is dropped at
 startup with a diagnostic, rather than loading and silently granting less than
 it claims. Run it without `--extension-dir examples/approval_extension` to see
-that refusal.
+that refusal — and note that the reverse is a refusal too, since loading a hook
+source this profile says nothing about is what `profile_hook_undecided`
+catches.
 
 A profile file is an ordinary extension file — one `.py` may declare a tool, a
 sub-agent and a profile together. There is no `--profile-dir`.
@@ -33,8 +35,12 @@ ADVERSARIAL = Profile(
     # Read-only on purpose. A reviewer that can edit will fix what it finds
     # instead of reporting it, and the report is the product.
     tools=("read", "bash"),
-    # Named by the extension file's stem — `examples/approval_extension/approve.py`.
-    hooks=("approve",),
+    # A decision for *every* hook source that is loaded, keyed by the extension
+    # file's stem — `examples/approval_extension/approve.py` is `"approve"`.
+    # Leaving one out is a validation failure, not a default: omitting a tool
+    # makes the agent less capable, but omitting a hook would make it unguarded,
+    # so the one dimension where silence grants capability refuses to be silent.
+    hooks={"approve": True},
     # Omitted, so the profile keeps whatever model the agent is already running.
     # Set it to pin a reviewer to a stronger model than the builder used; with a
     # `[models]` table configured, the name has to be one you registered.

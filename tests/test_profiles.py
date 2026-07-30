@@ -38,10 +38,12 @@ def _write_profile(
     *,
     name: str = "reviewer",
     tools: tuple[str, ...] = (),
-    hooks: tuple[str, ...] = (),
+    hooks: dict[str, bool] | None = None,
     model: str = "",
 ) -> None:
-    path.write_text(_PROFILE.format(name=name, tools=tools, hooks=hooks, model=model))
+    path.write_text(
+        _PROFILE.format(name=name, tools=tools, hooks=hooks or {}, model=model)
+    )
 
 
 def _discover(*sources: Path) -> ProfileSet:
@@ -156,12 +158,17 @@ def test_an_unknown_tool_drops_the_profile(tmp_path: Path) -> None:
 
 
 def test_an_unknown_hook_drops_the_profile(tmp_path: Path) -> None:
-    _write_profile(tmp_path / "p.py", hooks=("approve",))
+    _write_profile(tmp_path / "p.py", hooks={"approve": True})
     profiles = _discover(tmp_path)
 
     diagnostics = validate(profiles, tools=_tools(), hook_names={"audit"})
 
-    assert [d.event for d in diagnostics] == ["profile_hook_unknown"]
+    # Both halves of the rule fire: `approve` does not exist, and the `audit`
+    # that does exist was never decided.
+    assert [d.event for d in diagnostics] == [
+        "profile_hook_unknown",
+        "profile_hook_undecided",
+    ]
     assert len(profiles) == 0
 
 
@@ -172,7 +179,7 @@ def test_a_known_hook_is_the_extension_file_stem(tmp_path: Path) -> None:
         "def register_hooks(hooks):\n"
         "    hooks.on('tool_call', lambda event, ctx: None)\n"
     )
-    _write_profile(tmp_path / "p.py", hooks=("approve",))
+    _write_profile(tmp_path / "p.py", hooks={"approve": True})
     hooks = Hooks()
     profiles = ProfileSet()
     registry, _ = load_extensions([tmp_path], hooks=hooks, profiles=profiles)
@@ -196,7 +203,7 @@ def test_a_blank_prompt_is_invalid(tmp_path: Path) -> None:
 
 
 def test_every_problem_is_reported_not_just_the_first(tmp_path: Path) -> None:
-    _write_profile(tmp_path / "p.py", tools=("gone", "also-gone"), hooks=("missing",))
+    _write_profile(tmp_path / "p.py", tools=("gone", "also-gone"), hooks={"missing": True})
     profiles = _discover(tmp_path)
 
     events = [d.event for d in validate(profiles, tools=_tools(), hook_names=set())]
@@ -292,3 +299,65 @@ def test_adding_a_duplicate_raises() -> None:
     profiles.add(Profile(name="p", description="d", prompt="go"))
     with pytest.raises(ValueError, match="already registered"):
         profiles.add(Profile(name="p", description="other", prompt="go"))
+
+
+# --- hooks must be decided exhaustively -----------------------------------
+#
+# The asymmetry with `tools` is the whole point. Omitting a tool yields a less
+# capable agent; omitting a hook would yield an unguarded one. So `tools` is an
+# allowlist and `hooks` is a decision per discovered source.
+
+
+def test_an_undecided_hook_drops_the_profile(tmp_path: Path) -> None:
+    """The mistake this catches: writing only the hooks you mean to change,
+    and silently switching off the approval gate you never mentioned."""
+    _write_profile(tmp_path / "p.py", hooks={})
+    profiles = _discover(tmp_path)
+
+    diagnostics = validate(profiles, tools=_tools(), hook_names={"approve"})
+
+    assert [d.event for d in diagnostics] == ["profile_hook_undecided"]
+    assert diagnostics[0].fields["hook"] == "approve"
+    assert "reviewer" not in profiles
+
+
+def test_deciding_a_hook_false_is_valid(tmp_path: Path) -> None:
+    """Turning a gate off is allowed — it just has to be written down."""
+    _write_profile(tmp_path / "p.py", hooks={"approve": False})
+    profiles = _discover(tmp_path)
+
+    assert validate(profiles, tools=_tools(), hook_names={"approve"}) == []
+    decided = profiles.get("reviewer")
+    assert decided is not None and decided.hooks == {"approve": False}
+
+
+def test_every_undecided_source_is_named(tmp_path: Path) -> None:
+    """One diagnostic per source, so the fix is mechanical rather than a hunt."""
+    _write_profile(tmp_path / "p.py", hooks={"approve": True})
+    profiles = _discover(tmp_path)
+
+    diagnostics = validate(
+        profiles, tools=_tools(), hook_names={"approve", "audit", "telemetry"}
+    )
+
+    assert [d.fields["hook"] for d in diagnostics] == ["audit", "telemetry"]
+
+
+def test_no_hook_sources_means_an_empty_decision_is_complete(tmp_path: Path) -> None:
+    """Exhaustiveness must not tax the common case: an install with no
+    hook-bearing extensions needs no `hooks` at all."""
+    _write_profile(tmp_path / "p.py", tools=("read",))
+    profiles = _discover(tmp_path)
+
+    assert validate(profiles, tools=_tools("read"), hook_names=set()) == []
+    assert "reviewer" in profiles
+
+
+def test_tools_stay_an_allowlist_not_a_decision(tmp_path: Path) -> None:
+    """The asymmetry, pinned. A tool left out is simply not granted; there is
+    no `profile_tool_undecided`, because omission there is fail-safe."""
+    _write_profile(tmp_path / "p.py", tools=("read",))
+    profiles = _discover(tmp_path)
+
+    assert validate(profiles, tools=_tools("read", "bash", "write"), hook_names=set()) == []
+    assert "reviewer" in profiles

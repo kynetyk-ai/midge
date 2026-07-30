@@ -19,9 +19,24 @@ module namespace exactly as `load_extensions` collects `Tool` instances:
         description="Reviews recent work looking for what is wrong with it.",
         model="gpt-4o",
         tools=("read", "bash"),
-        hooks=("approve",),
+        hooks={"approve": True, "audit": False},
         prompt="Assume the work is wrong and find out how.",
     )
+
+**`hooks` must decide every discovered hook source, and a profile that leaves
+one out does not load.** That is deliberately stricter than `tools`, and the
+asymmetry is the point: omitting a tool yields a *less* capable agent, while
+omitting a hook would yield an *unguarded* one. A profile reads like a
+convenience layer, so the natural mistake is to write only what you mean to
+change — and under "the list is what is active" that instinct silently switches
+off an approval gate, while under "the list is what changes" a profile can never
+turn anything off at all. Requiring a decision per source makes the question
+unaskable rather than picking a safer answer to it, and turns the mistake into a
+startup diagnostic naming the source you forgot.
+
+The cost, stated plainly: installing a new hook-bearing extension invalidates
+every existing profile until each names it. That is loud and one line to fix,
+which is the trade — a noisy failure over a silent capability grant.
 
 Chosen over a Markdown file with frontmatter because a profile intersects code:
 `tools` and `hooks` name symbols that must exist, so a dataclass gets structural
@@ -37,8 +52,9 @@ the agent uses and a profile is what the agent is. Unifying them would put a
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from pathlib import Path
 
 from midge.config import Diagnostic
@@ -56,9 +72,10 @@ class Profile:
     # and a toolset with no opinion about the provider.
     model: str = ""
     tools: tuple[str, ...] = ()
-    # Each names an extension file by its stem, which is what `load_extensions`
-    # stamps on every registration it makes.
-    hooks: tuple[str, ...] = ()
+    # A decision for *every* discovered hook source, keyed by the extension
+    # file's stem — which is what `load_extensions` stamps on every registration
+    # it makes. Exhaustive on purpose; see the module docstring.
+    hooks: Mapping[str, bool] = dataclass_field(default_factory=dict)
 
 
 class ProfileSet:
@@ -158,6 +175,14 @@ def _problems(
         Diagnostic("profile_hook_unknown", {"profile": profile.name, "hook": name})
         for name in profile.hooks
         if name not in hook_names
+    )
+    # The dual of the check above, and the reason `hooks` is a mapping rather
+    # than a list of active names: a source nobody decided about would have to
+    # default to on or off, and both defaults are a silent answer to the
+    # question the author did not know they were being asked.
+    out.extend(
+        Diagnostic("profile_hook_undecided", {"profile": profile.name, "hook": name})
+        for name in sorted(hook_names - set(profile.hooks))
     )
     # Empty means permissive, the rule everywhere the registry is consulted: a
     # profile naming a model is not an error in an unconfigured install, and

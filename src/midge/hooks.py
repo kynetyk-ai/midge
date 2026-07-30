@@ -18,8 +18,8 @@ stamping the extension file a handler came from — can be switched off and on
 by name with `set_active_sources`, which is how a profile says which hooks are
 active (ADR 0001, Decision 3). Activation filters at `emit` rather than
 unregistering, so a switch is a toggle rather than a reload. Handlers with no
-source are always active: a profile cannot name them, so it must not be able
-to disable them either.
+source always run, because there is no name by which anything could turn them
+back on.
 """
 
 from __future__ import annotations
@@ -255,14 +255,17 @@ class Hooks:
         Filtering also keeps the operation idempotent and leaves every
         `Unsubscribe` closure valid.
 
-        **An unnamed registration is never affected.** Only handlers registered
-        through a source — which today means `load_extensions` stamping an
-        extension file — can be scoped. A handler an embedder installed directly
-        on this `Hooks` is not something a profile can name, so a profile must
-        not be able to switch it off: an audit observer or an approval gate that
-        a discovered `.py` file could silently disable would be a policy hole,
-        not a feature. Same reasoning as `INHERITED_EVENTS` in `subagents.py`,
-        where tool policy survives delegation.
+        **An unnamed registration always runs**, and that is a mechanical
+        consequence rather than a policy: the vocabulary here is source names,
+        so a handler with no name could never be switched back *on* once it went
+        off. Only handlers registered through a source — today, `load_extensions`
+        stamping an extension file — are addressable at all.
+
+        It is not the mechanism that protects an approval gate from being
+        switched off. That job belongs to `profiles.validate`, which refuses to
+        load a profile that has not stated a decision for every discovered
+        source, so disabling a gate is something an author writes rather than
+        something they omit.
         """
         self._active = None if names is None else set(names)
 
