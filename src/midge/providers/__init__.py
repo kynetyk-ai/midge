@@ -41,13 +41,16 @@ from midge.providers.base import (
     register,
     resolve,
 )
+from midge.providers.registry import ModelRegistry, UnknownModel
 
 __all__ = [
     "Capabilities",
     "Delta",
+    "ModelRegistry",
     "Provider",
     "ProviderFactory",
     "ToolCallFragment",
+    "UnknownModel",
     "get",
     "names",
     "register",

@@ -483,6 +483,21 @@ class RpcServer:
                     {"type": "error", "message": str(e), "stop_reason": "error"}
                 )
 
+    def _builtin_schema(self, command: BuiltinCommand) -> dict[str, Any]:
+        """A built-in's declared schema, narrowed by what this process knows.
+
+        `set_model` is the only one so far: with a non-empty registry the set of
+        models is a fact the server holds, so it becomes an `enum` and a client
+        renders a picker with nothing hardcoded — the same projection `reload`
+        does for its targets. Absent a registry the field stays a free string,
+        which is what an empty registry means everywhere else too.
+        """
+        schema = command.params.model_json_schema() if command.params else dict(_NO_PARAMS)
+        registry = self.agent.client.registry
+        if command.name == "set_model" and registry:
+            schema["properties"]["model"]["enum"] = registry.names()
+        return schema
+
     async def _handle_get_commands(self, cmd_id: str | None) -> None:
         """Everything a user can invoke, and how to invoke it.
 
@@ -510,7 +525,7 @@ class RpcServer:
                 "source": "builtin",
                 "invoke": "command",
                 "description": c.description,
-                "parameters": c.params.model_json_schema() if c.params else dict(_NO_PARAMS),
+                "parameters": self._builtin_schema(c),
             }
             for c in BUILTIN_COMMANDS
         ]
@@ -648,6 +663,20 @@ class RpcServer:
                 "set_model",
                 success=False,
                 error="`model` is required and must be a non-empty string",
+            )
+            return
+        # An empty registry is permissive, so this only refuses once a user has
+        # written a `[models]` table and thereby said what they want available.
+        # Reporting success and then misrouting the next turn is the defect this
+        # command had; a refusal that names the alternatives is the fix.
+        registry = self.agent.client.registry
+        if registry and model not in registry:
+            _logger.warning("rpc_model_unknown model=%s", model)
+            await self._respond(
+                cmd_id,
+                "set_model",
+                success=False,
+                error=f"unknown model {model!r}; registered: {', '.join(registry.names())}",
             )
             return
         self.agent.model = model

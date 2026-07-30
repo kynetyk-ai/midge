@@ -25,7 +25,7 @@ from midge.hooks import Hooks, SessionEnd, SessionStart
 from midge.logs import configure as configure_logging
 from midge.logs import provider_host
 from midge.persistence import Session
-from midge.providers import Capabilities
+from midge.providers import Capabilities, ModelRegistry
 from midge.rpc import RpcServer, serve_stdio
 from midge.skills import default_skill_dirs, load_skills, skills_prompt
 from midge.subagents import bind_subagents
@@ -163,8 +163,28 @@ def main(argv: list[str] | None = None) -> None:
         len(skills),
         args.session or "-",
     )
-    # No api_key: the provider reads `OPENAI_API_KEY` itself, so the credential
-    # has exactly one reader and never passes through configuration.
+    # The registry validates its own wiring — a model naming a provider that was
+    # never defined, or a provider naming an adapter that does not exist — and
+    # reports it the same way config parsing does.
+    model_registry = ModelRegistry(models=config.models, providers=config.providers)
+    emit_config_diagnostics(model_registry.diagnostics)
+    if model_registry and model not in model_registry:
+        # The startup model is a selection like any other, so it is subject to
+        # the same rule as `set_model`. Refusing here beats a first turn that
+        # fails with the vendor's 404.
+        _logger.error(
+            "startup_model_unregistered model=%s registered=%s",
+            model,
+            ",".join(model_registry.names()),
+        )
+        raise SystemExit(
+            f"model {model!r} is not in the model registry; registered: "
+            f"{', '.join(model_registry.names())}"
+        )
+
+    # No api_key: the fallback provider reads `OPENAI_API_KEY` itself and a
+    # registered one names its own variable, so a credential never passes
+    # through configuration.
     client = Client(
         base_url=config.base_url,
         provider=config.provider,
@@ -175,6 +195,7 @@ def main(argv: list[str] | None = None) -> None:
         ),
         max_attempts=config.retry.max_attempts,
         retry_base_delay=config.retry.base_delay,
+        registry=model_registry,
     )
     # Tools cannot reach the calling agent, so any sub-agent tool an extension
     # registered gets what it needs to run a child here. No-op without them.

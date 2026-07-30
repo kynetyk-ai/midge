@@ -8,10 +8,12 @@ from typing import Any
 from midge import rpc
 from midge.agent import Agent
 from midge.client import Client
+from midge.config import ProviderConfig
 from midge.extensions import load_extensions
 from midge.hooks import Hooks, ToolCallEvent, ToolCallResult
 from midge.messages import AssistantMessage, TextContent, ToolCall, UserMessage
 from midge.persistence import Session, read_transcript
+from midge.providers import ModelRegistry
 from midge.rpc import RpcServer, event_to_wire
 from midge.skills import Skill, load_skills, skills_prompt
 from midge.tools import ToolRegistry, tool
@@ -565,6 +567,57 @@ async def test_set_model_rejects_non_string() -> None:
     await task
 
 
+def _registered(**models: str) -> ModelRegistry:
+    return ModelRegistry(
+        models=models,
+        providers={name: ProviderConfig() for name in set(models.values())},
+    )
+
+
+async def test_set_model_accepts_a_registered_model() -> None:
+    agent = Agent(client=Client(registry=_registered(fast="svc", slow="svc")), model="fast")
+    _server, inbox, outbox, task = _start_server(agent)
+
+    resp = await _command(inbox, outbox, {"id": "m", "type": "set_model", "model": "slow"})
+
+    assert resp["success"] is True
+    assert agent.model == "slow"
+    inbox.close()
+    await task
+
+
+async def test_set_model_refuses_an_unregistered_model() -> None:
+    """The original defect: success, then a 404 on the next turn.
+
+    A refusal has to name the alternatives, because the client asking has no
+    other way to find out what it may pick.
+    """
+    agent = Agent(client=Client(registry=_registered(fast="svc")), model="fast")
+    _server, inbox, outbox, task = _start_server(agent)
+
+    resp = await _command(inbox, outbox, {"id": "m", "type": "set_model", "model": "made-up"})
+
+    assert resp["success"] is False
+    assert "made-up" in resp["error"] and "fast" in resp["error"]
+    assert agent.model == "fast"
+    inbox.close()
+    await task
+
+
+async def test_an_empty_registry_still_accepts_anything() -> None:
+    # Permissive until a user writes a `[models]` table. This is every install
+    # that predates the registry.
+    agent = Agent(client=Client(), model="old")
+    _server, inbox, outbox, task = _start_server(agent)
+
+    resp = await _command(inbox, outbox, {"id": "m", "type": "set_model", "model": "whatever"})
+
+    assert resp["success"] is True
+    assert agent.model == "whatever"
+    inbox.close()
+    await task
+
+
 async def test_set_system_prompt_rejects_non_string() -> None:
     agent = Agent(client=Client(), model="m", system_prompt="keep")
     _server, inbox, outbox, task = _start_server(agent)
@@ -1108,6 +1161,33 @@ async def test_required_and_optional_arguments_are_distinguishable() -> None:
     export = by_name["export_html"]["parameters"]
     assert "output_path" in export["properties"]
     assert "output_path" not in export.get("required", [])
+    inbox.close()
+    await task
+
+
+async def test_set_model_stays_a_free_string_without_a_registry() -> None:
+    agent = Agent(client=Client(), model="m")
+    _server, inbox, outbox, task = _start_server(agent)
+
+    by_name = {c["name"]: c for c in await _commands(inbox, outbox)}
+
+    assert "enum" not in by_name["set_model"]["parameters"]["properties"]["model"]
+    inbox.close()
+    await task
+
+
+async def test_a_registry_turns_set_model_into_an_enum() -> None:
+    """So a client renders a picker with nothing hardcoded.
+
+    Same projection `reload` does for its targets: the server already knows the
+    answer, and a client that had to carry its own list would go stale.
+    """
+    agent = Agent(client=Client(registry=_registered(slow="svc", fast="svc")), model="fast")
+    _server, inbox, outbox, task = _start_server(agent)
+
+    by_name = {c["name"]: c for c in await _commands(inbox, outbox)}
+
+    assert by_name["set_model"]["parameters"]["properties"]["model"]["enum"] == ["fast", "slow"]
     inbox.close()
     await task
 

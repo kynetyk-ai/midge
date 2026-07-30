@@ -31,7 +31,9 @@ from midge.client import (
     ToolCallEnd,
     ToolCallStart,
 )
+from midge.config import ProviderConfig
 from midge.messages import Message, TextContent, ToolCall, UserMessage
+from midge.providers import ModelRegistry
 from midge.providers.openai_compat import OpenAIProvider
 from tests.fakes import (
     FakeProvider,
@@ -458,3 +460,54 @@ async def test_real_adapter_tool_call_reaches_the_state_machine() -> None:
     assert isinstance(tc, ToolCall)
     assert tc.arguments == {"path": "a"}
     assert done.message.stop_reason == "tool_use"
+
+
+# --- the model chooses the provider ---------------------------------------
+
+
+async def test_an_unroutable_model_is_an_error_event_not_an_exception() -> None:
+    """A consumer is already mid-stream by the time resolution happens.
+
+    `StreamStart` has been yielded, so raising would surface as a broken
+    generator rather than as the failure it is. Every other request failure
+    arrives as `Error`, and this one does too.
+    """
+    registry = ModelRegistry(models={"fast": "a"}, providers={"a": ProviderConfig()})
+    client = Client(provider=FakeProvider([]), registry=registry)
+
+    events = await _collect(client.stream(messages=USER, model="not-registered"))
+
+    assert isinstance(events[0], StreamStart)
+    err = events[-1]
+    assert isinstance(err, Error)
+    assert err.message.stop_reason == "error"
+    assert "not-registered" in (err.message.error_message or "")
+    # It names what it would have accepted, the same way the RPC refusal does.
+    assert "fast" in (err.message.error_message or "")
+
+
+async def test_an_empty_registry_routes_every_model_to_the_clients_provider() -> None:
+    # The compatibility guarantee: without a `[models]` table nothing changes.
+    client = Client()
+    install(client, [[say("hi"), finish()]])
+
+    for model in ("gpt-4o", "something-else-entirely"):
+        done = (await _collect(client.stream(messages=USER, model=model)))[-1]
+        assert isinstance(done, Done), model
+        install(client, [[say("hi"), finish()]])
+
+
+async def test_reassigning_provider_after_construction_still_takes_effect() -> None:
+    """Relied on throughout the suite, and worth pinning.
+
+    `self.provider` is read at call time rather than captured, so a test (or a
+    caller) that swaps it after building the Client is not silently talking to
+    whatever was there first.
+    """
+    client = Client()
+    install(client, [[say("swapped"), finish()]])
+
+    done = (await _run(client))[-1]
+    assert isinstance(done, Done)
+    assert isinstance(done.message.content[0], TextContent)
+    assert done.message.content[0].text == "swapped"

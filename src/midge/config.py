@@ -33,7 +33,7 @@ from __future__ import annotations
 import logging
 import os
 import tomllib
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from pathlib import Path
@@ -47,6 +47,9 @@ DEFAULT_KEEP_RECENT = 20_000
 
 _TRUE = ("1", "true", "yes", "on")
 _FALSE = ("0", "false", "no", "off")
+
+# Marks a section whose sub-table names are user data rather than a fixed set.
+_OPEN = "*"
 
 
 # --- diagnostics ----------------------------------------------------------
@@ -84,6 +87,23 @@ class RetryConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class ProviderConfig:
+    """How to reach one service — an entry in `[providers.*]`.
+
+    Separate from `[models.*]`, which says which service a model lives on. Two
+    tables because they answer different questions, and a service is named once
+    however many models sit on it.
+    """
+
+    kind: str = "openai"
+    base_url: str | None = None
+    # The *name* of the variable holding the credential, never the credential.
+    # A config file gets committed; see the module docstring.
+    api_key_env: str | None = None
+    include_usage: bool | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class Config:
     model: str = DEFAULT_MODEL
     # None means "infer": no base_url is OpenAI, a base_url is something
@@ -96,6 +116,11 @@ class Config:
     compaction_keep_recent: int = DEFAULT_KEEP_RECENT
     log: LogConfig = LogConfig()
     retry: RetryConfig = RetryConfig()
+    # The model registry. Empty is permissive — any model string is accepted and
+    # goes to the single provider above, which is every install that predates
+    # these tables. Writing a `[models]` table is what turns enforcement on.
+    providers: Mapping[str, ProviderConfig] = dataclass_field(default_factory=dict)
+    models: Mapping[str, str] = dataclass_field(default_factory=dict)
 
     @classmethod
     def load(
@@ -129,8 +154,18 @@ class Config:
                 max_attempts=src.integer("retry", "max_attempts", default=3),
                 base_delay=src.number("retry", "base_delay", default=0.5),
             ),
+            providers=_providers(src),
+            models=_models(src),
         )
         diagnostics.extend(src.unrecognized())
+        if config.providers and (config.provider or config.base_url):
+            # Two ways to say the same thing. `[providers.*]` is the general
+            # form, so it wins and the singular is reported rather than silently
+            # merged — a base_url that looks configured but is not would be
+            # worse than being told.
+            diagnostics.append(
+                Diagnostic("config_provider_singular_ignored", {"in_favour_of": "providers"})
+            )
         return config, diagnostics
 
 
@@ -145,6 +180,52 @@ def config_paths(*, cwd: Path | None = None, home: Path | None = None) -> list[P
         (cwd or Path.cwd()) / ".midge" / "config.toml",
         (home or Path.home()) / ".midge" / "config.toml",
     ]
+
+
+_PROVIDER_KEYS = ("kind", "base_url", "api_key_env", "include_usage")
+
+
+def _providers(src: _Source) -> dict[str, ProviderConfig]:
+    out: dict[str, ProviderConfig] = {}
+    for name, table in src.tables("providers", keys=_PROVIDER_KEYS).items():
+        out[name] = ProviderConfig(
+            kind=_as(src, f"providers.{name}.kind", table.get("kind"), str) or "openai",
+            base_url=_as(src, f"providers.{name}.base_url", table.get("base_url"), str),
+            api_key_env=_as(src, f"providers.{name}.api_key_env", table.get("api_key_env"), str),
+            include_usage=_as(
+                src, f"providers.{name}.include_usage", table.get("include_usage"), bool
+            ),
+        )
+    return out
+
+
+def _models(src: _Source) -> dict[str, str]:
+    """Model id -> provider name. A model with no provider is not a model entry."""
+    out: dict[str, str] = {}
+    for name, table in src.tables("models", keys=("provider",)).items():
+        raw = table.get("provider")
+        provider = _as(src, f"models.{name}.provider", raw, str)
+        if provider:
+            out[name] = provider
+        elif raw is None:
+            # Only when it is genuinely absent — a wrong type already reported.
+            src.report("config_model_provider_missing", {"model": name})
+    return out
+
+
+def _as(src: _Source, key: str, raw: Any, want: type) -> Any:
+    """A TOML value of exactly the expected type, or None with a diagnostic.
+
+    Narrower than `_Source`'s accessors on purpose: these come only from the
+    file, never from the environment, so there is no string to coerce — a wrong
+    type is a mistake rather than a spelling. Exact type rather than `isinstance`
+    because `bool` is a subclass of `int`, and `kind = true` should be reported,
+    not read as `1`.
+    """
+    if raw is None or type(raw) is want:
+        return raw
+    src.report("config_value_invalid", {"key": key, "want": want.__name__, "got": repr(raw)})
+    return None
 
 
 # --- reading and merging ---------------------------------------------------
@@ -261,6 +342,34 @@ class _Source:
             return default
         return Path(raw).expanduser()
 
+    def tables(self, section: str, *, keys: tuple[str, ...]) -> dict[str, dict[str, Any]]:
+        """A section whose sub-table *names* belong to the user — `[providers.foo]`.
+
+        Their names are data, so they cannot be checked against a list of known
+        keys the way every other section is. What can be checked, and is, are the
+        keys inside each one.
+        """
+        self._asked.add((section, _OPEN))
+        raw = self._data.get(section)
+        if not isinstance(raw, dict):
+            return {}
+        out: dict[str, dict[str, Any]] = {}
+        for name, table in raw.items():
+            if not isinstance(table, dict):
+                self.report(
+                    "config_value_invalid",
+                    {"key": f"{section}.{name}", "want": "table", "got": repr(table)},
+                )
+                continue
+            for key in table:
+                if key not in keys:
+                    self.report("config_key_unknown", {"key": f"{section}.{name}.{key}"})
+            out[name] = table
+        return out
+
+    def report(self, event: str, fields: dict[str, Any]) -> None:
+        self._diagnostics.append(Diagnostic(event, fields))
+
     def unrecognized(self) -> list[Diagnostic]:
         """Keys and sections present in the file that no field asked for.
 
@@ -275,6 +384,8 @@ class _Source:
                 if key not in known:
                     out.append(Diagnostic("config_section_unknown", {"section": key}))
                     continue
+                if (key, _OPEN) in self._asked:
+                    continue  # `tables()` already checked what it could
                 out.extend(
                     Diagnostic("config_key_unknown", {"key": f"{key}.{inner}"})
                     for inner in value
@@ -317,6 +428,7 @@ __all__ = [
     "Config",
     "Diagnostic",
     "LogConfig",
+    "ProviderConfig",
     "RetryConfig",
     "config_paths",
     "emit",

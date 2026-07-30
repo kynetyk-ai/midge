@@ -119,6 +119,7 @@ class Client:
         retry_base_delay: float = 0.5,
         provider: str | providers.Provider | None = None,
         capabilities: providers.Capabilities | None = None,
+        registry: providers.ModelRegistry | None = None,
     ) -> None:
         if isinstance(provider, str) or provider is None:
             name = providers.resolve(provider=provider, base_url=base_url)
@@ -130,6 +131,10 @@ class Client:
             _logger.info("provider_selected name=%s", self.provider.name)
         else:
             self.provider = provider
+        # An empty registry means permissive: every model goes to the single
+        # provider above, which is what makes this additive — without a
+        # `[models]` table nothing behaves differently than it did before.
+        self.registry = registry or providers.ModelRegistry(models={}, providers={})
         self._max_attempts = max(1, max_attempts)
         self._retry_base_delay = retry_base_delay
 
@@ -145,9 +150,26 @@ class Client:
         partial = AssistantMessage(model=model)
         yield StreamStart(partial=partial)
 
+        # The model chooses the provider, per call — `Agent.model` is mutable, a
+        # hook can override it, and a sub-agent runs its own model against this
+        # same Client. `self.provider` is read here rather than captured, so
+        # reassigning it after construction still takes effect.
+        #
+        # An unroutable model is reported as an Error event rather than raised:
+        # by here a consumer is already mid-stream, and every other request
+        # failure arrives that way.
+        try:
+            provider = self.registry.provider_for(model) if self.registry else self.provider
+        except providers.UnknownModel as e:
+            _logger.warning("model_unroutable model=%s", model)
+            partial.stop_reason = "error"
+            partial.error_message = f"{type(e).__name__}: {e}"
+            yield Error(message=partial)
+            return
+
         # Repaired here, once, so a provider's encoder never has to know which
         # turns are coherent — that is a fact about midge's history.
-        body = self.provider.encode(
+        body = provider.encode(
             messages=repair_history(messages),
             model=model,
             tools=tools,
@@ -159,7 +181,7 @@ class Client:
             # Every argument here is O(1) — `payload` defers the expensive part,
             # but a plain argument is evaluated whether or not DEBUG is on.
             "provider_request provider=%s model=%s tools=%d body=%s",
-            self.provider.name,
+            provider.name,
             model,
             len(tools or ()),
             payload(body),
@@ -179,10 +201,10 @@ class Client:
             partial.usage = None
 
             try:
-                stream = await self.provider.open(body)
+                stream = await provider.open(body)
 
                 async for chunk in stream:
-                    ev = self.provider.decode(chunk)
+                    ev = provider.decode(chunk)
 
                     if ev.usage is not None:
                         partial.usage = ev.usage
@@ -264,7 +286,7 @@ class Client:
                 partial.stop_reason = stop_reason or "stop"
                 _logger.debug(
                     "provider_response provider=%s model=%s stop=%s blocks=%d attempt=%d",
-                    self.provider.name,
+                    provider.name,
                     model,
                     partial.stop_reason,
                     len(partial.content),
@@ -297,7 +319,7 @@ class Client:
                 # part of this response and a restart would duplicate it.
                 committed = bool(partial.content)
                 attempts_left = attempt < self._max_attempts - 1
-                if not committed and attempts_left and self.provider.is_retryable(e):
+                if not committed and attempts_left and provider.is_retryable(e):
                     delay = self._retry_base_delay * (2**attempt)
                     attempt += 1
                     _logger.warning(
