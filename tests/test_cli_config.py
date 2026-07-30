@@ -1,15 +1,18 @@
 """The flag layer of `flag > env > config > default`.
 
-`main` builds a Client and starts a UI, so it is not called here. What is worth
-pinning is the one thing that silently disables the config layer if it regresses:
-an argparse default that is not `None`.
+`main` builds a Client and starts a UI, so it is only called here for the
+startup refusals, which happen before either. What is otherwise worth pinning is
+the one thing that silently disables the config layer if it regresses: an
+argparse default that is not `None`.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from midge.cli import BASE_SYSTEM_PROMPT, _parse_args, resume_identity
+import pytest
+
+from midge.cli import BASE_SYSTEM_PROMPT, _parse_args, main, resume_identity
 from midge.config import DEFAULT_KEEP_RECENT, Config
 from midge.persistence import Session
 
@@ -62,3 +65,31 @@ def test_resume_falls_back_to_the_header_and_then_the_built_in(tmp_path: Path) -
     with Session.new(bare, model="m"):
         pass
     assert resume_identity(Session.load(bare)) == ("m", BASE_SYSTEM_PROMPT)
+
+
+# --- the startup profile refusal ---
+#
+# Two different mistakes with two different fixes: a name that matches nothing,
+# and a profile whose file is broken. They must not share a message — telling
+# someone their profile "was not discovered" when it was found and then
+# rejected sends them to the wrong file.
+
+_BROKEN = (
+    "from midge.profiles import Profile\n"
+    "P = Profile(name='rev', description='d', prompt='go', tools=('nonexistent',))\n"
+)
+
+
+def test_an_unknown_profile_name_is_refused(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        main(["--extension-dir", str(tmp_path), "--profile", "nope"])
+    assert "was not discovered" in str(excinfo.value)
+
+
+def test_a_profile_that_failed_validation_says_so(tmp_path: Path) -> None:
+    (tmp_path / "rev.py").write_text(_BROKEN)
+    with pytest.raises(SystemExit) as excinfo:
+        main(["--extension-dir", str(tmp_path), "--profile", "rev"])
+    message = str(excinfo.value)
+    assert "failed validation" in message
+    assert "was not discovered" not in message

@@ -208,6 +208,7 @@ def main(argv: list[str] | None = None) -> None:
     # in another file — and after the model registry, which is the third thing
     # a profile can name. A profile that fails is dropped, so the selection
     # check below sees only profiles that would really work.
+    discovered = set(profiles.names())
     emit_config_diagnostics(
         validate_profiles(
             profiles,
@@ -221,15 +222,20 @@ def main(argv: list[str] | None = None) -> None:
         # Nothing applies a profile yet (#67), but a name that resolves to
         # nothing is a mistake either way, and saying so now beats saying it
         # once switching exists.
-        _logger.error(
-            "startup_profile_unknown profile=%s discovered=%s",
-            selected,
-            ",".join(profiles.names()),
-        )
-        raise SystemExit(
-            f"profile {selected!r} was not discovered; available: "
-            f"{', '.join(profiles.names()) or 'none'}"
-        )
+        #
+        # Dropped and never-there are different mistakes with different fixes —
+        # a broken profile file versus a wrong name — so they are not allowed to
+        # share a message. Saying "not discovered" about a profile that was
+        # discovered and then rejected sends the reader to the wrong file.
+        available = ", ".join(profiles.names()) or "none"
+        if selected in discovered:
+            _logger.error("startup_profile_invalid profile=%s available=%s", selected, available)
+            raise SystemExit(
+                f"profile {selected!r} was found but failed validation — see the "
+                f"profile_* warnings above; usable profiles: {available}"
+            )
+        _logger.error("startup_profile_unknown profile=%s available=%s", selected, available)
+        raise SystemExit(f"profile {selected!r} was not discovered; available: {available}")
     _logger.info("profiles_loaded count=%d selected=%s", len(profiles), selected or "-")
 
     # No api_key: the fallback provider reads `OPENAI_API_KEY` itself and a
