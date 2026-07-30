@@ -13,7 +13,7 @@ from midge.extensions import load_extensions
 from midge.hooks import Hooks, ToolCallEvent, ToolCallResult
 from midge.messages import ToolCall, UserMessage
 from midge.persistence import Session, read_transcript, session_continuations
-from midge.profiles import ProfileSet
+from midge.profiles import Profile, ProfileSet
 from midge.profiles import validate as validate_profiles
 from midge.providers import ModelRegistry
 from midge.rpc import RpcServer, event_to_wire
@@ -2073,6 +2073,272 @@ async def test_a_subagent_follows_new_session_to_the_new_file(tmp_path: Path) ->
     assert (second.parent / link.path).exists()
     # And nothing landed in the transcript that was closed.
     assert session_continuations(read_transcript(first_path)[1]) == []
+    inbox.close()
+    await task
+
+
+# ---- use_profile: the atomic switch (#67) ----
+#
+# The reason this is one command rather than documented guidance: a client
+# hand-orchestrating a switch gets `success: true` from `set_system_prompt`
+# while the entire previous toolset and every hook stay active.
+
+
+@tool(description="Read a file.")
+async def _p_read(path: str) -> str:
+    return "contents"
+
+
+@tool(description="Write a file.")
+async def _p_write(path: str, text: str) -> str:
+    return "ok"
+
+
+_BUILDER = Profile(
+    name="builder",
+    description="Builds.",
+    prompt="You are a builder.",
+    model="gpt-4o",
+    tools=("_p_read", "_p_write"),
+)
+_REVIEWER = Profile(
+    name="reviewer",
+    description="Reviews.",
+    prompt="You are adversarial.",
+    model="o3",
+    tools=("_p_read",),
+)
+
+
+def _profile_server(
+    session: Session | None, *, profiles: tuple[Profile, ...] = (_BUILDER, _REVIEWER), **kw: Any
+) -> tuple[RpcServer, _Inbox, _Outbox, asyncio.Task[None]]:
+    agent = Agent(
+        client=Client(),
+        model="start-model",
+        tools=ToolRegistry([_p_read, _p_write]),
+        system_prompt="base",
+        hooks=Hooks(),
+    )
+    pset = ProfileSet()
+    for p in profiles:
+        pset.add(p)
+    server = RpcServer(agent, session=session, profiles=pset, base_prompt="base", **kw)
+    inbox, outbox = _Inbox(), _Outbox()
+    task = asyncio.create_task(server.serve(read_line=inbox.read_line, write=outbox.write))
+    return server, inbox, outbox, task
+
+
+async def _use(inbox: _Inbox, outbox: _Outbox, name: str, **kw: Any) -> dict[str, Any]:
+    cmd_id = f"up{len(outbox.lines)}"
+    return await _command(
+        inbox, outbox, {"id": cmd_id, "type": "use_profile", "name": name, **kw}
+    )
+
+
+async def test_use_profile_applies_every_dimension(tmp_path: Path) -> None:
+    session = Session.new(tmp_path / "s.jsonl", model="start-model")
+    server, inbox, outbox, task = _profile_server(session)
+
+    resp = await _use(inbox, outbox, "reviewer")
+
+    assert resp["success"] is True
+    assert server.agent.model == "o3"
+    assert "You are adversarial." in (server.agent.system_prompt or "")
+    assert sorted(t.name for t in server.agent.tools) == ["_p_read"]
+    inbox.close()
+    await task
+
+
+async def test_a_switch_that_cannot_resolve_changes_nothing(tmp_path: Path) -> None:
+    """Every dimension or none. A partial switch reporting success is worse
+    than no switch."""
+    session = Session.new(tmp_path / "s.jsonl", model="start-model")
+    server, inbox, outbox, task = _profile_server(session)
+
+    resp = await _use(inbox, outbox, "nonexistent")
+
+    assert resp["success"] is False
+    assert server.agent.model == "start-model"
+    assert sorted(t.name for t in server.agent.tools) == ["_p_read", "_p_write"]
+    assert session.profile is None
+    inbox.close()
+    await task
+
+
+async def test_switching_back_widens_the_toolset_again(tmp_path: Path) -> None:
+    """The reason the full registry is retained separately: projecting from the
+    already-narrowed set would make every switch a ratchet."""
+    session = Session.new(tmp_path / "s.jsonl", model="start-model")
+    server, inbox, outbox, task = _profile_server(session)
+
+    await _use(inbox, outbox, "reviewer")
+    assert sorted(t.name for t in server.agent.tools) == ["_p_read"]
+    await _use(inbox, outbox, "builder")
+
+    assert sorted(t.name for t in server.agent.tools) == ["_p_read", "_p_write"]
+    inbox.close()
+    await task
+
+
+async def test_the_switch_is_recorded(tmp_path: Path) -> None:
+    path = tmp_path / "s.jsonl"
+    session = Session.new(path, model="start-model")
+    _server, inbox, outbox, task = _profile_server(session)
+
+    await _use(inbox, outbox, "reviewer")
+
+    # The applied model, not the declared one — they differ when a profile
+    # names no model and keeps whatever is running.
+    reloaded = Session.load(path)
+    assert (reloaded.profile, reloaded.model) == ("reviewer", "o3")
+    inbox.close()
+    await task
+
+
+async def test_use_profile_is_refused_mid_turn(tmp_path: Path) -> None:
+    session = Session.new(tmp_path / "s.jsonl", model="start-model")
+    server, inbox, outbox, task = _profile_server(session)
+
+    pending = asyncio.create_task(asyncio.Event().wait())
+    server._current_run = pending  # type: ignore[assignment]
+    resp = await _use(inbox, outbox, "reviewer")
+
+    assert resp["success"] is False
+    assert "in flight" in resp["error"]
+    assert server.agent.model == "start-model"
+    pending.cancel()
+    inbox.close()
+    await task
+
+
+async def test_fork_opens_a_linked_transcript(tmp_path: Path) -> None:
+    root = tmp_path / "run.jsonl"
+    session = Session.new(root, model="start-model")
+    server, inbox, outbox, task = _profile_server(session)
+
+    resp = await _use(inbox, outbox, "reviewer", transcript="fork")
+
+    forked = Path(resp["data"]["session"])
+    assert forked != root and forked.exists()
+    assert server.session is not None and server.session.path == forked
+    # Linked per #62, in both directions.
+    assert Session.load(forked).header.origin == "profile"
+    assert Session.load(forked).header.parent_session == str(root)
+    (link,) = session_continuations(read_transcript(root)[1])
+    assert (link.path, link.reason) == (forked.name, "profile")
+    inbox.close()
+    await task
+
+
+async def test_fork_does_not_touch_history(tmp_path: Path) -> None:
+    """ADR Decision 4: a switch changes which file the turns are written to,
+    not what the agent still holds. A caller wanting a clean slate composes
+    `clear_context` after."""
+    session = Session.new(tmp_path / "run.jsonl", model="start-model")
+    server, inbox, outbox, task = _profile_server(session)
+    server.agent.history = [UserMessage(content="build the parser")]
+
+    await _use(inbox, outbox, "reviewer", transcript="fork")
+
+    assert [str(m.content) for m in server.agent.history] == ["build the parser"]
+    inbox.close()
+    await task
+
+
+async def test_resume_last_returns_to_the_thread_it_left(tmp_path: Path) -> None:
+    """The round trip the option exists for: build, fork to a reviewer so the
+    build conversation cannot cloud the review, then pick the build thread back
+    up where it was."""
+    root = tmp_path / "run.jsonl"
+    session = Session.new(root, model="start-model")
+    session.append(UserMessage(content="build the parser"))
+    server, inbox, outbox, task = _profile_server(session)
+
+    await _use(inbox, outbox, "builder")
+    await _use(inbox, outbox, "reviewer", transcript="fork")
+    resp = await _use(inbox, outbox, "builder", transcript="resume_last")
+
+    assert resp["data"]["transcript"] == "resume_last"
+    assert Path(resp["data"]["session"]) == root
+    assert [str(m.content) for m in server.agent.history] == ["build the parser"]
+    assert sorted(t.name for t in server.agent.tools) == ["_p_read", "_p_write"]
+    inbox.close()
+    await task
+
+
+async def test_resume_last_falls_back_when_there_is_nothing_to_resume(tmp_path: Path) -> None:
+    """A profile's first use in a session is an ordinary first run, not an
+    error — a client cannot know whether one has been used before without
+    asking. The response says which happened."""
+    session = Session.new(tmp_path / "run.jsonl", model="start-model")
+    _server, inbox, outbox, task = _profile_server(session)
+
+    resp = await _use(inbox, outbox, "reviewer", transcript="resume_last")
+
+    assert resp["success"] is True
+    assert (resp["data"]["requested"], resp["data"]["transcript"]) == ("resume_last", "fork")
+    inbox.close()
+    await task
+
+
+async def test_the_configured_fallback_is_honoured(tmp_path: Path) -> None:
+    session = Session.new(tmp_path / "run.jsonl", model="start-model")
+    _server, inbox, outbox, task = _profile_server(session, resume_fallback="continue")
+
+    resp = await _use(inbox, outbox, "reviewer", transcript="resume_last")
+
+    assert resp["data"]["transcript"] == "continue"
+    assert Path(resp["data"]["session"]).name == "run.jsonl"
+    inbox.close()
+    await task
+
+
+async def test_a_thread_that_switched_away_is_not_a_candidate(tmp_path: Path) -> None:
+    """ADR Decision 5 read backwards: which profile a transcript is under is the
+    *last* one recorded in it."""
+    session = Session.new(tmp_path / "run.jsonl", model="start-model")
+    _server, inbox, outbox, task = _profile_server(session)
+
+    # The root ends up under `reviewer`, so resuming `builder` finds nothing.
+    await _use(inbox, outbox, "builder")
+    await _use(inbox, outbox, "reviewer")
+    resp = await _use(inbox, outbox, "builder", transcript="resume_last")
+
+    assert resp["data"]["transcript"] == "fork"
+    inbox.close()
+    await task
+
+
+async def test_a_subagent_transcript_is_never_resumed(tmp_path: Path) -> None:
+    """They are delegations, not profile excursions. Resuming one as though it
+    were a thread would be wrong rather than untidy."""
+    root = tmp_path / "run.jsonl"
+    session = Session.new(root, model="start-model")
+    child = tmp_path / "run.explore-c1.jsonl"
+    with Session.new(
+        child, model="m", origin="subagent", parent_session=str(root)
+    ) as c:
+        c.set_profile(name="reviewer", model="o3", system_prompt="p")
+    session.append_continued(path=child.name, reason="subagent")
+    _server, inbox, outbox, task = _profile_server(session)
+
+    resp = await _use(inbox, outbox, "reviewer", transcript="resume_last")
+
+    assert Path(resp["data"]["session"]) != child
+    inbox.close()
+    await task
+
+
+async def test_profile_names_are_an_enum_in_the_command_schema(tmp_path: Path) -> None:
+    """Discovery is the only source of profiles, so an empty set is an empty
+    enum rather than 'anything goes'. A name is never a free string."""
+    _server, inbox, outbox, task = _profile_server(None)
+
+    commands = await _commands(inbox, outbox)
+
+    switch = next(c for c in commands if c["name"] == "use_profile")
+    assert switch["parameters"]["properties"]["name"]["enum"] == ["builder", "reviewer"]
     inbox.close()
     await task
 

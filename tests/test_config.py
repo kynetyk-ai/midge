@@ -256,6 +256,20 @@ def test_the_environment_beats_the_file_for_the_default_profile(
     assert config.default_profile == "from-env"
 
 
+def test_the_resume_fallback_is_named_in_the_file(tmp_path: Path) -> None:
+    assert _load(tmp_path).resume_fallback == "fork"
+    config = _load(tmp_path, project='[profiles]\nresume_fallback = "continue"')
+    assert config.resume_fallback == "continue"
+
+
+def test_a_bad_resume_fallback_degrades_and_says_so(tmp_path: Path) -> None:
+    # The rule everywhere here: a typo must not stop the harness from starting,
+    # and must not silently change what it does either.
+    config, events = _diagnose(tmp_path, '[profiles]\nresume_fallback = "sideways"')
+    assert config.resume_fallback == "fork"
+    assert "config_value_invalid" in events
+
+
 def test_the_session_directory_is_named_in_the_file(tmp_path: Path) -> None:
     config = _load(tmp_path, project='[session]\ndir = "~/transcripts"')
     assert config.session.dir == Path.home() / "transcripts"

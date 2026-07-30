@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from typing import Literal, TypeAlias
 
 import pytest
 
@@ -23,10 +24,13 @@ from midge.persistence import (
     fold_history,
     read_transcript,
     resolve_session_path,
+    session_chain,
     session_continuations,
     session_model,
     session_prompt,
 )
+
+Origin: TypeAlias = Literal["subagent", "profile", "fork"]
 
 
 def test_new_session_writes_header(tmp_path: Path) -> None:
@@ -673,6 +677,129 @@ def test_forward_links_do_not_move_the_version(tmp_path: Path) -> None:
 
     header, _entries = read_transcript(path)
     assert header.version == 2
+
+
+# --- profiles: one record for one act (#67) --------------------------------
+
+
+def test_a_profile_record_is_not_folded_into_history(tmp_path: Path) -> None:
+    path = tmp_path / "s.jsonl"
+    with Session.new(path, model="m") as s:
+        s.append(UserMessage(content="hello"))
+        s.set_profile(name="reviewer", model="o3", system_prompt="be adversarial")
+
+    assert _messages(path) == ["hello"]
+
+
+def test_a_switch_writes_one_record_not_two(tmp_path: Path) -> None:
+    """#57's constraint. A model change plus a prompt change is three facts a
+    reader has to correlate and infer were one decision; naming the profile is
+    what makes it one."""
+    path = tmp_path / "s.jsonl"
+    with Session.new(path, model="m") as s:
+        s.set_profile(name="reviewer", model="o3", system_prompt="be adversarial")
+
+    types = [json.loads(ln)["type"] for ln in path.read_text().splitlines()]
+    assert types == ["header", "profile"]
+
+
+def test_a_profile_sets_the_model_and_prompt_on_resume(tmp_path: Path) -> None:
+    path = tmp_path / "s.jsonl"
+    with Session.new(path, model="m", system_prompt="original") as s:
+        s.set_profile(name="reviewer", model="o3", system_prompt="be adversarial")
+
+    loaded = Session.load(path)
+    assert (loaded.profile, loaded.model, loaded.system_prompt) == (
+        "reviewer",
+        "o3",
+        "be adversarial",
+    )
+
+
+def test_the_last_write_wins_across_record_types(tmp_path: Path) -> None:
+    """A model comes from either a `model_change` or a `profile`, and which is
+    authoritative is simply which came last — not which kind it is."""
+    path = tmp_path / "s.jsonl"
+    with Session.new(path, model="m") as s:
+        s.set_profile(name="reviewer", model="o3", system_prompt="p1")
+        s.set_model("granite")
+    assert Session.load(path).model == "granite"
+
+    other = tmp_path / "t.jsonl"
+    with Session.new(other, model="m") as s:
+        s.set_model("granite")
+        s.set_profile(name="reviewer", model="o3", system_prompt="p1")
+    assert Session.load(other).model == "o3"
+
+
+def test_the_last_profile_is_the_one_it_is_running_under(tmp_path: Path) -> None:
+    # ADR Decision 5. A thread that has since switched away is running under
+    # what it switched to, which is what excludes it as a `resume_last` target.
+    path = tmp_path / "s.jsonl"
+    with Session.new(path, model="m") as s:
+        s.set_profile(name="builder", model="m", system_prompt="p")
+        s.set_profile(name="reviewer", model="m", system_prompt="p")
+    assert Session.load(path).profile == "reviewer"
+
+
+def test_a_session_that_never_switched_has_no_profile(tmp_path: Path) -> None:
+    path = tmp_path / "s.jsonl"
+    Session.new(path, model="m").close()
+    assert Session.load(path).profile is None
+
+
+def test_a_profile_record_does_not_move_the_version(tmp_path: Path) -> None:
+    """An older build skipping it leaves model and prompt at whatever the
+    records before it said — that build's own reading of the session. Nothing
+    a user discarded is restored, which is the test `clear` failed in #55."""
+    path = tmp_path / "s.jsonl"
+    with Session.new(path, model="m") as s:
+        s.set_profile(name="reviewer", model="o3", system_prompt="p")
+
+    header, _entries = read_transcript(path)
+    assert header.version == 2
+
+
+# --- walking a session's transcripts ---------------------------------------
+
+
+def _linked(
+    tmp_path: Path,
+    parent: str,
+    child: str,
+    *,
+    origin: Origin,
+) -> None:
+    with Session.new(tmp_path / parent, model="m") as p:
+        p.append_continued(path=child, reason="profile")
+    Session.new(
+        tmp_path / child, model="m", origin=origin, parent_session=str(tmp_path / parent)
+    ).close()
+
+
+def test_the_chain_is_walkable_from_any_member(tmp_path: Path) -> None:
+    """Up through `parent_session` to the root, then down through `continued` —
+    which is why #62 added both directions. A back-pointer alone would make
+    this a directory scan, and a session owns no directory."""
+    _linked(tmp_path, "root.jsonl", "root.fork.jsonl", origin="profile")
+
+    from_root = session_chain(tmp_path / "root.jsonl")
+    from_leaf = session_chain(tmp_path / "root.fork.jsonl")
+    assert from_root == from_leaf == [tmp_path / "root.jsonl", tmp_path / "root.fork.jsonl"]
+
+
+def test_a_lone_transcript_is_its_own_chain(tmp_path: Path) -> None:
+    path = tmp_path / "s.jsonl"
+    Session.new(path, model="m").close()
+    assert session_chain(path) == [path]
+
+
+def test_a_deleted_link_stops_the_walk_rather_than_raising(tmp_path: Path) -> None:
+    # A chain is an audit convenience; asking "where else have I been" should
+    # not fail because one file was cleaned up.
+    with Session.new(tmp_path / "root.jsonl", model="m") as p:
+        p.append_continued(path="gone.jsonl", reason="profile")
+    assert session_chain(tmp_path / "root.jsonl") == [tmp_path / "root.jsonl"]
 
 
 # --- where a transcript goes -----------------------------------------------

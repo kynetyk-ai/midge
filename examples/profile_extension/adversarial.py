@@ -20,9 +20,17 @@ catches.
 A profile file is an ordinary extension file — one `.py` may declare a tool, a
 sub-agent and a profile together. There is no `--profile-dir`.
 
-Note what this does *not* do yet: **nothing applies a profile.** Discovery,
-validation and enumeration (`get_profiles` over RPC) are all that exist today;
-switching to a profile at runtime is issue #67.
+`--profile` applies it at startup. Over RPC, `use_profile` switches at runtime —
+every dimension at once, refused mid-turn, and recorded so any message is
+attributable to the configuration that produced it:
+
+    {"id":"1","type":"use_profile","name":"adversarial-reviewer",
+     "transcript":"fork"}
+
+`transcript` says where the turns go. `continue` stays on this one; `fork` opens
+a linked transcript so an excursion's turns do not sit in the original file; and
+`resume_last` returns to this session's most recent thread under the named
+profile, which is what makes a fork a round trip rather than a one-way door.
 """
 
 from __future__ import annotations

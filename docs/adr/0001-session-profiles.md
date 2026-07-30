@@ -1,8 +1,10 @@
 # ADR 0001 — Session profiles
 
-- **Status:** Accepted — **amended 2026-07-30** (Decision 4: a third transcript
-  option, `resume_last`; Decision 9: hooks are decided exhaustively). See
-  [Amendments](#amendments).
+- **Status:** Accepted and **implemented** — **amended 2026-07-30** (Decision 4:
+  a third transcript option, `resume_last`; Decision 9: hooks are decided
+  exhaustively). See [Amendments](#amendments). Every decision here now has code
+  behind it: #61 (profiles), #60 (hook scoping), #62 (transcript links), #63
+  (reopen), #67 (`use_profile`).
 - **Date:** 2026-07-30
 - **Supersedes:** the forking half of #49
 - **Related:** #44 (sub-agents), #54 (reload), #55 (session markers), #57 (durability bug)
@@ -395,10 +397,14 @@ with the defaults visible.
 > rather than block, which also means a session recorded against a since-retired
 > model no longer refuses to start.
 >
-> This is what Decision 5 will supersede: once a switch records a profile, the
-> profile is the better thing to restore, and the base prompt becomes its
-> fallback. A recorded profile that is no longer discovered should warn, on the
-> same principle — report the mismatch, let the operator reconsider the config.
+> **Superseded in part by #67**, as anticipated. A switch now records a profile,
+> and both resume paths restore it: the recorded profile wins over `[profiles]
+> default` and loses to `--profile`, which is the same precedence the model
+> follows. The base prompt is its fallback, and a recorded profile that is no
+> longer discovered warns (`resume_profile_unavailable`) rather than refusing.
+> What stands unchanged is the model rule — a profile names its own model, so a
+> restored profile sets it, and a *loose* recorded model is still only a stored
+> prior choice.
 - **Sub-agents are the existing proof of this shape**: file-per-run, parent
   pointer, own prompt, own tool subset. They stay a separate concept (Decision 8).
 - **`Hooks` grows source-scoped activation**, the one new mechanism.
