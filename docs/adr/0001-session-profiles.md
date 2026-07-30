@@ -1,6 +1,6 @@
 # ADR 0001 — Session profiles
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-07-30
 - **Supersedes:** the forking half of #49
 - **Related:** #44 (sub-agents), #54 (reload), #55 (session markers), #57 (durability bug)
@@ -8,9 +8,9 @@
 ## Target functionality
 
 Retarget a running agent — new instructions, a different toolset, a different
-model — and later retarget it back. The motivating case is an agent that has just
-built a feature and should now review that work adversarially, then return to
-building.
+model — and later retarget it to something else again. The motivating case is an
+agent that has just built a feature and should now review that work
+adversarially, then go back to building.
 
 A **profile** is the unit of retargeting:
 
@@ -107,23 +107,48 @@ by name, but `notes/subagents.md` is explicit that telling a model it has a tool
 the registry will reject is misinformation rather than access control. A profile
 changes what the agent is, so the schemas it receives must match.
 
+Projection has a consequence worth stating: **a profile switch never changes which
+sources are loaded.** Discovery stays exactly as it is, and a profile only narrows
+what is projected from what was already discovered. So the property that makes
+sources immutable at `RpcServer.__init__` — a reload cannot silently widen a
+registry an embedder deliberately restricted — survives untouched, and profiles
+need no mutable source configuration. A profile naming a tool that no source
+provides simply fails validation (Decision 9).
+
 **Hooks are the only gap.** `Hooks.clear()` is all-or-nothing, `on()` returns an
 unsubscribe closure that `load_extensions` discards, and the `source` on every
 registration is read only to name a file in a warning. Source-scoped activation is
 required. It was designed during #54 and dropped as premature because
 `load_extensions` was the only registrar; profiles are its consumer.
 
-### 4. Switching is atomic, and has no options
+### 4. Switching selects a named profile, atomically, with exactly one option
 
 A switch applies every dimension or none, and is refused while a turn is in flight
 (as `reload` already is — swapping a registry mid-turn breaks tool-call/result
 pairing).
 
-**A switch does not touch history.** No context options on the command: no
-summarize-first, no carry-N, no clear-on-switch. A caller who wants a clean slate
-runs `clear_context` after switching; one who wants a summary runs `compact`.
-Composing existing commands keeps `use_profile` a single-purpose operation, and
-the alternative is a switch command that accumulates context-handling flags.
+**There is no revert.** A switch always names the profile to apply. Going back to
+what you were doing is switching to that profile by name — there is no previous-
+profile stack and no undo. That keeps the operation stateless and means a client
+never has to reason about how deep it is in a sequence of excursions.
+
+**A switch does not touch history.** No summarize-first, no carry-N, no
+clear-on-switch. A caller who wants a clean slate runs `clear_context` after
+switching; one who wants a summary runs `compact`. Composing existing commands
+keeps this single-purpose; the alternative is a switch that accumulates
+context-handling flags.
+
+**The one option is the transcript**, and it has two values:
+
+| | what it does |
+|---|---|
+| **switch and continue** | stay on the same transcript; append a profile record |
+| **switch and fork** | open a new transcript, linked per Decision 2 |
+
+Nothing else. The distinction is worth an option because the two are genuinely
+different intents — an excursion whose turns should not sit in the original file
+versus a retarget that continues the same thread — and because a forked transcript
+is what makes the excursion legible later.
 
 Atomicity is why this is one operation rather than documented guidance. A client
 hand-orchestrating a switch today gets `success: true` from `set_system_prompt`
@@ -203,12 +228,16 @@ import and is checkable by `pyright`; frontmatter defers every error to runtime.
 That a system prompt is prose is a real argument for Markdown, but a triple-quoted
 string is adequate and does not justify a second file format.
 
-`SubagentSpec` is already this dataclass in all but name — `name`, `prompt`,
-`tools`, `model`, plus `timeout`. Whether they converge is left open below.
-
 Since profiles are `.py` files holding instances, `load_extensions` can collect
 them with no new loader and no new flag: one file may declare a tool, a sub-agent
 and a profile together. A dedicated `--profile-dir` is the alternative.
+
+**`Profile` does not converge with `SubagentSpec`.** Their fields nearly coincide —
+`name`, `prompt`, `tools`, `model` — but they are different concepts: a sub-agent
+is *a tool the agent uses*, a profile is *what the agent is*. One is invoked by the
+model as a delegation; the other is applied by an operator as a reconfiguration.
+Unifying them would put a `timeout` on a profile and imply that either can stand in
+for the other. The overlapping fields are acceptable duplication.
 
 ### 9. A bad profile is skipped with a warning
 
@@ -218,26 +247,25 @@ not load, so asking to switch to it fails at the switch with a clear error rathe
 than silently granting fewer tools than it claims. Name collisions are
 first-wins-and-warn, as `tool_name_shadowed` and `skill_name_shadowed` already do.
 
-## Open questions
+### 10. A central config names the default profile
 
-- **A default profile, and where it is configured.** Discovery supplies the set;
-  something must name the one to start under. A `--profile NAME` flag is the
-  smallest answer. A central config file is the other, and midge has none today —
-  everything is flags and environment variables — so introducing one is itself a
-  decision.
-- **Does `SubagentSpec` converge with `Profile`?** The data is nearly identical
-  and duplicating it is a smell. The behavioural difference is real: a sub-agent is
-  delegation the model invokes, a profile is reconfiguration an operator invokes.
-  If they converge, #44 becomes the first implementation of this ADR.
-- **Same transcript or a new one on switch?** The default is the same file with an
-  appended record, per Decision 5. Whether a switch may optionally open a new
-  transcript is unresolved — it is one boolean, but it interacts with Decision 2's
-  linkage requirements and risks becoming the first of several options Decision 4
-  exists to prevent.
-- **How does switchable source configuration keep its current property?** Sources
-  are immutable at `RpcServer.__init__` deliberately, so a reload cannot silently
-  widen a registry an embedder restricted. Making them switchable must preserve
-  that.
+Discovery supplies the set of profiles; something has to name the one to start
+under. That is a central config file rather than another flag.
+
+midge has no config file today — everything is command-line flags plus eight
+environment variables. Introducing one is a real decision, and the reason to take
+it here is that a config file is **self-documenting** in a way scattered
+environment variables are not: a reader sees what is configurable in one place,
+with the defaults visible.
+
+## Follow-on work
+
+- **Consolidate ad-hoc configuration into the config file**, as a separate
+  workstream. Today: `MIDGE_MODEL`, `MIDGE_INCLUDE_USAGE`, `MIDGE_LOG_LEVEL`,
+  `MIDGE_LOG_LEVEL_OPENAI`, `MIDGE_LOG_FILE`, `MIDGE_LOG_PAYLOAD_CHARS`,
+  `OPENAI_BASE_URL`, and `OPENAI_API_KEY`. All but the API key are candidates —
+  a credential belongs in the environment, not in a file that gets committed.
+  Worth doing on its own rather than smuggled in alongside profiles.
 
 ## Consequences
 
@@ -249,5 +277,7 @@ first-wins-and-warn, as `tool_name_shadowed` and `skill_name_shadowed` already d
 - **`switch_session` is not a primitive** — it is "apply profile, open session",
   and it requires #57.
 - **Sub-agents are the existing proof of this shape**: file-per-run, parent
-  pointer, own prompt, own tool subset.
+  pointer, own prompt, own tool subset. They stay a separate concept (Decision 8).
 - **`Hooks` grows source-scoped activation**, the one new mechanism.
+- **midge gains a config file**, which it has not had. Everything configurable has
+  been a flag or an environment variable until now.
