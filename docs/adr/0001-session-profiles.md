@@ -1,6 +1,7 @@
 # ADR 0001 — Session profiles
 
-- **Status:** Accepted
+- **Status:** Accepted — **amended 2026-07-30** (Decision 4: a third transcript
+  option, `resume_last`). See [Amendments](#amendments).
 - **Date:** 2026-07-30
 - **Supersedes:** the forking half of #49
 - **Related:** #44 (sub-agents), #54 (reload), #55 (session markers), #57 (durability bug)
@@ -86,6 +87,12 @@ Required:
 This is a first-class requirement, not a detail. A transcript that cannot say what
 it belongs to is not an audit trail.
 
+> **Amended 2026-07-30.** This decision is now load-bearing for behaviour rather
+> than only for legibility: `resume_last` (Decision 4) resolves its candidate
+> transcripts by walking this chain, and excludes sub-agent runs by their
+> `origin`. Both fields moved from "an audit trail should say this" to "a switch
+> cannot be implemented without this".
+
 ### 3. Existing mechanisms and gaps
 
 | dimension | mechanism | status |
@@ -123,6 +130,9 @@ required. It was designed during #54 and dropped as premature because
 
 ### 4. Switching selects a named profile, atomically, with exactly one option
 
+> **Amended 2026-07-30.** The transcript option gained a third value,
+> `resume_last`. The original two are unchanged.
+
 A switch applies every dimension or none, and is refused while a turn is in flight
 (as `reload` already is — swapping a registry mid-turn breaks tool-call/result
 pairing).
@@ -132,23 +142,78 @@ what you were doing is switching to that profile by name — there is no previou
 profile stack and no undo. That keeps the operation stateless and means a client
 never has to reason about how deep it is in a sequence of excursions.
 
+`resume_last` does not weaken this. It changes *which transcript you land on*,
+never *how you name the destination*: the caller still names a profile, and the
+transcript is then derived from what is on disk. There is still no stack, nothing
+to pop, and no notion of "back one" — resuming the general agent's thread and
+then resuming it again is idempotent, where a real undo would not be.
+
 **A switch does not touch history.** No summarize-first, no carry-N, no
 clear-on-switch. A caller who wants a clean slate runs `clear_context` after
 switching; one who wants a summary runs `compact`. Composing existing commands
 keeps this single-purpose; the alternative is a switch that accumulates
 context-handling flags.
 
-**The one option is the transcript**, and it has two values:
+**The one option is the transcript**, and it has three values:
 
 | | what it does |
 |---|---|
-| **switch and continue** | stay on the same transcript; append a profile record |
-| **switch and fork** | open a new transcript, linked per Decision 2 |
+| **continue** | stay on the same transcript; append a profile record |
+| **fork** | open a new transcript, linked per Decision 2 |
+| **resume_last** | reopen this session's most recent transcript under the named profile; fall back per config if there is none |
 
-Nothing else. The distinction is worth an option because the two are genuinely
-different intents — an excursion whose turns should not sit in the original file
-versus a retarget that continues the same thread — and because a forked transcript
-is what makes the excursion legible later.
+Nothing else. The distinction is worth an option because these are genuinely
+different intents — an excursion whose turns should not sit in the original file,
+a retarget that continues the same thread, and a return to a thread already under
+way — and because a forked transcript is what makes the excursion legible later.
+
+**What `resume_last` is for.** The motivating round trip is not one switch but
+three:
+
+1. The general agent builds a feature on the root transcript.
+2. `use_profile("reviewer", fork)` — a *fork*, deliberately, so the build
+   conversation cannot cloud the review.
+3. `use_profile("general", resume_last)` — back to the build thread, picking up
+   where it left off.
+
+Step 3 is unserviceable by the original two options. `continue` would drag the
+review into the build thread, and `fork` would open a third transcript with none
+of the build context — the switch back would cost exactly the conversation the
+excursion was designed to protect. Without `resume_last`, an excursion is
+one-way.
+
+**"Last" is scoped to the current session, and nothing wider.** The candidate set
+is the transcripts of *this* session — the chain reachable through
+`parent_session` and the forward `continued` records of Decision 2. It is not a
+directory scan, not a configured sessions directory, and not a search of other
+sessions. Resuming an unrelated conversation because it happened to run under the
+same profile is not what the caller asked for; "where I left off" means in this
+session.
+
+Two things follow, both worth having:
+
+- **Decision 2 becomes load-bearing rather than hygienic.** The forward
+  `continued` record is what makes the chain walkable without a directory scan,
+  and the `origin` discriminant is what excludes sub-agent transcripts — which
+  are `origin: subagent`, not profile excursions, and must never be resumed as
+  one.
+- **Session discovery (#64) is not a dependency.** `resume_last` needs no listing
+  and no default session location, so midge's refusal to impose one survives
+  this amendment untouched.
+
+**Which profile a transcript is "under" is the last profile record in it**, per
+Decision 5. A thread that has itself since switched away is not a candidate, and
+this needs no new state — it is the existing rule read backwards.
+
+**With no prior transcript, the fallback is configured, not invented.** The first
+use of a profile in a session has nothing to resume, and that is an ordinary
+first run rather than an error: the switch must still succeed, because a client
+cannot know whether a profile has been used before without asking. The fallback
+is `fork` or `continue`, named in config (`[profiles] resume_fallback`), and the
+response says which happened so a client can render it. **The shipped default is
+`fork`** — a caller reaching for `resume_last` is working in a thread-per-profile
+model, and `fork` is that model's first-run behaviour, where `continue` would
+silently merge two threads that the option exists to keep apart.
 
 Atomicity is why this is one operation rather than documented guidance. A client
 hand-orchestrating a switch today gets `success: true` from `set_system_prompt`
@@ -249,6 +314,12 @@ first-wins-and-warn, as `tool_name_shadowed` and `skill_name_shadowed` already d
 
 ### 10. A central config names the default profile
 
+> **Amended 2026-07-30.** A second profile key follows from Decision 4:
+> `[profiles] resume_fallback`, `fork` (the default) or `continue`, deciding what
+> `resume_last` does when the named profile has no prior transcript in this
+> session. It belongs here for the reason this decision already gives — it is a
+> setting, and settings live in one discoverable file.
+
 Discovery supplies the set of profiles; something has to name the one to start
 under. That is a central config file rather than another flag.
 
@@ -281,3 +352,38 @@ with the defaults visible.
 - **`Hooks` grows source-scoped activation**, the one new mechanism.
 - **midge gains a config file**, which it has not had. Everything configurable has
   been a flag or an environment variable until now.
+- **An excursion is a round trip, not a one-way door** (amendment). `resume_last`
+  makes fork-and-return the expected shape, which promotes Decision 2 from
+  legibility to mechanism and makes #62 and #63 hard dependencies of the switch.
+  Session discovery (#64) is not one.
+
+## Amendments
+
+### 2026-07-30 — `resume_last`, a third transcript option
+
+**What changed.** Decision 4's transcript option went from two values to three.
+Decision 2 was re-scoped from legibility to mechanism, and Decision 10 gained
+`[profiles] resume_fallback`. Nothing was reversed: `continue` and `fork` behave
+exactly as originally accepted.
+
+**Why.** The original two options made an excursion one-way. The motivating flow —
+build on the general agent, fork to a reviewer so the build conversation cannot
+cloud the review, then return to the build thread — has no third step under the
+original design, because `continue` would drag the review back into the build
+thread and `fork` would abandon the build context entirely. The option that
+protects the review is the same option that strands it.
+
+**What was considered and rejected.** Searching for the last conversation under a
+profile *outside* the current session — a directory scan of siblings, or a
+configured sessions directory. Rejected: "pick up where I left off" means in this
+session, and resuming an unrelated conversation because it shared a profile is
+not what the caller asked for. It would also have forced midge to impose a
+default session location, which it has consistently declined to do, and made
+`resume_last` depend on session discovery (#64). Scoping to the session's own
+transcript chain avoids all three.
+
+**What it does not reopen.** Decision 1 (no entry tree) stands: `resume_last`
+names a whole transcript, not a position inside one, which is precisely the case
+Decision 1 said needs no cut point. Decision 4's "no revert" stands too — the
+caller still names a profile, never a stack position, and resuming twice is
+idempotent where an undo would not be.

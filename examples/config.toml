@@ -80,6 +80,18 @@ model = "gpt-4o-mini"
 # setting, one spelling.
 
 
+[profiles]
+# The profile to start under, by name. A profile is a named bundle of system
+# prompt, model, tool subset and active hooks, declared as a `Profile` instance
+# in an extension `.py` file and discovered through `--extension-dir` — there is
+# no separate profile directory. See `examples/profile_extension/`.
+#
+# Omit to start under no profile, which is what midge has always done. A name
+# that matches no discovered profile is refused at startup rather than ignored.
+# Flag: --profile   Env: MIDGE_PROFILE
+# default = "adversarial-reviewer"
+
+
 [retry]
 # How many times a request may be attempted in total, and the base for the
 # exponential backoff between attempts, in seconds. Only errors the provider

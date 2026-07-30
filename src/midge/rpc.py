@@ -58,9 +58,12 @@ from midge.client import (
     ToolCallStart,
 )
 from midge.compaction import compact
+from midge.config import emit as emit_diagnostics
 from midge.extensions import load_extensions
 from midge.messages import AssistantMessage, TextContent, ToolCall, UserMessage
 from midge.persistence import Session, read_transcript
+from midge.profiles import ProfileSet
+from midge.profiles import validate as validate_profiles
 from midge.session import export_html
 from midge.skills import Skill, load_skills, skill_message, skills_prompt
 from midge.subagents import bind_subagents
@@ -260,6 +263,7 @@ class RpcServer:
         base_prompt: str | None = None,
         extension_prompt: str = "",
         skills: Sequence[Skill] | None = None,
+        profiles: ProfileSet | None = None,
         extension_sources: Sequence[Path] | None = None,
         skill_sources: Sequence[Path] | None = None,
     ) -> None:
@@ -276,6 +280,10 @@ class RpcServer:
         self._base_prompt = base_prompt if base_prompt is not None else (agent.system_prompt or "")
         self._extension_prompt = extension_prompt
         self._skills: Sequence[Skill] = skills or ()
+        # Enumerable but not yet applicable: `use_profile` is #67. Held as the
+        # set rather than a list because the source path is part of what a
+        # client is shown, and only the set knows it.
+        self._profiles = profiles if profiles is not None else ProfileSet()
         # The exact source lists the entrypoint loaded from, so `reload` re-runs
         # the same call rather than reconstructing one. Reconstructing would mean
         # knowing which sources are built-in, and an embedder that handed the
@@ -357,6 +365,8 @@ class RpcServer:
                 await self._handle_get_last_assistant_text(cmd_id)
             case "get_system_prompt":
                 await self._handle_get_system_prompt(cmd_id)
+            case "get_profiles":
+                await self._handle_get_profiles(cmd_id)
             case "set_system_prompt":
                 await self._handle_set_system_prompt(cmd_id, cmd)
             case "set_model":
@@ -599,6 +609,40 @@ class RpcServer:
                 break
         await self._respond(
             cmd_id, "get_last_assistant_text", success=True, data={"text": text}
+        )
+
+    async def _handle_get_profiles(self, cmd_id: str | None) -> None:
+        """The profiles this process discovered, whole.
+
+        In the `get_*` family rather than `get_commands` because there is
+        nothing to invoke yet — `use_profile` is #67, and a listed command that
+        answered "not implemented" would be worse than an absent one. When it
+        lands, its `name` field narrows to an enum of these in
+        `_builtin_schema`, the way `set_model` already narrows against the model
+        registry, and a client renders the picker with nothing hardcoded.
+
+        Every field is returned rather than a name and description: a profile is
+        a configuration, and which tools and model it grants is exactly what a
+        user needs to see before choosing it.
+        """
+        await self._respond(
+            cmd_id,
+            "get_profiles",
+            success=True,
+            data={
+                "profiles": [
+                    {
+                        "name": p.name,
+                        "description": p.description,
+                        "model": p.model or None,
+                        "tools": list(p.tools),
+                        "hooks": list(p.hooks),
+                        "prompt": p.prompt,
+                        "source": str(path) if (path := self._profiles.path_of(p.name)) else None,
+                    }
+                    for p in self._profiles
+                ]
+            },
         )
 
     def _generated_prompt(self) -> str:
@@ -888,10 +932,11 @@ class RpcServer:
         # reflected even when only extensions were asked for.
         self.agent.system_prompt = self._compose_prompt()
         _logger.info(
-            "rpc_reloaded targets=%s tools=%d skills=%d",
+            "rpc_reloaded targets=%s tools=%d skills=%d profiles=%d",
             ",".join(targets),
             len(self.agent.tools),
             len(self._skills),
+            len(self._profiles),
         )
         await self._respond(
             cmd_id,
@@ -901,6 +946,7 @@ class RpcServer:
                 "targets": list(targets),
                 "tools": len(self.agent.tools),
                 "skills": len(self._skills),
+                "profiles": len(self._profiles),
             },
         )
 
@@ -914,9 +960,23 @@ class RpcServer:
             # `_Registration.source` is already stamped if this ever needs to
             # become a scoped removal.
             await hooks.clear()
+        # A fresh set, for the same reason the registry is: a re-import produces
+        # new instances, and a profile deleted from disk has to disappear.
+        profiles = ProfileSet()
         registry, self._extension_prompt = load_extensions(
-            self._extension_sources, hooks=hooks
+            self._extension_sources, hooks=hooks, profiles=profiles
         )
+        # After the load, so it validates against the tools and hooks that now
+        # exist rather than the ones that just went away.
+        emit_diagnostics(
+            validate_profiles(
+                profiles,
+                tools=registry,
+                hook_names=hooks.source_names() if hooks is not None else set(),
+                models=self.agent.client.registry,
+            )
+        )
+        self._profiles = profiles
         # Re-import produces new `SubagentTool` instances, so this binds the
         # fresh ones. The model comes off the agent so a `set_model` since
         # startup is respected rather than reverted.

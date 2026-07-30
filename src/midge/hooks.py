@@ -182,6 +182,10 @@ Unsubscribe: TypeAlias = Callable[[], None]
 class _Registration:
     handler: Handler
     source: str | None
+    # The extension's file stem. `source` is the full path, which is what a
+    # diagnostic needs and what nobody can write in a profile — a profile names
+    # `"approve"`, not `/home/…/approve.py`.
+    name: str | None = None
 
 
 class Hooks:
@@ -207,10 +211,21 @@ class Hooks:
     def set_context(self, context: Any) -> None:
         self.context = context
 
-    def observe(self, handler: Handler, *, source: str | None = None) -> Unsubscribe:
-        reg = _Registration(handler, source)
+    def observe(
+        self, handler: Handler, *, source: str | None = None, name: str | None = None
+    ) -> Unsubscribe:
+        reg = _Registration(handler, source, name)
         self._observers.append(reg)
         return lambda: _discard(self._observers, reg)
+
+    def source_names(self) -> set[str]:
+        """The names of every source that has registered something.
+
+        What a profile's `hooks=(...)` is checked against, and the identity
+        source-scoped activation (#60) will select on.
+        """
+        regs = [*self._observers, *(r for rs in self._handlers.values() for r in rs)]
+        return {r.name for r in regs if r.name is not None}
 
     # Overloads exist so pyright checks handler signatures per event type;
     # the implementation is a single string-keyed registry.
@@ -221,6 +236,7 @@ class Hooks:
         handler: Callable[..., CancelResult | Awaitable[CancelResult | None] | None],
         *,
         source: str | None = ...,
+        name: str | None = ...,
     ) -> Unsubscribe: ...
     @overload
     def on(
@@ -229,6 +245,7 @@ class Hooks:
         handler: Callable[..., TurnStartResult | Awaitable[TurnStartResult | None] | None],
         *,
         source: str | None = ...,
+        name: str | None = ...,
     ) -> Unsubscribe: ...
     @overload
     def on(
@@ -237,6 +254,7 @@ class Hooks:
         handler: Callable[..., ContextResult | Awaitable[ContextResult | None] | None],
         *,
         source: str | None = ...,
+        name: str | None = ...,
     ) -> Unsubscribe: ...
     @overload
     def on(
@@ -247,6 +265,7 @@ class Hooks:
         ],
         *,
         source: str | None = ...,
+        name: str | None = ...,
     ) -> Unsubscribe: ...
     @overload
     def on(
@@ -257,6 +276,7 @@ class Hooks:
         ],
         *,
         source: str | None = ...,
+        name: str | None = ...,
     ) -> Unsubscribe: ...
     @overload
     def on(
@@ -265,6 +285,7 @@ class Hooks:
         handler: Callable[..., ToolCallResult | Awaitable[ToolCallResult | None] | None],
         *,
         source: str | None = ...,
+        name: str | None = ...,
     ) -> Unsubscribe: ...
     @overload
     def on(
@@ -273,6 +294,7 @@ class Hooks:
         handler: Callable[..., ToolResultResult | Awaitable[ToolResultResult | None] | None],
         *,
         source: str | None = ...,
+        name: str | None = ...,
     ) -> Unsubscribe: ...
     @overload
     def on(
@@ -281,6 +303,7 @@ class Hooks:
         handler: Callable[..., CompactResult | Awaitable[CompactResult | None] | None],
         *,
         source: str | None = ...,
+        name: str | None = ...,
     ) -> Unsubscribe: ...
     @overload
     def on(
@@ -289,12 +312,17 @@ class Hooks:
         handler: Handler,
         *,
         source: str | None = ...,
+        name: str | None = ...,
     ) -> Unsubscribe: ...
     @overload
-    def on(self, type: str, handler: Handler, *, source: str | None = ...) -> Unsubscribe: ...
+    def on(
+        self, type: str, handler: Handler, *, source: str | None = ..., name: str | None = ...
+    ) -> Unsubscribe: ...
 
-    def on(self, type: str, handler: Handler, *, source: str | None = None) -> Unsubscribe:
-        reg = _Registration(handler, source)
+    def on(
+        self, type: str, handler: Handler, *, source: str | None = None, name: str | None = None
+    ) -> Unsubscribe:
+        reg = _Registration(handler, source, name)
         self._handlers.setdefault(type, []).append(reg)
         return lambda: _discard(self._handlers.get(type, []), reg)
 

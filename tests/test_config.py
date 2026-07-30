@@ -33,6 +33,7 @@ _VARS = (
     "MIDGE_LOG_LEVEL_OPENAI",
     "MIDGE_LOG_FILE",
     "MIDGE_LOG_PAYLOAD_CHARS",
+    "MIDGE_PROFILE",
     "OPENAI_BASE_URL",
 )
 
@@ -90,6 +91,7 @@ def test_no_file_anywhere_is_the_built_in_defaults(tmp_path: Path) -> None:
         provider=None,
         base_url=None,
         include_usage=None,
+        default_profile=None,
         compaction_threshold=None,
         compaction_keep_recent=DEFAULT_KEEP_RECENT,
         log=LogConfig(
@@ -226,6 +228,19 @@ def test_the_shipped_example_parses_with_no_diagnostics(tmp_path: Path) -> None:
     config = _load(tmp_path, project=example.read_text(encoding="utf-8"))
     # Everything uncommented in the example is a default, so this round-trips.
     assert config == Config()
+
+
+def test_the_default_profile_is_named_in_the_file(tmp_path: Path) -> None:
+    config = _load(tmp_path, project='[profiles]\ndefault = "adversarial-reviewer"')
+    assert config.default_profile == "adversarial-reviewer"
+
+
+def test_the_environment_beats_the_file_for_the_default_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MIDGE_PROFILE", "from-env")
+    config = _load(tmp_path, project='[profiles]\ndefault = "from-file"')
+    assert config.default_profile == "from-env"
 
 
 def test_a_log_file_path_expands_a_tilde(tmp_path: Path) -> None:

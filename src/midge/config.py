@@ -112,6 +112,9 @@ class Config:
     base_url: str | None = None
     # None means "whatever the provider declares"; True/False overrides it.
     include_usage: bool | None = None
+    # The profile to start under, by name. Discovery supplies the set; this
+    # names one of them. `--profile` outranks it.
+    default_profile: str | None = None
     compaction_threshold: int | None = None
     compaction_keep_recent: int = DEFAULT_KEEP_RECENT
     log: LogConfig = LogConfig()
@@ -133,6 +136,7 @@ class Config:
             provider=src.text("provider", "name", "MIDGE_PROVIDER"),
             base_url=src.text("provider", "base_url", "OPENAI_BASE_URL"),
             include_usage=src.flag("provider", "include_usage", "MIDGE_INCLUDE_USAGE"),
+            default_profile=src.text("profiles", "default", "MIDGE_PROFILE"),
             compaction_threshold=src.integer("compaction", "threshold"),
             compaction_keep_recent=src.integer(
                 "compaction", "keep_recent", default=DEFAULT_KEEP_RECENT
