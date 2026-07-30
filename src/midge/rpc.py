@@ -20,6 +20,48 @@ extensions from disk so a long-lived process picks up edits.
 Commands are dispatched serially; a `prompt` returns its response immediately
 after preflight and runs the agent in a background task while the dispatch
 loop continues reading stdin (so `abort` can interrupt).
+
+Transport
+---------
+
+`serve(read_line=, write=)` takes callables rather than a stream, so the loop is
+transport-agnostic — which is what lets the whole protocol be tested in-process
+without pipes. `serve_stdio` is one binding of that seam, and it owns the
+pipe-shaped decisions: `READ_LIMIT` exists because the default 64 KiB would turn
+a large pasted prompt into a `ValueError`, and `_stdout_writer` suspends rather
+than blocks because a pipe holds only ~64 KiB.
+
+**midge never listens on anything.** There is no socket, no port and no bind
+address anywhere in the package; the only network traffic is outbound, to the
+model provider. That is a property worth keeping rather than an omission: stdin
+and stdout are a *capability* handed to the process by whoever launched it, so
+access control is inherited from the OS and the container runtime and there is
+no authentication to write, no bind address to get wrong, and no way to expose
+the agent by accident. LSP and MCP make the same choice.
+
+Bridging to a socket is deliberately left to whoever deploys midge, because the
+right shape is decided by the client — a stdio pipe for an editor extension that
+already spawns processes, a WebSocket for a UI that needs server-push, a queue
+for anything request/response. Those are different concurrency models, not
+variations on a transport. What such a bridge inherits from here, and has to
+decide for itself:
+
+- **Anything that can send a line can run `bash`** with this process's
+  privileges. There is no notion of a caller and no authorization layer; the
+  protocol assumes the peer is already trusted. Gating that is what a
+  `tool_call` hook is for — see `examples/approval_extension/`, which applies to
+  sub-agents too.
+- **One client, one agent, one session, one process.** A second client would
+  share the same conversation and the same history. Multi-tenancy means multiple
+  processes.
+- **EOF terminates the loop** (`if not line: break`). Over a pipe that is right —
+  the parent is gone, so should we be. Over a socket it is a decision: a client
+  disconnecting mid-task probably should not kill the agent.
+- **`READ_LIMIT` and the writer's backpressure behaviour are tuned for pipes**
+  and should be revisited for a transport with different framing and buffering.
+
+Nothing here is a limit of the protocol; it is what the protocol currently
+assumes, recorded so a bridge author does not have to rediscover it.
 """
 
 from __future__ import annotations
