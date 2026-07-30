@@ -13,7 +13,7 @@ The user does not work in TypeScript and wants a codebase they can read, modify,
 ## Working with `pi-mono`
 
 - `../pi/` is **read-only reference material** (the `pi-mono` repo, checked out as `pi`). Do not edit it.
-- `notes/` holds the patterns extracted from `pi-mono` during the original port. When extending a subsystem, check there first to avoid re-reading the same TS code.
+- `notes/` holds the patterns extracted from `pi-mono` during the original port. When extending a subsystem, check there first to avoid re-reading the same TS code — but **treat it as a historical record, not as current documentation** (#76). Most of it was written *before* the code it describes, in the future tense; several notes reference code that has since moved or been deleted, and `providers/`, the model registry, `config.py` and `profiles.py` have no note at all. Verify anything load-bearing against the source.
 - Read for *concepts*, then write Python from scratch. Do not translate line-by-line.
 
 ### Vocabulary — deliberately aligned with `pi-mono`
@@ -144,7 +144,7 @@ src/midge/logs.py     # logging configuration (entrypoints only)
 src/midge/hooks.py    # lifecycle events + handler registry
 tests/              # pytest tests
 examples/           # entrypoints
-notes/              # patterns borrowed from pi-mono during reading passes
+notes/              # port-era reading notes; historical, may be stale (#76)
 ```
 
 ## Style
