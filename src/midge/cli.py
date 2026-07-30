@@ -31,6 +31,7 @@ from midge.providers import Capabilities, ModelRegistry
 from midge.rpc import RpcServer, serve_stdio
 from midge.skills import default_skill_dirs, load_skills, skills_prompt
 from midge.subagents import bind_subagents
+from midge.subagents import validate as validate_subagents
 from midge.tools import ToolRegistry
 from midge.tui import run_tui, tui_log_handler
 
@@ -255,6 +256,11 @@ def main(argv: list[str] | None = None) -> None:
     # in another file — and after the model registry, which is the third thing
     # a profile can name. A profile that fails is dropped, so the selection
     # below sees only profiles that would really work.
+    # Before profiles, because a profile's `tools` may name a `spawn_*` tool and
+    # a sub-agent that fails here is gone — so the profile is validated against
+    # the registry that will actually exist.
+    emit_config_diagnostics(validate_subagents(registry, models=model_registry))
+
     discovered = set(profiles.names())
     emit_config_diagnostics(
         validate_profiles(
@@ -358,6 +364,8 @@ def main(argv: list[str] | None = None) -> None:
         model=model,
         hooks=hooks,
         session=session,
+        max_concurrent=config.subagents.max_concurrent,
+        max_timeout=config.subagents.max_timeout,
     )
     agent = Agent(
         client=client,

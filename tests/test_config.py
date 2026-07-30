@@ -22,6 +22,7 @@ from midge.config import (
     LogConfig,
     ProviderConfig,
     RetryConfig,
+    SubagentConfig,
     config_paths,
     emit,
 )
@@ -254,6 +255,21 @@ def test_the_environment_beats_the_file_for_the_default_profile(
     monkeypatch.setenv("MIDGE_PROFILE", "from-env")
     config = _load(tmp_path, project='[profiles]\ndefault = "from-file"')
     assert config.default_profile == "from-env"
+
+
+def test_the_subagent_limits_are_named_in_the_file(tmp_path: Path) -> None:
+    # The two an operator owns. Prompt, tools, model and per-agent timeout are
+    # declared in the `.py` file, not here.
+    assert _load(tmp_path).subagents == SubagentConfig()
+    config = _load(tmp_path, project="[subagents]\nmax_concurrent = 2\nmax_timeout = 60")
+    assert (config.subagents.max_concurrent, config.subagents.max_timeout) == (2, 60.0)
+
+
+def test_there_is_no_max_depth_key(tmp_path: Path) -> None:
+    """Recursion is decided by an agent's own allowlist, and cycles are refused
+    at startup. A global cap would silently override a declaration."""
+    _config, events = _diagnose(tmp_path, "[subagents]\nmax_depth = 3")
+    assert "config_key_unknown" in events
 
 
 def test_the_resume_fallback_is_named_in_the_file(tmp_path: Path) -> None:

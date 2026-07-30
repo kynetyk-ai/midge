@@ -43,9 +43,21 @@ EXPLORE_PROMPT = (
     ),
     prompt=EXPLORE_PROMPT,
     tools=("read", "bash"),
+    # The budget for an ordinary search. A caller can ask for more, up to
+    # `[subagents] max_timeout`, because `timeout` is in the signature below.
     timeout=180,
 )
-async def explore(question: str, paths: list[str] | None = None) -> str:
-    """Compose the explorer's opening message from validated inputs."""
+async def explore(
+    question: str,
+    paths: list[str] | None = None,
+    timeout: float | None = None,
+) -> str:
+    """Compose the explorer's opening message from validated inputs.
+
+    `timeout` is declared here and so appears in the tool schema — that is the
+    whole opt-in. The model may ask for longer on a big search; it cannot ask
+    for longer than the operator's ceiling, and an author who wants a fixed
+    budget just leaves the parameter out.
+    """
     scope = "\n".join(f"- {p}" for p in paths) if paths else "- (the whole repository)"
     return f"Question: {question}\n\nStart from:\n{scope}"

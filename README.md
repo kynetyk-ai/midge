@@ -244,8 +244,28 @@ this run" is a walk from either end rather than a directory scan.
 
 A sub-agent inherits the parent's **tool policy** — an approval hook that blocks a command blocks it
 when delegated too — but not the parent's prompt- or request-shaping hooks, which would otherwise
-silently override the child's own system prompt. Nesting is capped by depth, and a child only gets
-`spawn_*` tools if its allowlist names them.
+silently override the child's own system prompt.
+
+**Recursion is the allowlist's business.** A child only gets `spawn_*` tools if its own `tools`
+names them, so an author who grants nesting has done it deliberately and a global depth cap would
+only override a declaration sitting in their file.
+
+What must not happen is recursion with no end, and that is denied precisely rather than bounded by
+a number: **a child never receives a spawn tool for an agent already running above it.** So
+`alpha → beta` always works, and `beta → alpha` is refused only where alpha is on the stack —
+called from anywhere else the same declaration is fine. Nothing is dropped and no declaration is
+edited, and termination follows anyway, since the ancestor set grows by one name per level from a
+finite declared set.
+
+A cyclic allowlist is still a bug worth knowing about, so it's reported at startup — along with a
+tool name that resolves to nothing. Neither costs you the agent. What does is a **model no
+`[models]` entry names**, which is dropped, because unlike a typo that agent cannot run at all —
+it would otherwise surface as the vendor's 404 inside a turn.
+
+A delegation is always bounded, by three people. The author sets a budget per agent
+(`timeout=180`); a `spawn_*` tool may offer the *caller* a `timeout` parameter by declaring one in
+its signature, for a job that needs longer; and `[subagents] max_timeout` caps the lot, so
+offering the knob never means offering none.
 
 See `examples/subagent_extension/` and [`notes/subagents.md`](./notes/subagents.md).
 
