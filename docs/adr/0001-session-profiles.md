@@ -1,0 +1,283 @@
+# ADR 0001 — Session profiles
+
+- **Status:** Accepted
+- **Date:** 2026-07-30
+- **Supersedes:** the forking half of #49
+- **Related:** #44 (sub-agents), #54 (reload), #55 (session markers), #57 (durability bug)
+
+## Target functionality
+
+Retarget a running agent — new instructions, a different toolset, a different
+model — and later retarget it to something else again. The motivating case is an
+agent that has just built a feature and should now review that work
+adversarially, then go back to building.
+
+A **profile** is the unit of retargeting:
+
+| dimension | what it sets |
+|---|---|
+| system prompt | the durable base half; midge still appends the generated half |
+| model | the provider model id used for subsequent turns |
+| tools | which of the discovered tools this agent can see |
+| hooks | which registered hook handlers are active |
+
+Not part of a profile: history, and the skills catalogue.
+
+## How this differs from `pi`
+
+`pi` addresses two adjacent problems, and neither is this one.
+
+**Its session tree is conversation topology.** Every entry carries an `id` and a
+`parentId`, a leaf record names the current tip, and loading walks leaf-to-root
+(`packages/agent/src/harness/session/session.ts`). That exists to support forking
+at an arbitrary past entry and switching branches inside one file. midge's problem
+is not "which past state do I return to" but "what is this agent configured as".
+
+**Its configuration changes are independent and unnamed.** `pi` records
+`model_change`, `active_tools_change` and `thinking_level_change` as separate
+entry types. midge's position is that these dimensions travel together and are
+worth naming: "the adversarial reviewer" is a thing, whereas a model change plus a
+tool change plus a prompt change is three facts a reader must correlate and infer
+were one act.
+
+So midge takes `pi`'s append-only discipline and rejects its entry tree, while
+requiring something `pi` does not have: a named, atomically-applied configuration.
+
+## Decisions
+
+### 1. No entry tree
+
+No entry ids, no `parentId` on messages, no leaf pointer, no `get_tree`.
+`cut_index` remains a positional offset.
+
+This is a rejection rather than a deferral because nothing in midge forks at an
+arbitrary past point. "Carry the parent's context" and "name a position in the
+parent" are separable:
+
+| what a new context starts from | needs a cut point? |
+|---|---|
+| nothing | no |
+| a summary generated at the time | no |
+| the parent's current context, verbatim | no — "here", not a position |
+| the first N messages of the parent | **yes** |
+
+Only the last requires positional identity. Its use case is landing on an exact
+earlier turn, which steering serves instead.
+
+**Cost:** an exact earlier conversation state cannot be restored.
+
+### 2. Multi-file sessions must be intelligible
+
+Rejecting the entry tree does not reject the relation between transcripts. A
+session already spans multiple JSONL files — every sub-agent run writes its own —
+and profiles may add more. Those files must state their relationship rather than
+have it inferred.
+
+Required:
+
+- **An `origin` discriminant on `SessionHeader`** — `subagent`, `profile`,
+  `fork`, or absent for a root session. Sub-agent transcripts are currently
+  identifiable only incidentally, by having `parent_tool_call_id` set.
+- **`parent_session` on every non-root file**, which exists today.
+- **A forward `continued` record in the parent**, so a chain is walkable in both
+  directions. `parent_session` alone is a back-pointer, which makes "find the
+  current head of this session" a directory scan.
+
+This is a first-class requirement, not a detail. A transcript that cannot say what
+it belongs to is not an audit trail.
+
+### 3. Existing mechanisms and gaps
+
+| dimension | mechanism | status |
+|---|---|---|
+| system prompt | `set_system_prompt` sets the base and recomposes, preserving the skills catalogue and extension contributions | works in-process; not durable across resume (#57) |
+| model | `set_model` | works in-process; not durable (#57) |
+| tools | `_child_registry` (`subagents.py`) projects a subset `ToolRegistry` from an allowlist of names | exists |
+| hooks | `_Registration.source` stamped by `_SourceScopedHooks` (`extensions.py`) | stamped, never read — no selective activation |
+| transcript linkage | `parent_session` / `parent_tool_call_id` on `SessionHeader` | exists; needs `origin` per Decision 2 |
+| source config | `reload` re-runs the same sources | cannot change which sources |
+
+**Tools are filtered by projection.** `load_extensions` discovers every `Tool` in
+every source directory with no filtering, and that stays. Filtering happens one
+layer up: `_child_registry` keeps only names in an allowlist. A profile uses the
+same shape — discover once, project a subset.
+
+Filtering hides rather than denies at call time. A `tool_call` hook could refuse
+by name, but `notes/subagents.md` is explicit that telling a model it has a tool
+the registry will reject is misinformation rather than access control. A profile
+changes what the agent is, so the schemas it receives must match.
+
+Projection has a consequence worth stating: **a profile switch never changes which
+sources are loaded.** Discovery stays exactly as it is, and a profile only narrows
+what is projected from what was already discovered. So the property that makes
+sources immutable at `RpcServer.__init__` — a reload cannot silently widen a
+registry an embedder deliberately restricted — survives untouched, and profiles
+need no mutable source configuration. A profile naming a tool that no source
+provides simply fails validation (Decision 9).
+
+**Hooks are the only gap.** `Hooks.clear()` is all-or-nothing, `on()` returns an
+unsubscribe closure that `load_extensions` discards, and the `source` on every
+registration is read only to name a file in a warning. Source-scoped activation is
+required. It was designed during #54 and dropped as premature because
+`load_extensions` was the only registrar; profiles are its consumer.
+
+### 4. Switching selects a named profile, atomically, with exactly one option
+
+A switch applies every dimension or none, and is refused while a turn is in flight
+(as `reload` already is — swapping a registry mid-turn breaks tool-call/result
+pairing).
+
+**There is no revert.** A switch always names the profile to apply. Going back to
+what you were doing is switching to that profile by name — there is no previous-
+profile stack and no undo. That keeps the operation stateless and means a client
+never has to reason about how deep it is in a sequence of excursions.
+
+**A switch does not touch history.** No summarize-first, no carry-N, no
+clear-on-switch. A caller who wants a clean slate runs `clear_context` after
+switching; one who wants a summary runs `compact`. Composing existing commands
+keeps this single-purpose; the alternative is a switch that accumulates
+context-handling flags.
+
+**The one option is the transcript**, and it has two values:
+
+| | what it does |
+|---|---|
+| **switch and continue** | stay on the same transcript; append a profile record |
+| **switch and fork** | open a new transcript, linked per Decision 2 |
+
+Nothing else. The distinction is worth an option because the two are genuinely
+different intents — an excursion whose turns should not sit in the original file
+versus a retarget that continues the same thread — and because a forked transcript
+is what makes the excursion legible later.
+
+Atomicity is why this is one operation rather than documented guidance. A client
+hand-orchestrating a switch today gets `success: true` from `set_system_prompt`
+while the entire previous toolset and every hook stay active — extension and skill
+sources are fixed at `RpcServer.__init__` and `reload` only re-runs the same ones.
+No client discipline fixes that, because the capability to change sources is
+absent.
+
+### 5. A profile is a property of a session
+
+A session records the profile it is running under. Switching appends a record;
+the session's current profile is the last one recorded, consistent with how
+`session_info` works (#55).
+
+This makes resume correct by construction: reopening a session restores its
+profile, which is what makes `switch_session` a courtesy wrapper rather than a
+primitive. It depends on #57, since a profile that silently reverts on resume is
+not something to build on.
+
+### 6. Mutable state stays append-only
+
+Anything mutable is an appended record replayed at load, last write wins; never a
+header rewrite. Two independent reasons that point the same way:
+
+1. **Traceability.** midge is often driven over RPC, where the transcript is the
+   only durable account of what happened.
+2. **Crash recovery.** `read_transcript` salvages a truncated final line
+   (`persistence.py:146`) only because nothing earlier is ever rewritten.
+
+A profile switch is therefore recorded, so any message is attributable to the
+configuration that produced it — including the model, which matters for cost and
+behaviour attribution.
+
+### 7. Compaction and clear stay in-thread
+
+An earlier proposal had each seal the file and start a new one, so that one file
+would be exactly one context window. Rejected: the motivation was traceability,
+and both operations are already non-destructive. `append_compaction` and
+`append_clear` write one record and collapse only the in-memory view; the file
+keeps every message and `cut_index` says which were folded. What is lossy is the
+agent's forward knowledge, which is a property of compaction as a technique rather
+than of the transcript.
+
+Forking on compaction would buy only that an export shows precisely what the agent
+saw. That is elegance, not audit, and it would make the TUI's automatic threshold
+silently spawn files and stop `--session PATH` naming the file being written.
+
+### 8. A profile is a declared, auto-discovered Python file
+
+A profile is configuration, not something composed per call, so it is declared
+once and discovered — the same treatment tools and sub-agents get.
+
+The format is a **`.py` file containing an instance of a predefined dataclass**,
+collected from the module namespace exactly as `load_extensions` collects `Tool`
+instances today:
+
+```python
+from midge.profiles import Profile
+
+ADVERSARIAL = Profile(
+    name="adversarial-reviewer",
+    description="Reviews recent work looking for what is wrong with it.",
+    model="gpt-4o",
+    tools=("read", "bash"),
+    hooks=("approval",),
+    prompt="""
+        You are reviewing work that has just been done. Assume it is wrong and
+        find out how. Cite `path:line` for every claim.
+    """,
+)
+```
+
+Chosen over a Markdown file with frontmatter because a profile intersects code:
+its `tools` and `hooks` fields name symbols that must exist, and the fields
+themselves have a shape worth enforcing. A dataclass gets structural validation at
+import and is checkable by `pyright`; frontmatter defers every error to runtime.
+That a system prompt is prose is a real argument for Markdown, but a triple-quoted
+string is adequate and does not justify a second file format.
+
+Since profiles are `.py` files holding instances, `load_extensions` can collect
+them with no new loader and no new flag: one file may declare a tool, a sub-agent
+and a profile together. A dedicated `--profile-dir` is the alternative.
+
+**`Profile` does not converge with `SubagentSpec`.** Their fields nearly coincide —
+`name`, `prompt`, `tools`, `model` — but they are different concepts: a sub-agent
+is *a tool the agent uses*, a profile is *what the agent is*. One is invoked by the
+model as a delegation; the other is applied by an operator as a reconfiguration.
+Unifying them would put a `timeout` on a profile and imply that either can stand in
+for the other. The overlapping fields are acceptable duplication.
+
+### 9. A bad profile is skipped with a warning
+
+Matching how extensions and skills already handle malformed input: log a warning,
+skip the file, carry on. A profile naming a tool or hook that does not exist does
+not load, so asking to switch to it fails at the switch with a clear error rather
+than silently granting fewer tools than it claims. Name collisions are
+first-wins-and-warn, as `tool_name_shadowed` and `skill_name_shadowed` already do.
+
+### 10. A central config names the default profile
+
+Discovery supplies the set of profiles; something has to name the one to start
+under. That is a central config file rather than another flag.
+
+midge has no config file today — everything is command-line flags plus eight
+environment variables. Introducing one is a real decision, and the reason to take
+it here is that a config file is **self-documenting** in a way scattered
+environment variables are not: a reader sees what is configurable in one place,
+with the defaults visible.
+
+## Follow-on work
+
+- **Consolidate ad-hoc configuration into the config file**, as a separate
+  workstream. Today: `MIDGE_MODEL`, `MIDGE_INCLUDE_USAGE`, `MIDGE_LOG_LEVEL`,
+  `MIDGE_LOG_LEVEL_OPENAI`, `MIDGE_LOG_FILE`, `MIDGE_LOG_PAYLOAD_CHARS`,
+  `OPENAI_BASE_URL`, and `OPENAI_API_KEY`. All but the API key are candidates —
+  a credential belongs in the environment, not in a file that gets committed.
+  Worth doing on its own rather than smuggled in alongside profiles.
+
+## Consequences
+
+- **#49's storage redesign closes.** Its remaining useful work is session
+  discovery: nothing enumerates sessions, so a name is only readable on a session
+  already open.
+- **#57 gains a constraint.** Its fix should record one profile entry rather than
+  separate `identity` and `model_change` entries.
+- **`switch_session` is not a primitive** — it is "apply profile, open session",
+  and it requires #57.
+- **Sub-agents are the existing proof of this shape**: file-per-run, parent
+  pointer, own prompt, own tool subset. They stay a separate concept (Decision 8).
+- **`Hooks` grows source-scoped activation**, the one new mechanism.
+- **midge gains a config file**, which it has not had. Everything configurable has
+  been a flag or an environment variable until now.
