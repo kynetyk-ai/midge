@@ -9,8 +9,6 @@ requires-python = ">=3.11,<4.0"
 dependencies = [
     "openai>=1.50.0,<2.0.0",
     "pydantic>=2.13.4,<3.0",
-    "mistune>=3.3.4,<4.0.0",
-    "pygments>=2.20.0,<3.0.0",
     "textual>=8.2.8,<9.0.0",
     "pyyaml (>=6.0.3,<7.0.0)",
 ]

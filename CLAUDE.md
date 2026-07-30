@@ -128,7 +128,7 @@ The mechanics, which follow from the same rule as logging below:
 - Arguments are evaluated whether or not the level is on, so keep them O(1). Anything expensive goes through `logs.payload()`, which defers the work into `__str__`.
 - **Payloads only at DEBUG, only via `logs.payload()`** — it truncates at `LogConfig.payload_chars` (default 2000, `MIDGE_LOG_PAYLOAD_CHARS`). Request bodies, tool arguments and results qualify.
 - **Credentials are not payload and are excluded at every level.** An `api_key` is never logged — not a prefix, not a length. A `base_url` goes through `logs.provider_host()`, which keeps the hostname and drops userinfo and query string.
-- No logging in pure transforms (`session.py`, `tools/__init__.py`) — their failures already raise with real tracebacks.
+- No logging in pure transforms (`tools/__init__.py`, `messages.py`) — their failures already raise with real tracebacks.
 
 ## Layout
 
