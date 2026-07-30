@@ -6,11 +6,11 @@ import os
 import sys
 from collections.abc import Iterator
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
 import midge.rpc as rpc
+from tests.fakes import install_gated
 
 
 @pytest.fixture(autouse=True)
@@ -139,21 +139,9 @@ async def test_a_stalled_writer_does_not_stop_the_dispatch_loop() -> None:
 
     client = Client()
     gate = asyncio.Event()
-
-    class _Stream:
-        def __aiter__(self) -> _Stream:
-            return self
-
-        async def __anext__(self) -> object:
-            await gate.wait()
-            raise StopAsyncIteration
-
-    async def create(**kwargs: object) -> _Stream:
-        return _Stream()
-
-    client._client = SimpleNamespace(  # type: ignore[assignment]
-        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
-    )
+    # A turn that emits nothing and hangs, so the only frames on the wire are the
+    # ones the server itself writes — which is what the stalled writer blocks on.
+    install_gated(client, [], gate)
     agent = Agent(client=client, model="m")
     server = RpcServer(agent)
     task = asyncio.create_task(server.serve(read_line=read_line, write=stalled_write))

@@ -3,9 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import Iterable
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -22,55 +20,13 @@ from midge.subagents import (
     subagent,
 )
 from midge.tools import Tool, ToolRegistry, tool
+from tests.fakes import ScriptedProvider, finish, install, say, tcall
 
 PROMPT = "You are a test explorer."
 
 
-def _chunk(
-    *,
-    content: str | None = None,
-    tool_calls: list[Any] | None = None,
-    finish_reason: str | None = None,
-) -> Any:
-    delta = SimpleNamespace(content=content, tool_calls=tool_calls)
-    return SimpleNamespace(choices=[SimpleNamespace(delta=delta, finish_reason=finish_reason)])
-
-
-def _tcd(*, index: int, id: str, name: str, arguments: str) -> Any:
-    return SimpleNamespace(
-        index=index, id=id, function=SimpleNamespace(name=name, arguments=arguments)
-    )
-
-
-class _FakeStream:
-    def __init__(self, chunks: Iterable[Any]) -> None:
-        self._chunks = list(chunks)
-
-    def __aiter__(self) -> _FakeStream:
-        return self
-
-    async def __anext__(self) -> Any:
-        if not self._chunks:
-            raise StopAsyncIteration
-        return self._chunks.pop(0)
-
-
-def _install(client: Client, turns: list[list[Any]]) -> list[dict[str, Any]]:
-    captured: list[dict[str, Any]] = []
-    iterator = iter(turns)
-
-    async def create(**kwargs: Any) -> _FakeStream:
-        captured.append(kwargs)
-        return _FakeStream(next(iterator))
-
-    client._client = SimpleNamespace(  # type: ignore[assignment]
-        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
-    )
-    return captured
-
-
 def _says(text: str) -> list[Any]:
-    return [_chunk(content=text), _chunk(finish_reason="stop")]
+    return [say(text), finish()]
 
 
 @tool
@@ -112,7 +68,7 @@ def _bound(
     **bind_kw: Any,
 ) -> tuple[ToolRegistry, Client]:
     client = Client()
-    _install(client, turns)
+    install(client, turns)
     registry = ToolRegistry([read, write, *(extra or []), tool_obj])
     bind_subagents(
         registry,
@@ -169,7 +125,7 @@ async def test_unbound_tool_reports_the_fix() -> None:
 
 async def test_unbound_tool_becomes_a_tool_error_not_a_crash() -> None:
     client = Client()
-    _install(client, [[_chunk(content="done"), _chunk(finish_reason="stop")]])
+    install(client, [[say("done"), finish()]])
     agent = Agent(client=client, model="m", tools=ToolRegistry([_explorer()]))
     result = await agent._run_tool(ToolCall(id="c1", name="spawn_explore", arguments={"question": "q"}))
 
@@ -197,7 +153,7 @@ async def test_parent_receives_only_the_final_text() -> None:
 async def test_opening_message_comes_from_the_function() -> None:
     t = _explorer()
     registry, client = _bound(t, turns=[_says("ok")])
-    captured = _install(client, [_says("ok")])
+    captured = install(client, [_says("ok")])
 
     await registry.invoke("spawn_explore", {"question": "where?", "paths": ["a.py"]}, call_id="c1")
 
@@ -210,19 +166,19 @@ async def test_opening_message_comes_from_the_function() -> None:
 
 async def test_child_model_overrides_and_empty_inherits() -> None:
     registry, client = _bound(_explorer(model="child-model"), turns=[_says("ok")])
-    captured = _install(client, [_says("ok")])
+    captured = install(client, [_says("ok")])
     await registry.invoke("spawn_explore", {"question": "q"}, call_id="c1")
     assert captured[0]["model"] == "child-model"
 
     registry, client = _bound(_explorer(), turns=[_says("ok")])
-    captured = _install(client, [_says("ok")])
+    captured = install(client, [_says("ok")])
     await registry.invoke("spawn_explore", {"question": "q"}, call_id="c1")
     assert captured[0]["model"] == "parent-model"
 
 
 async def test_child_registry_is_exactly_the_allowlist() -> None:
     registry, client = _bound(_explorer(), turns=[_says("ok")])
-    captured = _install(client, [_says("ok")])
+    captured = install(client, [_says("ok")])
     await registry.invoke("spawn_explore", {"question": "q"}, call_id="c1")
 
     names = {t["function"]["name"] for t in captured[0]["tools"]}
@@ -244,7 +200,7 @@ def test_allowlisted_tool_is_the_same_object() -> None:
 async def test_child_error_becomes_a_readable_string() -> None:
     registry, _ = _bound(
         _explorer(),
-        turns=[[_chunk(content=""), _chunk(finish_reason="content_filter")]],
+        turns=[[say(""), finish("error")]],
     )
     out = await registry.invoke("spawn_explore", {"question": "q"}, call_id="c1")
     assert isinstance(out, str)
@@ -254,13 +210,11 @@ async def test_child_error_becomes_a_readable_string() -> None:
 async def test_timeout_returns_a_tool_error_string() -> None:
     client = Client()
 
-    async def create(**kwargs: Any) -> _FakeStream:
+    async def on_open(body: Any) -> list[Any]:
         await asyncio.sleep(10)
-        return _FakeStream([])
+        return []
 
-    client._client = SimpleNamespace(  # type: ignore[assignment]
-        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
-    )
+    client.provider = ScriptedProvider(on_open)
     registry = ToolRegistry([read, _explorer(timeout=0.05)])
     bind_subagents(registry, client=client, model="m")
 
@@ -309,17 +263,15 @@ async def test_semaphore_caps_concurrent_children() -> None:
 
     client = Client()
 
-    async def create(**kwargs: Any) -> _FakeStream:
+    async def on_open(body: Any) -> list[Any]:
         nonlocal live, peak
         live += 1
         peak = max(peak, live)
         await asyncio.sleep(0.02)
         live -= 1
-        return _FakeStream(_says("ok"))
+        return _says("ok")
 
-    client._client = SimpleNamespace(  # type: ignore[assignment]
-        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
-    )
+    client.provider = ScriptedProvider(on_open)
     registry = ToolRegistry([read, _explorer()])
     bind_subagents(registry, client=client, model="m", max_concurrent=2)
 
@@ -334,17 +286,15 @@ async def test_parent_cancellation_reaches_the_child() -> None:
 
     client = Client()
 
-    async def create(**kwargs: Any) -> _FakeStream:
+    async def on_open(body: Any) -> list[Any]:
         try:
             await asyncio.sleep(10)
         except asyncio.CancelledError:
             cancelled.set()
             raise
-        return _FakeStream([])
+        return []
 
-    client._client = SimpleNamespace(  # type: ignore[assignment]
-        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
-    )
+    client.provider = ScriptedProvider(on_open)
     registry = ToolRegistry([read, _explorer()])
     bind_subagents(registry, client=client, model="m")
 
@@ -375,10 +325,8 @@ async def test_parent_policy_applies_to_the_child() -> None:
         _explorer(),
         turns=[
             [
-                _chunk(
-                    tool_calls=[_tcd(index=0, id="t1", name="read", arguments='{"path":"x"}')]
-                ),
-                _chunk(finish_reason="tool_calls"),
+                tcall(index=0, id="t1", name="read", args='{"path":"x"}'),
+                finish("tool_use"),
             ],
             _says("could not read"),
         ],
@@ -398,8 +346,8 @@ async def test_child_tool_results_reach_the_parent_policy() -> None:
         _explorer(),
         turns=[
             [
-                _chunk(tool_calls=[_tcd(index=0, id="t1", name="read", arguments='{"path":"x"}')]),
-                _chunk(finish_reason="tool_calls"),
+                tcall(index=0, id="t1", name="read", args='{"path":"x"}'),
+                finish("tool_use"),
             ],
             _says("done"),
         ],
@@ -424,8 +372,8 @@ async def test_observers_still_see_the_child_tool_calls() -> None:
         _explorer(),
         turns=[
             [
-                _chunk(tool_calls=[_tcd(index=0, id="t1", name="read", arguments='{"path":"x"}')]),
-                _chunk(finish_reason="tool_calls"),
+                tcall(index=0, id="t1", name="read", args='{"path":"x"}'),
+                finish("tool_use"),
             ],
             _says("done"),
         ],
@@ -442,7 +390,7 @@ async def test_parent_turn_start_cannot_replace_the_child_prompt() -> None:
     hooks.on("turn_start", lambda e, c: TurnStartResult(system_prompt="PARENT-OVERRIDE"))
 
     registry, client = _bound(_explorer(), turns=[_says("ok")], hooks=hooks)
-    captured = _install(client, [_says("ok")])
+    captured = install(client, [_says("ok")])
     await registry.invoke("spawn_explore", {"question": "q"}, call_id="c1")
 
     assert captured[0]["messages"][0]["content"] == PROMPT
@@ -458,7 +406,7 @@ async def test_parent_request_hook_cannot_relabel_the_child_tools() -> None:
     )
 
     registry, client = _bound(_explorer(), turns=[_says("ok")], hooks=hooks)
-    captured = _install(client, [_says("ok")])
+    captured = install(client, [_says("ok")])
     await registry.invoke("spawn_explore", {"question": "q"}, call_id="c1")
 
     names = {t["function"]["name"] for t in captured[0]["tools"]}
@@ -473,7 +421,7 @@ async def test_parent_turn_hooks_still_fire_for_the_parent() -> None:
     hooks.on("turn_end", lambda e, c: fired.append("turn_end"))
 
     client = Client()
-    _install(client, [_says("hi")])
+    install(client, [_says("hi")])
     agent = Agent(client=client, model="m", tools=ToolRegistry([read]), hooks=hooks)
     await agent.run("hello")
 
@@ -600,7 +548,7 @@ async def test_call_id_reaches_tool_invoke() -> None:
         name="probe", description="d", fn=read.fn, params_model=read.params_model
     )
     client = Client()
-    _install(client, [_says("done")])
+    install(client, [_says("done")])
     agent = Agent(client=client, model="m", tools=ToolRegistry([probe]))
     await agent._run_tool(ToolCall(id="call_xyz", name="probe", arguments={"path": "a"}))
 

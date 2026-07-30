@@ -1,15 +1,24 @@
+"""The streaming loop: one state machine, any provider.
+
+`Client` owns everything that is the same whatever you are talking to — the
+retry policy, assembling a partial `AssistantMessage`, tracking content indices,
+buffering tool-call arguments, and emitting the `StreamEvent` taxonomy the rest
+of midge consumes.
+
+Wire formats live in `midge.providers`. The seam is `Delta`: a provider turns
+its own chunks into one, and this module never sees a vendor type.
+"""
+
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
-import os
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any, Literal
 
-import openai
-
+from midge import providers
 from midge.logs import payload
 from midge.messages import (
     AssistantMessage,
@@ -17,8 +26,7 @@ from midge.messages import (
     StopReason,
     TextContent,
     ToolCall,
-    Usage,
-    to_openai_messages,
+    repair_history,
 )
 
 _logger = logging.getLogger(__name__)
@@ -101,52 +109,6 @@ StreamEvent = (
 )
 
 
-_FINISH_REASON_TO_STOP_REASON: dict[str, StopReason] = {
-    "stop": "stop",
-    "tool_calls": "tool_use",
-    "length": "length",
-    "content_filter": "error",
-}
-
-
-def _to_usage(raw: Any) -> Usage | None:
-    """Map the provider's usage block, tolerating servers that omit fields."""
-    if raw is None:
-        return None
-    details = getattr(raw, "prompt_tokens_details", None)
-    return Usage(
-        input=getattr(raw, "prompt_tokens", 0) or 0,
-        output=getattr(raw, "completion_tokens", 0) or 0,
-        cached=getattr(details, "cached_tokens", 0) or 0,
-    )
-
-
-def _map_finish_reason(finish_reason: str | None) -> StopReason:
-    if finish_reason is None:
-        return "stop"
-    return _FINISH_REASON_TO_STOP_REASON.get(finish_reason, "stop")
-
-
-def _tools_to_openai(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]] | None:
-    if not tools:
-        return None
-    return [{"type": "function", "function": t} for t in tools]
-
-
-def is_retryable(exc: BaseException) -> bool:
-    """Whether a failed provider call is worth another attempt.
-
-    Deliberately short: midge targets `openai` plus OpenAI-compatible servers
-    behind `base_url`, so the interesting failures are rate limits, server-side
-    faults, and transport problems. Everything else — auth, bad request, model
-    not found — fails the same way on every attempt.
-    """
-    if isinstance(exc, openai.APIStatusError):
-        return exc.status_code == 429 or exc.status_code >= 500
-    # APITimeoutError subclasses APIConnectionError.
-    return isinstance(exc, openai.APIConnectionError)
-
-
 class Client:
     def __init__(
         self,
@@ -155,25 +117,18 @@ class Client:
         base_url: str | None = None,
         max_attempts: int = 3,
         retry_base_delay: float = 0.5,
-        include_usage: bool | None = None,
+        provider: str | providers.Provider | None = None,
     ) -> None:
-        self._client = openai.AsyncOpenAI(
-            api_key=api_key or os.getenv("OPENAI_API_KEY") or "not-needed",
-            base_url=base_url,
-            # The SDK's own backoff sleep ignores cancellation, so Ctrl+C during
-            # a retry would do nothing. We own the sleep instead.
-            max_retries=0,
-        )
+        if isinstance(provider, str) or provider is None:
+            name = providers.resolve(provider=provider, base_url=base_url)
+            self.provider = providers.get(name)(api_key=api_key, base_url=base_url)
+            # The base_url heuristic in `resolve` is a guess, so which provider
+            # it landed on has to be visible or a misrouted request is a mystery.
+            _logger.info("provider_selected name=%s", self.provider.name)
+        else:
+            self.provider = provider
         self._max_attempts = max(1, max_attempts)
         self._retry_base_delay = retry_base_delay
-        # Support for `stream_options` varies across OpenAI-compatible servers
-        # and a server that rejects it fails the whole turn with a 400, so this
-        # needs an escape hatch that does not require editing code.
-        self._include_usage = (
-            include_usage
-            if include_usage is not None
-            else os.getenv("MIDGE_INCLUDE_USAGE", "1") not in ("0", "false", "no")
-        )
 
     async def stream(
         self,
@@ -187,31 +142,24 @@ class Client:
         partial = AssistantMessage(model=model)
         yield StreamStart(partial=partial)
 
-        oai_messages: list[dict[str, Any]] = []
-        if system:
-            oai_messages.append({"role": "system", "content": system})
-        oai_messages.extend(to_openai_messages(messages))
-
-        create_kwargs: dict[str, Any] = {
-            "model": model,
-            "messages": oai_messages,
-            "stream": True,
+        # Repaired here, once, so a provider's encoder never has to know which
+        # turns are coherent — that is a fact about midge's history.
+        body = self.provider.encode(
+            messages=repair_history(messages),
+            model=model,
+            tools=tools,
+            system=system,
             **kwargs,
-        }
-        if self._include_usage:
-            create_kwargs.setdefault("stream_options", {"include_usage": True})
-        oai_tools = _tools_to_openai(tools)
-        if oai_tools:
-            create_kwargs["tools"] = oai_tools
+        )
 
         _logger.debug(
             # Every argument here is O(1) — `payload` defers the expensive part,
             # but a plain argument is evaluated whether or not DEBUG is on.
-            "provider_request model=%s messages=%d tools=%d body=%s",
+            "provider_request provider=%s model=%s tools=%d body=%s",
+            self.provider.name,
             model,
-            len(oai_messages),
-            len(oai_tools or ()),
-            payload(create_kwargs),
+            len(tools or ()),
+            payload(body),
         )
 
         attempt = 0
@@ -224,67 +172,59 @@ class Client:
             text_index: int | None = None
             tool_idx_map: dict[int, int] = {}
             tool_arg_buffers: dict[int, str] = {}
-            finish_reason: str | None = None
+            stop_reason: StopReason | None = None
             partial.usage = None
 
             try:
-                stream = await self._client.chat.completions.create(**create_kwargs)
+                stream = await self.provider.open(body)
 
                 async for chunk in stream:
-                    # Usage rides a final chunk whose `choices` is empty, so it
-                    # has to be read before the guard below — that `continue` is
-                    # exactly what used to throw it away.
-                    usage = _to_usage(getattr(chunk, "usage", None))
-                    if usage is not None:
-                        partial.usage = usage
-                    if not chunk.choices:
-                        continue
-                    choice = chunk.choices[0]
-                    delta = choice.delta
+                    ev = self.provider.decode(chunk)
 
-                    if delta.content:
+                    if ev.usage is not None:
+                        partial.usage = ev.usage
+
+                    if ev.text:
                         if text_index is None:
                             partial.content.append(TextContent(text=""))
                             text_index = len(partial.content) - 1
                             yield TextStart(content_index=text_index, partial=partial)
                         text_block = partial.content[text_index]
                         assert isinstance(text_block, TextContent)
-                        text_block.text += delta.content
+                        text_block.text += ev.text
                         yield TextDelta(
                             content_index=text_index,
-                            delta=delta.content,
+                            delta=ev.text,
                             partial=partial,
                         )
 
-                    if delta.tool_calls:
-                        for tcd in delta.tool_calls:
-                            idx = tcd.index
-                            if idx not in tool_idx_map:
-                                tc_id = tcd.id or f"call_{idx}"
-                                name = (
-                                    tcd.function.name if tcd.function else None
-                                ) or ""
-                                tool_arg_buffers[idx] = ""
-                                partial.content.append(
-                                    ToolCall(id=tc_id, name=name, arguments={})
+                    for frag in ev.tool_calls:
+                        idx = frag.index
+                        if idx not in tool_idx_map:
+                            tool_arg_buffers[idx] = ""
+                            partial.content.append(
+                                ToolCall(
+                                    id=frag.id or f"call_{idx}",
+                                    name=frag.name or "",
+                                    arguments={},
                                 )
-                                content_idx = len(partial.content) - 1
-                                tool_idx_map[idx] = content_idx
-                                yield ToolCallStart(
-                                    content_index=content_idx, partial=partial
-                                )
+                            )
+                            content_idx = len(partial.content) - 1
+                            tool_idx_map[idx] = content_idx
+                            yield ToolCallStart(
+                                content_index=content_idx, partial=partial
+                            )
 
-                            if tcd.function and tcd.function.arguments:
-                                arg_chunk = tcd.function.arguments
-                                tool_arg_buffers[idx] += arg_chunk
-                                yield ToolCallDelta(
-                                    content_index=tool_idx_map[idx],
-                                    delta=arg_chunk,
-                                    partial=partial,
-                                )
+                        if frag.arguments:
+                            tool_arg_buffers[idx] += frag.arguments
+                            yield ToolCallDelta(
+                                content_index=tool_idx_map[idx],
+                                delta=frag.arguments,
+                                partial=partial,
+                            )
 
-                    if choice.finish_reason:
-                        finish_reason = choice.finish_reason
+                    if ev.stop_reason is not None:
+                        stop_reason = ev.stop_reason
 
                 if text_index is not None:
                     text_block = partial.content[text_index]
@@ -317,11 +257,14 @@ class Client:
                         partial=partial,
                     )
 
-                partial.stop_reason = _map_finish_reason(finish_reason)
+                # A provider that never sent one still finished; treating that as
+                # `stop` matches what every server without an explicit reason
+                # means by closing the stream.
+                partial.stop_reason = stop_reason or "stop"
                 _logger.debug(
-                    "provider_response model=%s finish=%s stop=%s blocks=%d attempt=%d",
+                    "provider_response provider=%s model=%s stop=%s blocks=%d attempt=%d",
+                    self.provider.name,
                     model,
-                    finish_reason,
                     partial.stop_reason,
                     len(partial.content),
                     attempt,
@@ -353,7 +296,7 @@ class Client:
                 # part of this response and a restart would duplicate it.
                 committed = bool(partial.content)
                 attempts_left = attempt < self._max_attempts - 1
-                if not committed and attempts_left and is_retryable(e):
+                if not committed and attempts_left and self.provider.is_retryable(e):
                     delay = self._retry_base_delay * (2**attempt)
                     attempt += 1
                     _logger.warning(

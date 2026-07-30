@@ -1,13 +1,9 @@
 from __future__ import annotations
 
-import json
-import logging
 import time
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
-
-_logger = logging.getLogger(__name__)
 
 
 class TextContent(BaseModel):
@@ -89,56 +85,6 @@ Message = Annotated[
 ]
 
 
-def _user_content_to_openai(blocks: list[TextContent | ImageContent]) -> list[dict[str, Any]]:
-    parts: list[dict[str, Any]] = []
-    for b in blocks:
-        if isinstance(b, TextContent):
-            parts.append({"type": "text", "text": b.text})
-        else:
-            parts.append(
-                {
-                    "type": "image_url",
-                    "image_url": {"url": f"data:{b.mime_type};base64,{b.data}"},
-                }
-            )
-    return parts
-
-
-def _user_to_openai(m: UserMessage) -> dict[str, Any]:
-    if isinstance(m.content, str):
-        return {"role": "user", "content": m.content}
-    return {"role": "user", "content": _user_content_to_openai(m.content)}
-
-
-def _assistant_to_openai(m: AssistantMessage) -> dict[str, Any]:
-    text_parts = [c.text for c in m.content if isinstance(c, TextContent)]
-    tool_calls = [c for c in m.content if isinstance(c, ToolCall)]
-
-    text = "".join(text_parts) if text_parts else None
-    out: dict[str, Any] = {"role": "assistant", "content": text}
-    if tool_calls:
-        out["tool_calls"] = [
-            {
-                "id": tc.id,
-                "type": "function",
-                "function": {"name": tc.name, "arguments": json.dumps(tc.arguments)},
-            }
-            for tc in tool_calls
-        ]
-    return out
-
-
-def _tool_result_to_openai(m: ToolResultMessage) -> dict[str, Any]:
-    text = "".join(c.text for c in m.content if isinstance(c, TextContent))
-    if any(isinstance(c, ImageContent) for c in m.content):
-        # `ToolResultResult.content` permits images, but the tool role carries
-        # text only. Dropping them silently loses a hook's output with no trace.
-        _logger.warning(
-            "tool_result_image_dropped tool=%s id=%s", m.tool_name, m.tool_call_id
-        )
-    return {"role": "tool", "tool_call_id": m.tool_call_id, "content": text}
-
-
 COMPACTION_PREFIX = (
     "The conversation history before this point was compacted into the "
     "following summary:\n\n<summary>\n"
@@ -150,20 +96,25 @@ def make_summary_message(summary_text: str) -> UserMessage:
     return UserMessage(content=COMPACTION_PREFIX + summary_text + COMPACTION_SUFFIX)
 
 
-def to_openai_messages(messages: list[Message]) -> list[dict[str, Any]]:
-    """Render history into an OpenAI payload, dropping what a provider rejects.
+def repair_history(messages: list[Message]) -> list[Message]:
+    """Drop what no provider will accept, without touching the stored history.
 
-    History is allowed to record turns that failed; the wire format is not.
-    Repairing here rather than at the append site keeps the failure visible in
-    the session log, the HTML export, and the event stream, while making this
-    the single boundary every request passes through — so damage from the loop,
-    a hook, compaction, or a resumed session is normalized the same way.
+    History is allowed to record turns that failed; a request is not. Repairing
+    here rather than at the append site keeps the failure visible in the session
+    log and the event stream, while making this the single boundary every request
+    passes through — so damage from the loop, a hook, compaction, or a resumed
+    session is normalized the same way.
+
+    Provider-independent on purpose. Which turns are coherent is a fact about
+    midge's history, not about any wire format, so every provider gets this
+    rather than each re-deriving it. Encoding the survivors is the provider's
+    job.
     """
-    out: list[dict[str, Any]] = []
+    out: list[Message] = []
     issued: set[str] = set()
     for m in messages:
         if isinstance(m, UserMessage):
-            out.append(_user_to_openai(m))
+            out.append(m)
         elif isinstance(m, AssistantMessage):
             # A failed turn produced either tool calls that never ran or no
             # content at all. Both are rejected on the next request, and the
@@ -171,7 +122,7 @@ def to_openai_messages(messages: list[Message]) -> list[dict[str, Any]]:
             if m.stop_reason in ("error", "aborted"):
                 continue
             issued.update(c.id for c in m.content if isinstance(c, ToolCall))
-            out.append(_assistant_to_openai(m))
+            out.append(m)
         elif m.tool_call_id in issued:
-            out.append(_tool_result_to_openai(m))
+            out.append(m)
     return out

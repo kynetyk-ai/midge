@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from midge.messages import (
     AssistantMessage,
@@ -10,8 +11,18 @@ from midge.messages import (
     ToolCall,
     ToolResultMessage,
     UserMessage,
-    to_openai_messages,
+    repair_history,
 )
+from midge.providers.openai_compat import encode_messages
+
+
+def _wire(messages: list[Message]) -> list[dict[str, Any]]:
+    """Repair, then encode — the two halves of what `to_openai_messages` was.
+
+    Repair is provider-neutral (`midge.messages`); encoding belongs to the
+    adapter. These tests cover both, so they compose them.
+    """
+    return encode_messages(repair_history(messages))
 
 
 def test_user_message_string_content_roundtrip() -> None:
@@ -71,12 +82,12 @@ def test_tool_result_message_roundtrip() -> None:
 
 
 def test_to_openai_user_string() -> None:
-    [out] = to_openai_messages([UserMessage(content="hi")])
+    [out] = _wire([UserMessage(content="hi")])
     assert out == {"role": "user", "content": "hi"}
 
 
 def test_to_openai_user_multimodal() -> None:
-    [out] = to_openai_messages(
+    [out] = _wire(
         [
             UserMessage(
                 content=[
@@ -94,7 +105,7 @@ def test_to_openai_user_multimodal() -> None:
 
 
 def test_to_openai_assistant_text_only() -> None:
-    [out] = to_openai_messages(
+    [out] = _wire(
         [AssistantMessage(content=[TextContent(text="hello")])]
     )
     assert out == {"role": "assistant", "content": "hello"}
@@ -102,7 +113,7 @@ def test_to_openai_assistant_text_only() -> None:
 
 
 def test_to_openai_assistant_with_tool_calls() -> None:
-    [out] = to_openai_messages(
+    [out] = _wire(
         [
             AssistantMessage(
                 content=[
@@ -127,7 +138,7 @@ def test_to_openai_assistant_with_tool_calls() -> None:
 
 
 def test_to_openai_assistant_tool_calls_only() -> None:
-    [out] = to_openai_messages(
+    [out] = _wire(
         [
             AssistantMessage(
                 content=[ToolCall(id="call_1", name="bash", arguments={"command": "ls"})]
@@ -140,7 +151,7 @@ def test_to_openai_assistant_tool_calls_only() -> None:
 
 
 def test_to_openai_assistant_multiple_tool_calls_preserves_order() -> None:
-    [out] = to_openai_messages(
+    [out] = _wire(
         [
             AssistantMessage(
                 content=[
@@ -155,7 +166,7 @@ def test_to_openai_assistant_multiple_tool_calls_preserves_order() -> None:
 
 
 def test_to_openai_tool_result_text() -> None:
-    _, out = to_openai_messages(
+    _, out = _wire(
         [
             AssistantMessage(
                 content=[ToolCall(id="call_1", name="read", arguments={})],
@@ -190,7 +201,7 @@ def test_assistant_message_can_be_mutated_in_place() -> None:
 
 def test_to_openai_drops_error_turn_with_orphaned_tool_call() -> None:
     """A stream that dies mid-tool-call must not poison later requests — issue #33."""
-    wire = to_openai_messages(
+    wire = _wire(
         [
             UserMessage(content="write the file"),
             AssistantMessage(
@@ -207,7 +218,7 @@ def test_to_openai_drops_error_turn_with_orphaned_tool_call() -> None:
 
 def test_to_openai_drops_content_less_error_turn() -> None:
     """A pre-delta failure would otherwise serialize as content=None with no tool_calls."""
-    wire = to_openai_messages(
+    wire = _wire(
         [
             UserMessage(content="hi"),
             AssistantMessage(content=[], stop_reason="error", error_message="429"),
@@ -219,7 +230,7 @@ def test_to_openai_drops_content_less_error_turn() -> None:
 
 
 def test_to_openai_drops_aborted_turn() -> None:
-    wire = to_openai_messages(
+    wire = _wire(
         [
             UserMessage(content="hi"),
             AssistantMessage(content=[], stop_reason="aborted", error_message="cancelled"),
@@ -230,7 +241,7 @@ def test_to_openai_drops_aborted_turn() -> None:
 
 def test_to_openai_drops_tool_result_whose_call_was_dropped() -> None:
     """Dropping the issuing assistant must not leave a tool message behind it."""
-    wire = to_openai_messages(
+    wire = _wire(
         [
             UserMessage(content="go"),
             AssistantMessage(
@@ -249,7 +260,7 @@ def test_to_openai_drops_tool_result_whose_call_was_dropped() -> None:
 
 
 def test_to_openai_keeps_successful_tool_sequences() -> None:
-    wire = to_openai_messages(
+    wire = _wire(
         [
             UserMessage(content="go"),
             AssistantMessage(
@@ -295,7 +306,7 @@ def test_user_message_never_splits_a_tool_group() -> None:
         AssistantMessage(content=[TextContent(text="done")], stop_reason="stop"),
     ]
 
-    roles = [m["role"] for m in to_openai_messages(history)]
+    roles = [m["role"] for m in _wire(history)]
 
     assert roles == ["user", "assistant", "tool", "user", "assistant"]
     for i, role in enumerate(roles):
@@ -315,7 +326,7 @@ def test_a_split_tool_group_is_not_repaired() -> None:
         ToolResultMessage(tool_call_id="c1", tool_name="a", content=[TextContent(text="ok")]),
     ]
 
-    roles = [m["role"] for m in to_openai_messages(history)]
+    roles = [m["role"] for m in _wire(history)]
 
     # The user message is passed straight through, leaving `tool` orphaned from
     # its `tool_calls`. This is what the drain point exists to avoid.
