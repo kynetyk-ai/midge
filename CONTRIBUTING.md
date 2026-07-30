@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for your interest. This is a small personal-scale project — the harness is roughly 2k LOC, deliberately readable and hackable, and most contributions probably take the form of bug fixes, new extensions, or small focused features. Before opening a PR with significant scope, please open an issue first to align on direction.
+Thanks for your interest. This is a small personal-scale project — the core harness is roughly 3.5k LOC, deliberately readable and hackable, and most contributions probably take the form of bug fixes, new extensions, or small focused features. Before opening a PR with significant scope, please open an issue first to align on direction.
 
 ## Dev setup
 
