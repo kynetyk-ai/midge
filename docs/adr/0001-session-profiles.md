@@ -1,7 +1,8 @@
 # ADR 0001 — Session profiles
 
 - **Status:** Accepted — **amended 2026-07-30** (Decision 4: a third transcript
-  option, `resume_last`). See [Amendments](#amendments).
+  option, `resume_last`; Decision 9: hooks are decided exhaustively). See
+  [Amendments](#amendments).
 - **Date:** 2026-07-30
 - **Supersedes:** the forking half of #49
 - **Related:** #44 (sub-agents), #54 (reload), #55 (session markers), #57 (durability bug)
@@ -20,7 +21,7 @@ A **profile** is the unit of retargeting:
 | system prompt | the durable base half; midge still appends the generated half |
 | model | the provider model id used for subsequent turns |
 | tools | which of the discovered tools this agent can see |
-| hooks | which registered hook handlers are active |
+| hooks | a decision, on or off, for **every** discovered hook source |
 
 Not part of a profile: history, and the skills catalogue.
 
@@ -278,7 +279,7 @@ ADVERSARIAL = Profile(
     description="Reviews recent work looking for what is wrong with it.",
     model="gpt-4o",
     tools=("read", "bash"),
-    hooks=("approval",),
+    hooks={"approve": True, "audit": False},
     prompt="""
         You are reviewing work that has just been done. Assume it is wrong and
         find out how. Cite `path:line` for every claim.
@@ -306,11 +307,37 @@ for the other. The overlapping fields are acceptable duplication.
 
 ### 9. A bad profile is skipped with a warning
 
+> **Amended 2026-07-30.** `hooks` must decide every discovered source, and a
+> profile that leaves one out does not load. `tools` is unchanged.
+
 Matching how extensions and skills already handle malformed input: log a warning,
 skip the file, carry on. A profile naming a tool or hook that does not exist does
 not load, so asking to switch to it fails at the switch with a clear error rather
 than silently granting fewer tools than it claims. Name collisions are
 first-wins-and-warn, as `tool_name_shadowed` and `skill_name_shadowed` already do.
+
+**`hooks` is a decision per source, not a list of active ones**, and a source
+left undecided is `profile_hook_undecided` — a validation failure like any
+other. `tools` stays an allowlist.
+
+The asymmetry is the reason. A profile that omits a tool yields a *less* capable
+agent; a profile that omits a hook would yield an *unguarded* one. A profile
+reads like a convenience layer, so the natural authoring mistake is to write only
+what you mean to change — and there is no safe default for that mistake:
+
+| reading | omission means | outcome |
+|---|---|---|
+| "the list is what is active" | unnamed hooks are off | an approval gate silently disappears |
+| "the list is what changes" | unnamed hooks are on | a profile can never turn anything off |
+
+Both are silent answers to a question the author did not know they were being
+asked. Requiring a decision per source makes the question unaskable rather than
+choosing a better default for it, and converts the mistake into a startup
+diagnostic that names the source you forgot.
+
+**Cost, stated plainly:** installing a new hook-bearing extension invalidates
+every existing profile until each names it. That is the trade — a loud failure
+that takes one line to fix, over a silent capability grant.
 
 ### 10. A central config names the default profile
 
@@ -358,6 +385,35 @@ with the defaults visible.
   Session discovery (#64) is not one.
 
 ## Amendments
+
+### 2026-07-30 — hooks are decided exhaustively
+
+**What changed.** Decision 9 now requires `hooks` to state a decision for every
+discovered hook source; the field is a mapping rather than a list of active
+names. Decision 3's description of the hooks dimension is reworded to match.
+`tools` is untouched.
+
+**Why.** The original wording — *"which registered hook handlers are active"* —
+did not say what an unmentioned source does, and both available answers are
+unsafe in different directions (see the table in Decision 9). The error analysis
+that settled it: a profile is a convenience layer, so the instinctive way to
+write one is to list only what you are changing, and under "the list is what is
+active" that instinct silently removes an approval gate. Failing toward *less*
+capability is tolerable; failing toward *more* is not.
+
+**What was considered and rejected.** A second class of hook — "global",
+registered by an extension declaring `ALWAYS_ACTIVE` and immune to profiles.
+Rejected as a second vocabulary that treats the symptom: it makes the dangerous
+omission survivable without making it visible, and it leaves the author still
+guessing whether their list is a delta or a complete set. Also rejected: reading
+immunity off the *absence* of a source name, which conflates "this is deliberate
+policy" with "this handler happened not to come from an extension file".
+
+**Consequence for the mechanism.** `Hooks.set_active_sources` still ignores
+unnamed registrations, but that is now understood as mechanical rather than a
+policy: source names are the vocabulary, so an unnamed handler could never be
+switched back on. Protecting a gate from being switched off is validation's job,
+not the registry's.
 
 ### 2026-07-30 — `resume_last`, a third transcript option
 

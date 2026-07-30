@@ -12,13 +12,21 @@ reduction rule (chain, first-cancel-or-last, early-exit-on-block); see
 
 Handlers may be sync or async. A handler that raises is logged and skipped
 unless `error_mode="raise"`.
+
+Registrations made through a *source* — today that means `load_extensions`
+stamping the extension file a handler came from — can be switched off and on
+by name with `set_active_sources`, which is how a profile says which hooks are
+active (ADR 0001, Decision 3). Activation filters at `emit` rather than
+unregistering, so a switch is a toggle rather than a reload. Handlers with no
+source always run, because there is no name by which anything could turn them
+back on.
 """
 
 from __future__ import annotations
 
 import inspect
 import logging
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from typing import Any, ClassVar, Literal, TypeAlias, overload
@@ -207,6 +215,9 @@ class Hooks:
         self._observers: list[_Registration] = []
         self._handlers: dict[str, list[_Registration]] = {}
         self._cleanups: list[Callable[[], Any]] = []
+        # None means "every source is active", which is what an entrypoint that
+        # has never heard of profiles gets and stays the default forever.
+        self._active: set[str] | None = None
 
     def set_context(self, context: Any) -> None:
         self.context = context
@@ -221,11 +232,45 @@ class Hooks:
     def source_names(self) -> set[str]:
         """The names of every source that has registered something.
 
-        What a profile's `hooks=(...)` is checked against, and the identity
-        source-scoped activation (#60) will select on.
+        What a profile's `hooks=(...)` is checked against — deliberately every
+        registered source, not just the active ones, so naming a source that is
+        currently switched off is valid rather than a validation failure.
         """
         regs = [*self._observers, *(r for rs in self._handlers.values() for r in rs)]
         return {r.name for r in regs if r.name is not None}
+
+    @property
+    def active_sources(self) -> set[str] | None:
+        """The active set, or `None` for "all of them"."""
+        return None if self._active is None else set(self._active)
+
+    def set_active_sources(self, names: Iterable[str] | None) -> None:
+        """Restrict which sources' handlers run. `None` restores all of them.
+
+        **Activation, not removal.** Registrations stay in place and are
+        filtered when an event is emitted. A profile switch toggles the same
+        source repeatedly — off for an excursion, on again afterwards — and
+        removal would mean re-importing the extension to get its handlers back,
+        which is a whole reload with new `Tool` instances as a side effect.
+        Filtering also keeps the operation idempotent and leaves every
+        `Unsubscribe` closure valid.
+
+        **An unnamed registration always runs**, and that is a mechanical
+        consequence rather than a policy: the vocabulary here is source names,
+        so a handler with no name could never be switched back *on* once it went
+        off. Only handlers registered through a source — today, `load_extensions`
+        stamping an extension file — are addressable at all.
+
+        It is not the mechanism that protects an approval gate from being
+        switched off. That job belongs to `profiles.validate`, which refuses to
+        load a profile that has not stated a decision for every discovered
+        source, so disabling a gate is something an author writes rather than
+        something they omit.
+        """
+        self._active = None if names is None else set(names)
+
+    def _is_active(self, reg: _Registration) -> bool:
+        return self._active is None or reg.name is None or reg.name in self._active
 
     # Overloads exist so pyright checks handler signatures per event type;
     # the implementation is a single string-keyed registry.
@@ -338,10 +383,14 @@ class Hooks:
         self._cleanups.clear()
 
     async def emit(self, event: HookEvent) -> Any | None:
+        # Filtering here rather than at registration is what makes activation a
+        # toggle: nothing is unregistered, so switching a source back on costs a
+        # set membership test instead of an extension re-import.
         for reg in list(self._observers):
-            await self._call(reg, event, self.context)
+            if self._is_active(reg):
+                await self._call(reg, event, self.context)
 
-        regs = list(self._handlers.get(event.type, ()))
+        regs = [r for r in self._handlers.get(event.type, ()) if self._is_active(r)]
         if not regs:
             return None
         reducer = self._REDUCERS.get(event.type, Hooks._reduce_observation)

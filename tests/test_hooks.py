@@ -27,7 +27,7 @@ from midge.hooks import (
     TurnStart,
     TurnStartResult,
 )
-from midge.messages import AssistantMessage, TextContent, UserMessage
+from midge.messages import AssistantMessage, TextContent, ToolCall, UserMessage
 from midge.tools import tool
 from tests.fakes import finish, install, say, tcall
 
@@ -532,3 +532,144 @@ async def test_before_compact_receives_cut_index() -> None:
 
     assert len(seen) == 1
     assert seen[0].cut_index > 0
+
+
+# --- source-scoped activation (#60) ---------------------------------------
+#
+# A profile names which hooks are active (ADR 0001, Decision 3). The mechanism
+# is activation rather than removal, and it deliberately does not reach
+# handlers that were registered without a source.
+
+
+def _named(hooks: Hooks, name: str, seen: list[str]) -> None:
+    hooks.on("message_end", lambda event, ctx: seen.append(name), name=name)
+
+
+async def test_all_sources_are_active_by_default() -> None:
+    """An entrypoint that never heard of profiles must be unaffected."""
+    hooks, seen = Hooks(), []
+    _named(hooks, "a", seen)
+    _named(hooks, "b", seen)
+
+    assert hooks.active_sources is None
+    await hooks.emit(MessageEnd(message=AssistantMessage()))
+
+    assert seen == ["a", "b"]
+
+
+async def test_an_inactive_source_does_not_run() -> None:
+    hooks, seen = Hooks(), []
+    _named(hooks, "a", seen)
+    _named(hooks, "b", seen)
+
+    hooks.set_active_sources({"a"})
+    await hooks.emit(MessageEnd(message=AssistantMessage()))
+
+    assert seen == ["a"]
+
+
+async def test_an_empty_active_set_silences_every_source() -> None:
+    """Distinct from `None`. A profile declaring `hooks=()` wants no extension
+    hooks, which is not the same as declining to express an opinion."""
+    hooks, seen = Hooks(), []
+    _named(hooks, "a", seen)
+
+    hooks.set_active_sources(set())
+    await hooks.emit(MessageEnd(message=AssistantMessage()))
+
+    assert seen == []
+    assert hooks.active_sources == set()
+
+
+async def test_activation_is_a_toggle_not_a_removal() -> None:
+    """The reason this is activation rather than `remove_source`: a profile
+    switch turns the same source off and on repeatedly, and removal would mean
+    re-importing the extension to get its handlers back."""
+    hooks, seen = Hooks(), []
+    _named(hooks, "a", seen)
+
+    hooks.set_active_sources(set())
+    await hooks.emit(MessageEnd(message=AssistantMessage()))
+    hooks.set_active_sources({"a"})
+    await hooks.emit(MessageEnd(message=AssistantMessage()))
+
+    assert seen == ["a"]
+    # Still one registration; nothing was unregistered and re-added.
+    assert hooks.source_names() == {"a"}
+
+
+async def test_none_restores_every_source() -> None:
+    hooks, seen = Hooks(), []
+    _named(hooks, "a", seen)
+
+    hooks.set_active_sources(set())
+    hooks.set_active_sources(None)
+    await hooks.emit(MessageEnd(message=AssistantMessage()))
+
+    assert seen == ["a"]
+    assert hooks.active_sources is None
+
+
+async def test_an_unnamed_handler_is_never_deactivated() -> None:
+    """The policy hole this closes: an embedder's own approval gate or audit
+    observer must not be switchable off by a `.py` file discovered on disk."""
+    hooks, seen = Hooks(), []
+    hooks.on("message_end", lambda event, ctx: seen.append("embedder"))
+    _named(hooks, "ext", seen)
+
+    hooks.set_active_sources(set())
+    await hooks.emit(MessageEnd(message=AssistantMessage()))
+
+    assert seen == ["embedder"]
+
+
+async def test_observers_are_scoped_too() -> None:
+    """Filtering in `emit` rather than at registration is what covers these."""
+    hooks, seen = Hooks(), []
+    hooks.observe(lambda event, ctx: seen.append("watcher"), name="watcher")
+
+    hooks.set_active_sources(set())
+    await hooks.emit(MessageEnd(message=AssistantMessage()))
+    assert seen == []
+
+    hooks.set_active_sources({"watcher"})
+    await hooks.emit(MessageEnd(message=AssistantMessage()))
+    assert seen == ["watcher"]
+
+
+async def test_an_inactive_source_cannot_block_a_tool_call() -> None:
+    """Scoping has to reach the reducers, not only observation — blocking is
+    the event where a silently-still-active handler would matter most."""
+    hooks = Hooks()
+    hooks.on(
+        "tool_call",
+        lambda event, ctx: ToolCallResult(block=True, reason="denied"),
+        name="approve",
+    )
+    call = ToolCall(id="c1", name="read", arguments={})
+
+    blocked = await hooks.emit(ToolCallEvent(tool_call=call))
+    assert blocked is not None and blocked.block is True
+
+    hooks.set_active_sources(set())
+    assert await hooks.emit(ToolCallEvent(tool_call=call)) is None
+
+
+async def test_source_names_reports_inactive_sources_too() -> None:
+    """A profile may name a hook that is currently switched off — validation
+    asks what exists, not what is running."""
+    hooks, seen = Hooks(), []
+    _named(hooks, "a", seen)
+
+    hooks.set_active_sources(set())
+
+    assert hooks.source_names() == {"a"}
+
+
+async def test_the_active_set_is_a_copy() -> None:
+    hooks = Hooks()
+    hooks.set_active_sources({"a"})
+    got = hooks.active_sources
+    assert got is not None
+    got.add("b")
+    assert hooks.active_sources == {"a"}

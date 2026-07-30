@@ -11,11 +11,18 @@ from pydantic import ValidationError
 
 from midge.agent import Agent
 from midge.client import Client
-from midge.hooks import Hooks, ProviderRequestResult, ToolCallResult, TurnStartResult
+from midge.hooks import (
+    Hooks,
+    ProviderRequestResult,
+    ToolCallEvent,
+    ToolCallResult,
+    TurnStartResult,
+)
 from midge.messages import AssistantMessage, TextContent, ToolCall, UserMessage
 from midge.persistence import Session
 from midge.subagents import (
     SubagentTool,
+    _ChildHooks,
     bind_subagents,
     subagent,
 )
@@ -604,3 +611,28 @@ async def test_a_child_on_another_provider_routes_there(
     # was never touched.
     assert set(built) == {"downstream"}
     assert built["downstream"].bodies[0]["model"] == "child-model"
+
+
+async def test_a_child_inherits_the_parent_active_source_set() -> None:
+    """Deactivating a source in the parent has to reach delegated work too.
+
+    `_ChildHooks` delegates to the parent's `emit`, which is where activation
+    filters — so this falls out of the design rather than needing its own
+    mechanism. Pinned because the opposite would be a hole: an approval hook
+    switched off for the parent but still firing for its sub-agents would make
+    a profile's hook list mean two different things at two depths.
+    """
+    parent = Hooks()
+    parent.on(
+        "tool_call",
+        lambda event, ctx: ToolCallResult(block=True, reason="denied"),
+        name="approve",
+    )
+    child = _ChildHooks(parent)
+    call = ToolCall(id="c1", name="read", arguments={})
+
+    assert await child.emit(ToolCallEvent(tool_call=call)) is not None
+
+    parent.set_active_sources(set())
+
+    assert await child.emit(ToolCallEvent(tool_call=call)) is None
