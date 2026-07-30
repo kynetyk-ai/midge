@@ -33,7 +33,7 @@ from midge.hooks import Hooks
 from midge.logs import configure as configure_logging
 from midge.logs import provider_host
 from midge.messages import TextContent, UserMessage
-from midge.persistence import Session
+from midge.persistence import Session, resolve_session_path
 from midge.skills import default_skill_dirs, load_skills, skill_message, skills_prompt
 from midge.subagents import bind_subagents
 
@@ -81,7 +81,16 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         "--session",
         type=Path,
         metavar="PATH",
-        help="Append turns to a JSONL session file. Resumes if the file exists.",
+        help=(
+            "Append turns to a JSONL session file. Resumes if the file exists. "
+            "A relative path is taken under the session directory. Without this, "
+            "a timestamped file is created there."
+        ),
+    )
+    parser.add_argument(
+        "--no-session",
+        action="store_true",
+        help="Do not write a transcript for this run.",
     )
     parser.add_argument(
         "--compaction-threshold",
@@ -114,6 +123,7 @@ async def amain(
     skill_dirs: list[Path] | None = None,
     force_skill: str | None = None,
     session_path: Path | None = None,
+    no_session: bool = False,
     compaction_threshold: int | None = None,
     compaction_keep_recent: int = 20_000,
 ) -> int:
@@ -143,13 +153,15 @@ async def amain(
     model = config.model
     durable = BASE_SYSTEM_PROMPT
 
-    if session_path is not None:
-        if session_path.exists():
-            session = Session.load(session_path)
-            model = session.header.model
-            durable = session.header.system_prompt or BASE_SYSTEM_PROMPT
-        else:
-            session = Session.new(session_path, model=model, system_prompt=durable)
+    session_file = resolve_session_path(
+        None if no_session else session_path,
+        directory=config.session.dir,
+        enabled=config.session.enabled and not no_session,
+    )
+    if session_file is not None:
+        session = Session.open(session_file, model=model, system_prompt=durable)
+        model = session.model
+        durable = session.system_prompt or BASE_SYSTEM_PROMPT
 
     # See cli.py: tool and skill availability is recomposed every start rather
     # than restored from the header, which froze at session creation.
@@ -168,7 +180,7 @@ async def amain(
         max_attempts=config.retry.max_attempts,
         retry_base_delay=config.retry.base_delay,
     )
-    bind_subagents(registry, client=client, model=model, hooks=hooks, session_path=session_path)
+    bind_subagents(registry, client=client, model=model, hooks=hooks, session=session)
     agent = Agent(
         client=client,
         model=model,
@@ -254,6 +266,7 @@ def main() -> None:
                 skill_dirs=list(args.skill_dir),
                 force_skill=args.skill,
                 session_path=args.session,
+                no_session=args.no_session,
                 compaction_threshold=args.compaction_threshold,
                 compaction_keep_recent=args.compaction_keep_recent,
             )

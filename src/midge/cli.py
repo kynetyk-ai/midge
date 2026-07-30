@@ -24,7 +24,7 @@ from midge.extensions import BUILTIN_TOOL_DIRS, load_extensions
 from midge.hooks import Hooks, SessionEnd, SessionStart
 from midge.logs import configure as configure_logging
 from midge.logs import provider_host
-from midge.persistence import Session
+from midge.persistence import Session, resolve_session_path
 from midge.profiles import ProfileSet
 from midge.profiles import validate as validate_profiles
 from midge.providers import Capabilities, ModelRegistry
@@ -83,7 +83,19 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         "--session",
         type=Path,
         metavar="PATH",
-        help="Append turns to a JSONL session file. Resumes if the file exists.",
+        help=(
+            "Append turns to a JSONL session file. Resumes if the file exists. "
+            "A relative path is taken under the session directory. Without this, "
+            "a timestamped file is created there."
+        ),
+    )
+    # `store_true` despite the argparse-default trap `tests/test_cli_config.py`
+    # pins: absent is False, which means "no opinion" here rather than a value
+    # that would shadow `[session] enabled`.
+    parser.add_argument(
+        "--no-session",
+        action="store_true",
+        help="Do not write a transcript for this run.",
     )
     parser.add_argument(
         "--compaction-threshold",
@@ -163,12 +175,24 @@ def main(argv: list[str] | None = None) -> None:
     model = config.model
     durable = BASE_SYSTEM_PROMPT
 
-    if args.session is not None:
-        if args.session.exists():
-            session = Session.load(args.session)
-            model, durable = resume_identity(session)
-        else:
-            session = Session.new(args.session, model=model, system_prompt=durable)
+    if args.no_session and args.session is not None:
+        # Contradictory, so say which won rather than silently picking. Same
+        # treatment `Config.load` gives `[providers.*]` colliding with the
+        # singular `provider`.
+        _logger.warning("session_flags_conflict ignoring=--session in_favour_of=--no-session")
+    requested = None if args.no_session else args.session
+    session_file = resolve_session_path(
+        requested,
+        directory=config.session.dir,
+        enabled=config.session.enabled and not args.no_session,
+    )
+    if session_file is not None:
+        # `open` rather than the load/new pair: a generated path never exists
+        # and a named one may or may not, which is exactly what it decides.
+        session = Session.open(session_file, model=model, system_prompt=durable)
+        # Unconditional: on a session just created these read back exactly what
+        # was passed in, so there is nothing to branch on.
+        model, durable = resume_identity(session)
 
     # The header records the agent's identity. Which tools and skills exist is a
     # fact about this machine right now, so it is recomposed on every start
@@ -183,7 +207,7 @@ def main(argv: list[str] | None = None) -> None:
         provider_host(config.base_url),
         len(registry),
         len(skills),
-        args.session or "-",
+        session_file or "-",
     )
     # The registry validates its own wiring — a model naming a provider that was
     # never defined, or a provider naming an adapter that does not exist — and
@@ -260,7 +284,7 @@ def main(argv: list[str] | None = None) -> None:
         client=client,
         model=model,
         hooks=hooks,
-        session_path=args.session,
+        session=session,
     )
     agent = Agent(
         client=client,
@@ -272,7 +296,7 @@ def main(argv: list[str] | None = None) -> None:
     if session is not None:
         agent.history = list(session.messages)
 
-    session_path = str(args.session) if args.session is not None else None
+    session_path = str(session_file) if session_file is not None else None
 
     if args.rpc:
         # RPC owns its loop, so the session bookends run inside it rather than

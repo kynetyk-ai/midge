@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,8 @@ from midge.persistence import (
     SessionHeader,
     fold_history,
     read_transcript,
+    resolve_session_path,
+    session_continuations,
     session_model,
     session_prompt,
 )
@@ -560,6 +563,154 @@ def test_never_changed_folds_to_none(tmp_path: Path) -> None:
     _header, entries = read_transcript(path)
     assert session_model(entries) is None
     assert session_prompt(entries) is None
+
+
+# --- multi-file sessions: origin and forward links (#62) -------------------
+
+
+def test_a_continued_record_is_not_folded_into_history(tmp_path: Path) -> None:
+    """The trap in adding a record type: `fold_history` dispatches on the
+    `SessionRecord` union, and its final `else` appends. A record parsed but
+    left out of the union arrives in the conversation as though it were a
+    message."""
+    path = tmp_path / "s.jsonl"
+    with Session.new(path, model="m") as s:
+        s.append(UserMessage(content="hello"))
+        s.append_continued(path="s.explore-c1.jsonl", reason="subagent")
+
+    _header, entries = read_transcript(path)
+    assert len(fold_history(entries)) == 1
+    assert _messages(path) == ["hello"]
+
+
+def test_a_continued_record_round_trips(tmp_path: Path) -> None:
+    path = tmp_path / "s.jsonl"
+    with Session.new(path, model="m") as s:
+        s.append_continued(path="s.explore-c1.jsonl", reason="subagent")
+
+    _header, entries = read_transcript(path)
+    (record,) = session_continuations(entries)
+    assert (record.path, record.reason) == ("s.explore-c1.jsonl", "subagent")
+    assert record.timestamp > 0
+
+
+def test_continuations_come_back_in_the_order_they_happened(tmp_path: Path) -> None:
+    # A parent has one record per child, so this is a list rather than a
+    # last-write-wins read like `session_model`.
+    path = tmp_path / "s.jsonl"
+    with Session.new(path, model="m") as s:
+        s.append_continued(path="first.jsonl", reason="subagent")
+        s.append_continued(path="second.jsonl", reason="subagent")
+        s.append_continued(path="third.jsonl", reason="profile")
+
+    _header, entries = read_transcript(path)
+    assert [r.path for r in session_continuations(entries)] == [
+        "first.jsonl",
+        "second.jsonl",
+        "third.jsonl",
+    ]
+
+
+def test_a_forward_link_is_appended_without_rewriting_anything(tmp_path: Path) -> None:
+    path = tmp_path / "s.jsonl"
+    with Session.new(path, model="m") as s:
+        s.append(UserMessage(content="hi"))
+        before = path.read_bytes()
+        s.append_continued(path="child.jsonl", reason="subagent")
+        after = path.read_bytes()
+
+    assert after.startswith(before), "an earlier byte of the file changed"
+
+
+def test_origin_round_trips_on_the_header(tmp_path: Path) -> None:
+    path = tmp_path / "child.jsonl"
+    Session.new(path, model="m", origin="subagent").close()
+
+    raw = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
+    assert raw["origin"] == "subagent"
+    assert Session.load(path).header.origin == "subagent"
+
+
+def test_a_root_session_has_no_origin(tmp_path: Path) -> None:
+    # Absent rather than a "root" value: there is nothing to say about a file
+    # that belongs to no one.
+    path = tmp_path / "s.jsonl"
+    Session.new(path, model="m").close()
+    assert Session.load(path).header.origin is None
+
+
+def test_a_header_written_before_origin_existed_still_loads(tmp_path: Path) -> None:
+    path = tmp_path / "old.jsonl"
+    path.write_text(
+        '{"type":"header","version":1,"created_at":"2026-01-01","model":"m"}\n',
+        encoding="utf-8",
+    )
+    assert Session.load(path).header.origin is None
+
+
+def test_an_origin_this_build_never_writes_still_loads(tmp_path: Path) -> None:
+    """Why `origin` declares all three values though only `subagent` has a
+    producer. VERSION deliberately does not move for this, so a newer build's
+    `origin: "profile"` arrives in a file this build must read — and a Literal
+    that did not list it would raise on the *header* and strand the transcript
+    entirely, not merely lose the field."""
+    path = tmp_path / "forked.jsonl"
+    path.write_text(
+        f'{{"type":"header","version":{VERSION},"created_at":"x",'
+        f'"model":"m","origin":"profile"}}\n',
+        encoding="utf-8",
+    )
+    assert Session.load(path).header.origin == "profile"
+
+
+def test_forward_links_do_not_move_the_version(tmp_path: Path) -> None:
+    """Same test `model_change` and `identity` passed, unlike `clear` in #55: an
+    older build skipping a `continued` record is left with no forward link,
+    which is what every build before this one had. Nothing is restored."""
+    path = tmp_path / "s.jsonl"
+    with Session.new(path, model="m", origin="subagent") as s:
+        s.append_continued(path="child.jsonl", reason="subagent")
+
+    header, _entries = read_transcript(path)
+    assert header.version == 2
+
+
+# --- where a transcript goes -----------------------------------------------
+
+
+def test_an_absolute_session_path_is_used_as_given(tmp_path: Path) -> None:
+    explicit = tmp_path / "elsewhere" / "run.jsonl"
+    assert resolve_session_path(explicit, directory=tmp_path / "sessions") == explicit
+
+
+def test_a_relative_session_path_lands_in_the_session_directory(tmp_path: Path) -> None:
+    # The behaviour change worth knowing about: `--session run.jsonl` is no
+    # longer `./run.jsonl`. An absolute path is the way out.
+    sessions = tmp_path / "sessions"
+    assert resolve_session_path(Path("run.jsonl"), directory=sessions) == sessions / "run.jsonl"
+
+
+def test_a_generated_name_is_timestamped_and_unique(tmp_path: Path) -> None:
+    """The stamp so a listing sorts chronologically; the suffix because
+    `Session.new` raises on collision rather than retrying, so two processes
+    starting in the same second would otherwise fail at startup."""
+    sessions = tmp_path / "sessions"
+    first = resolve_session_path(None, directory=sessions)
+    second = resolve_session_path(None, directory=sessions)
+    assert first is not None and second is not None
+    assert first.parent == sessions
+    assert re.fullmatch(r"\d{8}-\d{6}-[0-9a-f]{4}\.jsonl", first.name)
+    assert first != second
+
+
+def test_disabled_means_no_transcript(tmp_path: Path) -> None:
+    assert resolve_session_path(None, directory=tmp_path, enabled=False) is None
+
+
+def test_a_named_path_outranks_a_default_off(tmp_path: Path) -> None:
+    # Naming a file is a deliberate request; `enabled=False` is only a default.
+    named = resolve_session_path(Path("run.jsonl"), directory=tmp_path, enabled=False)
+    assert named == tmp_path / "run.jsonl"
 
 
 def test_a_multiline_prompt_round_trips(tmp_path: Path) -> None:

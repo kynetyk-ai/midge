@@ -87,6 +87,15 @@ class RetryConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class SessionConfig:
+    enabled: bool = True
+    # None means `cwd/.midge/sessions`, resolved where it is used rather than
+    # here. `Path.cwd()` evaluated at import time freezes whatever directory the
+    # interpreter started in — the reason `config_paths` is a function too.
+    dir: Path | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ProviderConfig:
     """How to reach one service — an entry in `[providers.*]`.
 
@@ -119,6 +128,7 @@ class Config:
     compaction_keep_recent: int = DEFAULT_KEEP_RECENT
     log: LogConfig = LogConfig()
     retry: RetryConfig = RetryConfig()
+    session: SessionConfig = SessionConfig()
     # The model registry. Empty is permissive — any model string is accepted and
     # goes to the single provider above, which is every install that predates
     # these tables. Writing a `[models]` table is what turns enforcement on.
@@ -157,6 +167,10 @@ class Config:
             retry=RetryConfig(
                 max_attempts=src.integer("retry", "max_attempts", default=3),
                 base_delay=src.number("retry", "base_delay", default=0.5),
+            ),
+            session=SessionConfig(
+                enabled=src.flag("session", "enabled", "MIDGE_SESSION", default=True),
+                dir=src.path("session", "dir", "MIDGE_SESSION_DIR"),
             ),
             providers=_providers(src),
             models=_models(src),
