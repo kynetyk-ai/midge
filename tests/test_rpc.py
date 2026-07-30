@@ -1962,3 +1962,98 @@ async def test_set_session_name_is_enumerated_and_round_trips(tmp_path: Path) ->
     await task
     session.close()
     assert Session.load(path).name == "from the schema"
+
+
+# --- a changed identity survives a resume (#57) ----------------------------
+
+
+async def test_set_model_survives_a_resume(tmp_path: Path) -> None:
+    """The defect: `success: true`, then silently reverted on the next resume.
+
+    Nothing on the wire said so, and `set_model` is in BUILTIN_COMMANDS, so
+    `get_commands` advertised it to clients with no way to discover the caveat.
+    """
+    path = tmp_path / "s.jsonl"
+    session = Session.new(path, model="original")
+    agent = Agent(client=Client(), model="original")
+    _server, inbox, outbox, task = _session_server(agent, session)
+
+    resp = await _command(inbox, outbox, {"id": "m", "type": "set_model", "model": "switched"})
+    assert resp["success"] is True
+
+    inbox.close()
+    await task
+    session.close()
+
+    assert Session.load(path).model == "switched"
+
+
+async def test_set_system_prompt_survives_a_resume(tmp_path: Path) -> None:
+    path = tmp_path / "s.jsonl"
+    session = Session.new(path, model="m", system_prompt="You are a coding assistant.")
+    agent = Agent(client=Client(), model="m")
+    server = RpcServer(
+        agent, session=session, base_prompt="You are a coding assistant.", extension_prompt=GENERATED
+    )
+    agent.system_prompt = server._compose_prompt()
+    inbox, outbox = _Inbox(), _Outbox()
+    task = asyncio.create_task(server.serve(read_line=inbox.read_line, write=outbox.write))
+
+    resp = await _command(
+        inbox,
+        outbox,
+        {"id": "p", "type": "set_system_prompt", "prompt": "You are an adversarial reviewer."},
+    )
+    assert resp["success"] is True
+
+    inbox.close()
+    await task
+    session.close()
+
+    stored = Session.load(path).system_prompt
+    # The base, not the composed prompt: storing the composed string would
+    # duplicate the generated half on every resume, and `cli.py` re-appends it.
+    assert stored == "You are an adversarial reviewer."
+    assert GENERATED not in (stored or "")
+
+
+async def test_setting_either_without_a_session_still_succeeds() -> None:
+    # Persistence is optional; the commands are not gated on it.
+    agent = Agent(client=Client(), model="m")
+    _server, inbox, outbox, task = _start_server(agent)
+
+    assert (await _command(inbox, outbox, {"id": "1", "type": "set_model", "model": "x"}))[
+        "success"
+    ] is True
+    assert (
+        await _command(inbox, outbox, {"id": "2", "type": "set_system_prompt", "prompt": "y"})
+    )["success"] is True
+    assert agent.model == "x"
+
+    inbox.close()
+    await task
+
+
+async def test_the_response_says_whether_the_change_is_durable(tmp_path: Path) -> None:
+    """#57's complaint was that nothing on the wire said so.
+
+    A client cannot see whether a session is attached, and both commands report
+    success either way, so the answer has to be in the response.
+    """
+    agent = Agent(client=Client(), model="m")
+    _server, inbox, outbox, task = _start_server(agent)
+    resp = await _command(inbox, outbox, {"id": "1", "type": "set_model", "model": "x"})
+    assert resp["data"]["durable"] is False
+    inbox.close()
+    await task
+
+    session = Session.new(tmp_path / "s.jsonl", model="m")
+    agent = Agent(client=Client(), model="m")
+    _server, inbox, outbox, task = _session_server(agent, session)
+    resp = await _command(inbox, outbox, {"id": "2", "type": "set_model", "model": "x"})
+    assert resp["data"]["durable"] is True
+    resp = await _command(inbox, outbox, {"id": "3", "type": "set_system_prompt", "prompt": "p"})
+    assert resp["data"]["durable"] is True
+    inbox.close()
+    await task
+    session.close()

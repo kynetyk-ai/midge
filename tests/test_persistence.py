@@ -19,7 +19,10 @@ from midge.persistence import (
     ClearRecord,
     Session,
     SessionHeader,
+    fold_history,
     read_transcript,
+    session_model,
+    session_prompt,
 )
 
 
@@ -454,3 +457,118 @@ def test_a_newer_session_is_rejected(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match="incompatible"):
         Session.load(p)
+
+
+# --- a changed identity survives a resume (#57) ----------------------------
+
+
+def test_the_model_is_the_header_until_a_record_supersedes_it(tmp_path: Path) -> None:
+    path = tmp_path / "s.jsonl"
+    with Session.new(path, model="gpt-4o-mini") as s:
+        assert s.model == "gpt-4o-mini"
+        s.set_model("granite")
+        assert s.model == "granite"
+
+    assert Session.load(path).model == "granite"
+
+
+def test_the_base_prompt_survives_a_resume(tmp_path: Path) -> None:
+    path = tmp_path / "s.jsonl"
+    with Session.new(path, model="m", system_prompt="original") as s:
+        s.set_system_prompt("you are adversarial")
+
+    assert Session.load(path).system_prompt == "you are adversarial"
+
+
+def test_the_header_is_never_rewritten(tmp_path: Path) -> None:
+    """The whole reason these are records rather than header edits.
+
+    Truncated-tail recovery in `read_transcript` is only sound because nothing
+    earlier in the file is ever rewritten, so a changed identity has to append.
+    """
+    path = tmp_path / "s.jsonl"
+    with Session.new(path, model="first", system_prompt="first-prompt") as s:
+        s.set_model("second")
+        s.set_system_prompt("second-prompt")
+
+    loaded = Session.load(path)
+    assert (loaded.header.model, loaded.header.system_prompt) == ("first", "first-prompt")
+    assert (loaded.model, loaded.system_prompt) == ("second", "second-prompt")
+
+
+def test_the_last_write_wins(tmp_path: Path) -> None:
+    path = tmp_path / "s.jsonl"
+    with Session.new(path, model="a") as s:
+        s.set_model("b")
+        s.set_model("c")
+        s.set_system_prompt("p1")
+        s.set_system_prompt("p2")
+
+    loaded = Session.load(path)
+    assert (loaded.model, loaded.system_prompt) == ("c", "p2")
+
+
+def test_the_records_are_appended_not_replacing_anything(tmp_path: Path) -> None:
+    path = tmp_path / "s.jsonl"
+    with Session.new(path, model="a") as s:
+        s.set_model("b")
+        before = path.read_bytes()
+        s.set_model("c")
+        after = path.read_bytes()
+
+    # A strict prefix: the second change added a line and touched nothing else.
+    assert after.startswith(before)
+    assert len(after) > len(before)
+
+
+def test_an_identity_record_is_not_history(tmp_path: Path) -> None:
+    # It is metadata about the agent, not a turn — `fold_history` must skip it
+    # the way it skips a rename.
+    path = tmp_path / "s.jsonl"
+    with Session.new(path, model="m") as s:
+        s.append(UserMessage(content="hello"))
+        s.set_model("other")
+        s.set_system_prompt("other")
+
+    _header, entries = read_transcript(path)
+    assert len(fold_history(entries)) == 1
+
+
+def test_a_changed_identity_does_not_move_the_version(tmp_path: Path) -> None:
+    """Deliberately not bumped, unlike `clear` in #55.
+
+    An older build skips an entry type it does not know, which for these means
+    "the change did not happen" — exactly what that build did anyway. A skipped
+    `clear`, by contrast, restores messages the user discarded.
+    """
+    path = tmp_path / "s.jsonl"
+    with Session.new(path, model="m") as s:
+        s.set_model("other")
+        s.set_system_prompt("other")
+
+    header, _entries = read_transcript(path)
+    assert header.version == 2
+
+
+def test_never_changed_folds_to_none(tmp_path: Path) -> None:
+    # None means "no record", not "no model" — the caller holds the header and
+    # decides. Conflating them would make these look authoritative.
+    path = tmp_path / "s.jsonl"
+    with Session.new(path, model="m", system_prompt="p"):
+        pass
+
+    _header, entries = read_transcript(path)
+    assert session_model(entries) is None
+    assert session_prompt(entries) is None
+
+
+def test_a_multiline_prompt_round_trips(tmp_path: Path) -> None:
+    # `set_session_name` flattens newlines because a name is a display string;
+    # a system prompt is not, and JSON escaping keeps it on one line anyway.
+    prompt = "You review adversarially.\n\nRules:\n- assume it is wrong\n"
+    path = tmp_path / "s.jsonl"
+    with Session.new(path, model="m") as s:
+        s.set_system_prompt(prompt)
+
+    assert Session.load(path).system_prompt == prompt
+    assert len([ln for ln in path.read_text().splitlines() if ln.strip()]) == 2

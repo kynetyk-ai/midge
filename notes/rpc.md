@@ -314,6 +314,12 @@ targets are not independent.
 
 `_base_prompt` is untouched, so a prompt set via `set_system_prompt` survives.
 
+Since #57 it survives a *resume* too: `set_system_prompt` and `set_model` append
+an `identity` / `model_change` record to the session, and `cli.py` folds them
+back through `resume_identity`. Before that both were process-lifetime only and
+reverted silently. Persistence stays optional — without a session the commands
+still succeed, and the response's `durable` is what says which happened.
+
 ### Not on the wire
 
 Per-file errors. Both loaders already skip a bad file, log it, and carry on;

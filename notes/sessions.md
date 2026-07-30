@@ -188,3 +188,41 @@ path walk. Markers are the half that needs none of that.
 Note also that `parent_session` / `parent_tool_call_id` on sub-agent headers
 (#44) is a *cross-file* relation. A within-file tree would sit beside it, not
 subsume it.
+
+## Update (#57) — the header records an origin, not a state
+
+`set_model` and `set_system_prompt` were process-lifetime only. Both returned
+`success: true`, both took effect in `get_state`, and both silently reverted on
+the next resume, because `cli.py` read `session.header.model` /
+`session.header.system_prompt` back as authoritative. Nothing on the wire said
+so, and both are in `BUILTIN_COMMANDS`, so `get_commands` advertised them to
+clients with no way to discover the caveat.
+
+The fix is the shape #49 had already established, applied one layer up. Two more
+appended records — `model_change` and `identity` — folded on load, last write
+wins. What this settled is what `SessionHeader` is *for*:
+
+> **The header is the session's origin, not its current state.** It says what
+> the session started as. Everything mutable is a record.
+
+That was already true of the name and of history; it is now true of the model
+and the prompt too, which leaves nothing mutable on line 1. `Session.model` and
+`Session.system_prompt` are the folded values — read those, never
+`header.model`. `cli.py` reads them through `resume_identity`, which exists as a
+named function only so the resume path could be tested; nothing else did.
+
+### `identity` stores the *base* prompt
+
+Not the composed one. `cli.py` recomposes the extension and skills halves on
+every start — deliberately, so a skill added after the session began is visible
+— so persisting the composed string would duplicate the catalogue on every
+resume and bake in absolute paths from one machine. Same reasoning `new_session`
+already applied to the header it writes.
+
+### `VERSION` did not move, and that asymmetry is the point
+
+#49 bumped to 2 for `clear` specifically: an older build skips an entry type it
+does not know, and skipping a `clear` **restores messages the user discarded**.
+Skipping a `model_change` or an `identity` degrades to "the change did not
+happen" — exactly what that build did anyway. A version exists so a build that
+would *misread* a file declines; it is not a changelog.

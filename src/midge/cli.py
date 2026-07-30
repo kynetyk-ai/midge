@@ -97,6 +97,18 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def resume_identity(session: Session) -> tuple[str, str]:
+    """The model and base prompt to resume a session with.
+
+    Not `header.model` / `header.system_prompt`: the header is what the session
+    *started* as and is never rewritten. `set_model` and `set_system_prompt`
+    append records that supersede it, which `Session.load` has already folded
+    onto these attributes. Reading the header instead is the defect in #57 —
+    both commands reported success and then silently reverted.
+    """
+    return session.model, session.system_prompt or BASE_SYSTEM_PROMPT
+
+
 def main(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
     # Config is parsed before logging is configured, because the log level is one
@@ -143,8 +155,7 @@ def main(argv: list[str] | None = None) -> None:
     if args.session is not None:
         if args.session.exists():
             session = Session.load(args.session)
-            model = session.header.model
-            durable = session.header.system_prompt or BASE_SYSTEM_PROMPT
+            model, durable = resume_identity(session)
         else:
             session = Session.new(args.session, model=model, system_prompt=durable)
 
