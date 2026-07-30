@@ -11,40 +11,46 @@ knows which one it is:
   `logging.StreamHandler` captures the stream at construction and holds that
   reference — so a handler built before `App.run()` writes past the redirect
   and corrupts the display. Pass `TextualHandler` (it resolves the target per
-  record) or set `MIDGE_LOG_FILE`.
+  record) or set a log file.
 
-Env:
-    MIDGE_LOG_LEVEL          level for the `midge` logger (default WARNING)
-    MIDGE_LOG_LEVEL_OPENAI   level for the `openai` logger (default WARNING)
-    MIDGE_LOG_FILE           write to this path instead of stderr
-    MIDGE_LOG_PAYLOAD_CHARS  truncation cap for `payload` (default 2000, 0 = off)
+What to log is a `LogConfig`, which the entrypoint gets from `midge.config` —
+this module reads no environment variables of its own. `configure` therefore has
+to be called before the first log line worth keeping, and after configuration has
+been parsed; `config.load` defers its own diagnostics for exactly that reason.
 """
 
 from __future__ import annotations
 
 import logging
-import os
 import sys
 from urllib.parse import urlsplit
 
-DEFAULT_PAYLOAD_CHARS = 2000
+from midge.config import DEFAULT_PAYLOAD_CHARS, LogConfig
+
 _FORMAT = "%(asctime)s %(levelname)-7s %(name)s %(message)s"
 
 _logger = logging.getLogger(__name__)
 
+# Set by `configure`. Module state because `payload` is rendered lazily inside a
+# log record's formatting, long after any config object is in scope.
+_payload_cap = DEFAULT_PAYLOAD_CHARS
 
-def configure(handler: logging.Handler | None = None) -> None:
+
+def configure(handler: logging.Handler | None = None, *, log: LogConfig | None = None) -> None:
+    global _payload_cap
+
+    log = log or LogConfig()
     if handler is None:
-        log_file = os.getenv("MIDGE_LOG_FILE")
         handler = (
-            logging.FileHandler(log_file, encoding="utf-8")
-            if log_file
+            logging.FileHandler(log.file, encoding="utf-8")
+            if log.file
             else logging.StreamHandler(sys.stderr)
         )
     handler.setFormatter(logging.Formatter(_FORMAT))
 
-    level, bad_level = _level("MIDGE_LOG_LEVEL")
-    openai_level, bad_openai = _level("MIDGE_LOG_LEVEL_OPENAI")
+    _payload_cap = log.payload_chars
+    level, bad_level = _level(log.level)
+    openai_level, bad_openai = _level(log.openai_level)
 
     root = logging.getLogger("midge")
     for existing in list(root.handlers):
@@ -62,9 +68,9 @@ def configure(handler: logging.Handler | None = None) -> None:
     logging.getLogger("openai").setLevel(openai_level)
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
-    for var, value in (("MIDGE_LOG_LEVEL", bad_level), ("MIDGE_LOG_LEVEL_OPENAI", bad_openai)):
+    for key, value in (("log.level", bad_level), ("log.openai_level", bad_openai)):
         if value is not None:
-            _logger.warning("log_level_invalid var=%s value=%r using=WARNING", var, value)
+            _logger.warning("log_level_invalid key=%s value=%r using=WARNING", key, value)
 
 
 class _Payload:
@@ -82,7 +88,7 @@ class _Payload:
 
     def __str__(self) -> str:
         text = repr(self.value)
-        cap = _payload_chars()
+        cap = _payload_cap
         if cap <= 0 or len(text) <= cap:
             return text
         return f"{text[:cap]}… (truncated, {len(text) - cap} chars)"
@@ -111,29 +117,16 @@ def payload(value: object) -> _Payload:
     return _Payload(value)
 
 
-def _payload_chars() -> int:
-    raw = os.getenv("MIDGE_LOG_PAYLOAD_CHARS")
-    if raw is None:
-        return DEFAULT_PAYLOAD_CHARS
-    try:
-        return int(raw)
-    except ValueError:
-        return DEFAULT_PAYLOAD_CHARS
-
-
-def _level(var: str) -> tuple[int, str | None]:
+def _level(name: str) -> tuple[int, str | None]:
     """Resolve a level name, reporting the raw value back when it is unusable.
 
-    A typo in an env var should not stop the harness from starting, but it also
-    should not silently run at a level the user did not ask for.
+    A typo should not stop the harness from starting, but it also should not
+    silently run at a level the user did not ask for.
     """
-    raw = os.getenv(var)
-    if raw is None:
-        return logging.WARNING, None
-    resolved = logging.getLevelNamesMapping().get(raw.strip().upper())
+    resolved = logging.getLevelNamesMapping().get(name.strip().upper())
     if not isinstance(resolved, int):
-        return logging.WARNING, raw
+        return logging.WARNING, name
     return resolved, None
 
 
-__all__ = ["DEFAULT_PAYLOAD_CHARS", "configure", "payload", "provider_host"]
+__all__ = ["configure", "payload", "provider_host"]

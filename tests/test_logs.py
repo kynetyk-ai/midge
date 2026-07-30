@@ -6,30 +6,24 @@ from pathlib import Path
 
 import pytest
 
-from midge.logs import DEFAULT_PAYLOAD_CHARS, configure, payload, provider_host
-
-_VARS = (
-    "MIDGE_LOG_LEVEL",
-    "MIDGE_LOG_LEVEL_OPENAI",
-    "MIDGE_LOG_FILE",
-    "MIDGE_LOG_PAYLOAD_CHARS",
-)
+from midge import logs
+from midge.config import DEFAULT_PAYLOAD_CHARS, LogConfig
+from midge.logs import configure, payload, provider_host
 
 
 @pytest.fixture(autouse=True)
-def _isolate(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+def _isolate() -> Iterator[None]:
     """`configure` mutates global logger state; put it back for the next test."""
-    for var in _VARS:
-        monkeypatch.delenv(var, raising=False)
-
     midge = logging.getLogger("midge")
     saved = (list(midge.handlers), midge.level, midge.propagate)
     saved_openai = logging.getLogger("openai").level
     saved_httpx = logging.getLogger("httpx").level
+    saved_cap = logs._payload_cap
     yield
     midge.handlers, midge.level, midge.propagate = saved
     logging.getLogger("openai").setLevel(saved_openai)
     logging.getLogger("httpx").setLevel(saved_httpx)
+    logs._payload_cap = saved_cap
 
 
 def test_defaults_to_warning_on_stderr() -> None:
@@ -41,19 +35,15 @@ def test_defaults_to_warning_on_stderr() -> None:
     assert isinstance(midge.handlers[0], logging.StreamHandler)
 
 
-def test_level_comes_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("MIDGE_LOG_LEVEL", "debug")
-    configure()
+def test_level_comes_from_the_config() -> None:
+    configure(log=LogConfig(level="debug"))
     assert logging.getLogger("midge").level == logging.DEBUG
     assert logging.getLogger("midge.client").isEnabledFor(logging.DEBUG)
 
 
-def test_invalid_level_falls_back_and_says_so(
-    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("MIDGE_LOG_LEVEL", "LOUD")
+def test_invalid_level_falls_back_and_says_so(caplog: pytest.LogCaptureFixture) -> None:
     with caplog.at_level(logging.WARNING, logger="midge.logs"):
-        configure()
+        configure(log=LogConfig(level="LOUD"))
 
     assert logging.getLogger("midge").level == logging.WARNING
     assert any("log_level_invalid" in r.getMessage() for r in caplog.records)
@@ -86,11 +76,9 @@ def test_records_still_propagate_to_root() -> None:
     assert [r.getMessage() for r in seen] == ["provider_retry attempt=1"]
 
 
-def test_log_file_receives_records(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_log_file_receives_records(tmp_path: Path) -> None:
     path = tmp_path / "midge.log"
-    monkeypatch.setenv("MIDGE_LOG_FILE", str(path))
-    monkeypatch.setenv("MIDGE_LOG_LEVEL", "INFO")
-    configure()
+    configure(log=LogConfig(level="INFO", file=path))
 
     logging.getLogger("midge.agent").info("turn_start model=%s", "gpt-4o")
     for h in logging.getLogger("midge").handlers:
@@ -102,31 +90,27 @@ def test_log_file_receives_records(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     assert "INFO" in text
 
 
-def test_explicit_handler_wins_over_log_file(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("MIDGE_LOG_FILE", str(tmp_path / "unused.log"))
+def test_explicit_handler_wins_over_the_configured_file(tmp_path: Path) -> None:
+    unused = tmp_path / "unused.log"
     handler = logging.NullHandler()
-    configure(handler)
+    configure(handler, log=LogConfig(file=unused))
 
     assert logging.getLogger("midge").handlers == [handler]
-    assert not (tmp_path / "unused.log").exists()
+    assert not unused.exists()
 
 
-def test_openai_stays_quiet_when_midge_is_verbose(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_openai_stays_quiet_when_midge_is_verbose() -> None:
     # The SDK logs request bodies and can carry the Authorization header at
     # DEBUG; midge's own level must never drag it along.
-    monkeypatch.setenv("MIDGE_LOG_LEVEL", "DEBUG")
-    configure()
+    configure(log=LogConfig(level="DEBUG"))
 
     assert logging.getLogger("midge").level == logging.DEBUG
     assert logging.getLogger("openai").level == logging.WARNING
     assert logging.getLogger("httpx").level == logging.WARNING
 
 
-def test_openai_level_is_separately_openable(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("MIDGE_LOG_LEVEL_OPENAI", "DEBUG")
-    configure()
+def test_openai_level_is_separately_openable() -> None:
+    configure(log=LogConfig(openai_level="DEBUG"))
     assert logging.getLogger("openai").level == logging.DEBUG
 
 
@@ -141,26 +125,23 @@ def test_payload_truncates_at_the_default() -> None:
     assert "truncated, 502 chars" in rendered  # +2 for the repr quotes
 
 
-def test_payload_cap_is_configurable(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("MIDGE_LOG_PAYLOAD_CHARS", "10")
+def test_payload_cap_is_configurable() -> None:
+    configure(log=LogConfig(payload_chars=10))
     assert str(payload("y" * 100)).startswith("'yyyyyyyyy")
     assert "truncated" in str(payload("y" * 100))
 
 
-def test_payload_cap_of_zero_disables_truncation(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("MIDGE_LOG_PAYLOAD_CHARS", "0")
+def test_payload_cap_of_zero_disables_truncation() -> None:
+    configure(log=LogConfig(payload_chars=0))
     assert "truncated" not in str(payload("z" * 10_000))
 
 
-def test_payload_cap_is_read_at_render_time(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_payload_cap_is_read_at_render_time() -> None:
+    # The wrapper holds no cap of its own, so a later `configure` still governs
+    # it — which is what lets an entrypoint configure after building one.
     wrapped = payload("w" * 100)
-    monkeypatch.setenv("MIDGE_LOG_PAYLOAD_CHARS", "10")
+    configure(log=LogConfig(payload_chars=10))
     assert "truncated" in str(wrapped)
-
-
-def test_payload_bad_cap_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("MIDGE_LOG_PAYLOAD_CHARS", "lots")
-    assert "truncated" not in str(payload("a" * 100))
 
 
 def test_payload_renders_structures_single_line() -> None:
@@ -169,9 +150,7 @@ def test_payload_renders_structures_single_line() -> None:
     assert "role" in rendered
 
 
-def test_payload_is_not_rendered_when_the_level_is_off(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_payload_is_not_rendered_when_the_level_is_off() -> None:
     """`payload(x)` is evaluated as an argument either way; the cost must be in __str__."""
     rendered = False
 
@@ -189,8 +168,7 @@ def test_payload_is_not_rendered_when_the_level_is_off(
     logging.getLogger("midge.client").debug("request body=%s", payload(_Tracking()))
     assert rendered is False
 
-    monkeypatch.setenv("MIDGE_LOG_LEVEL", "DEBUG")
-    configure(_Formatting())
+    configure(_Formatting(), log=LogConfig(level="DEBUG"))
     logging.getLogger("midge.client").debug("request body=%s", payload(_Tracking()))
     assert rendered is True
 
@@ -217,7 +195,7 @@ def test_provider_host_marks_unparseable_input() -> None:
     assert provider_host("::::") == "invalid"
 
 
-def test_tui_handler_is_never_an_eagerly_bound_stream(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_tui_handler_is_never_an_eagerly_bound_stream() -> None:
     """A StreamHandler built before App.run() writes past Textual's
     redirect_stderr and corrupts the display. TextualHandler resolves the
     target per record instead."""
@@ -225,16 +203,14 @@ def test_tui_handler_is_never_an_eagerly_bound_stream(monkeypatch: pytest.Monkey
 
     from midge.tui import tui_log_handler
 
-    monkeypatch.delenv("MIDGE_LOG_FILE", raising=False)
     handler = tui_log_handler()
 
     assert isinstance(handler, TextualHandler)
     assert not isinstance(handler, logging.StreamHandler)
 
 
-def test_tui_handler_defers_to_log_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_tui_handler_defers_to_a_log_file(tmp_path: Path) -> None:
     from midge.tui import tui_log_handler
 
-    monkeypatch.setenv("MIDGE_LOG_FILE", str(tmp_path / "midge.log"))
     # None hands the case back to configure(), which opens the file itself.
-    assert tui_log_handler() is None
+    assert tui_log_handler(tmp_path / "midge.log") is None

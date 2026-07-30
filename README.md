@@ -57,7 +57,38 @@ MIDGE_MODEL=ibm/granite-3.2-8b \
 poetry run python -m examples.coding_agent --session run.jsonl --export-html run.html "summarize the README"
 ```
 
-`MIDGE_MODEL` defaults to `gpt-4o-mini`. Other flags: `--extension-dir DIR`, `--skill-dir DIR`, `--skill NAME`, `--session PATH` (resumes if file exists), `--export-html PATH`, `--compaction-threshold N`.
+`model` defaults to `gpt-4o-mini` — see [Configuration](#configuration). Other flags: `--extension-dir DIR`, `--skill-dir DIR`, `--skill NAME`, `--session PATH` (resumes if file exists), `--export-html PATH`, `--compaction-threshold N`.
+
+### Configuration
+
+Everything configurable lives in one TOML file, read from `./.midge/config.toml` then
+`~/.midge/config.toml` and merged key by key — so a project file that pins a model does not
+discard your personal log level. [`examples/config.toml`](./examples/config.toml) lists every
+key with its default.
+
+```toml
+model = "ibm/granite-3.2-8b"
+
+[provider]
+base_url = "http://127.0.0.1:1234/v1"
+
+[log]
+level = "INFO"
+file = "~/.midge/midge.log"
+```
+
+Precedence is **flag > environment variable > config file > default**, so `MIDGE_LOG_LEVEL=DEBUG`
+still wins for one run and CI keeps working unchanged. Every key has an environment variable
+equivalent; an unrecognized key is reported at startup rather than ignored, and a malformed file
+is a warning, not a failure to start.
+
+`OPENAI_API_KEY` is the one setting that is **not** a config key. A credential does not belong in
+a file that gets committed, so it is read from the environment, in exactly one place, and never
+logged at any level. A `base_url` is logged as its hostname only, because it can carry
+credentials in its userinfo.
+
+Only entrypoints construct a `Config`; library modules take parameters. There is no
+`get_config()` to import — see [`src/midge/config.py`](./src/midge/config.py) for why.
 
 ### RPC (JSON-on-stdio)
 
@@ -203,7 +234,8 @@ src/midge/
 ├── session.py         # single-file HTML transcript exporter
 ├── rpc.py             # JSON-on-stdio RPC server
 ├── extensions.py      # load_extensions(dirs) → (ToolRegistry, prompt_addition)
-├── logs.py            # logging config: MIDGE_LOG_LEVEL, MIDGE_LOG_FILE
+├── config.py          # .midge/config.toml → a Config the entrypoint passes inward
+├── logs.py            # logging config; entrypoints only
 ├── skills.py          # SKILL.md discovery + <available_skills> catalogue
 ├── subagents.py       # @subagent → spawn_* tools running nested agents
 ├── hooks.py           # lifecycle events + handler registry
@@ -213,6 +245,7 @@ examples/
 ├── coding_agent.py    # one-shot CLI for the coding domain
 ├── rpc_agent.py       # RPC server for external clients
 ├── notes_agent.py     # second-domain TUI demo
+├── config.toml        # every config key, commented, with its default
 ├── approval_extension/ # tool-approval hook demo
 ├── notes_extension/   # the notes extension pack
 ├── subagent_extension/ # a read-only explorer sub-agent

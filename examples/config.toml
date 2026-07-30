@@ -1,0 +1,81 @@
+# midge configuration. Copy to `.midge/config.toml` in a project, or to
+# `~/.midge/config.toml` for every project.
+#
+# Both are read, project first, and merged key by key — so a project file that
+# sets `model` does not discard your personal `[log] level`.
+#
+# Precedence, highest first:
+#
+#     command-line flag  >  environment variable  >  this file  >  the default
+#
+# Every key below is optional and shown with its default. An unrecognized key is
+# reported at startup as `config_key_unknown` rather than ignored, so a typo is
+# visible.
+
+# The model id sent to the provider. Env: MIDGE_MODEL
+model = "gpt-4o-mini"
+
+
+[provider]
+# Which wire format to speak: "openai" or "openai-compatible". Omit to infer —
+# no base_url means OpenAI, a base_url means something OpenAI-compatible
+# (ollama, vLLM, LM Studio, llama.cpp). Env: MIDGE_PROVIDER
+# name = "openai-compatible"
+
+# Where to send requests. Omit for the provider's own default.
+# Env: OPENAI_BASE_URL
+#
+# NOTE: a base_url can carry credentials in its userinfo
+# (https://user:password@host/v1). midge only ever logs its hostname, but a
+# config file gets committed — prefer the environment variable if yours has a
+# secret in it.
+# base_url = "http://localhost:11434/v1"
+
+# Ask the server to report token usage on the stream. Omit to use whatever the
+# provider declares (currently on for both). Set false for a server that
+# rejects `stream_options` with a 400 instead of ignoring it — that failure
+# takes down the whole turn. Env: MIDGE_INCLUDE_USAGE
+# include_usage = true
+
+
+[retry]
+# How many times a request may be attempted in total, and the base for the
+# exponential backoff between attempts, in seconds. Only errors the provider
+# classifies as retryable — rate limits, 5xx, transport faults — are retried,
+# and never once any content has already been streamed to the caller.
+max_attempts = 3
+base_delay = 0.5
+
+
+[compaction]
+# Summarize history after a turn once its estimated tokens exceed this.
+# Omit to disable. Flag: --compaction-threshold
+# threshold = 120000
+
+# Token budget for the recent suffix kept verbatim when compaction runs.
+# Flag: --compaction-keep-recent
+keep_recent = 20000
+
+
+[log]
+# Level for midge's own loggers. Env: MIDGE_LOG_LEVEL
+level = "WARNING"
+
+# Level for the `openai` SDK, pinned separately on purpose: its DEBUG output can
+# carry the Authorization header. Env: MIDGE_LOG_LEVEL_OPENAI
+openai_level = "WARNING"
+
+# Write logs here instead of stderr. `~` is expanded. This is the practical way
+# to read logs under the TUI, which otherwise routes them to Textual's devtools
+# console. Env: MIDGE_LOG_FILE
+# file = "~/.midge/midge.log"
+
+# Truncation cap for DEBUG payloads (request bodies, tool arguments and
+# results). 0 disables truncation. Env: MIDGE_LOG_PAYLOAD_CHARS
+payload_chars = 2000
+
+
+# There is deliberately no api_key here. Credentials stay in OPENAI_API_KEY, in
+# the environment — a config file gets committed, and midge never logs the key at
+# any level. Putting `api_key` in this file is reported as an unknown key and has
+# no effect.

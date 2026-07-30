@@ -31,13 +31,16 @@ entirely the wrong reason, and only at WARNING.
 `textual.logging.TextualHandler` resolves the active app per record via the
 `active_app` ContextVar, so it is safe to construct at any point. Its catch is
 that it routes to `app.log.logging(...)` — the devtools console, invisible
-without `textual console`. Hence `MIDGE_LOG_FILE`: in the TUI it is the
-practical way to read logs, not a convenience.
+without `textual console`. Hence `[log] file`: in the TUI it is the practical
+way to read logs, not a convenience.
 
 **The rule that falls out: libraries never configure logging, only entrypoints
-do**, because only the entrypoint knows the mode. `tui_log_handler()` lives in
-`tui/app.py` rather than `logs.py` so the core does not need to know Textual
-exists.
+do**, because only the entrypoint knows the mode. `tui_log_handler(log_file)`
+lives in `tui/app.py` rather than `logs.py` so the core does not need to know
+Textual exists — and it takes the path rather than reading the environment,
+because that is `config.py`'s job now. Configuration is parsed before logging is
+configured (the log level is one of the things it resolves), which is why
+`config.load` returns diagnostics instead of logging them.
 
 ## `propagate` stays True
 
@@ -65,7 +68,7 @@ which keeps the hostname and discards userinfo and query string, both of which
 can carry secrets. `client.py` stores neither on `self`, so the hostname has to
 be logged by the entrypoint that reads the environment variable.
 
-The `openai` logger keeps its own `MIDGE_LOG_LEVEL_OPENAI` for the same reason.
+The `openai` logger keeps its own `openai_level` (env `MIDGE_LOG_LEVEL_OPENAI`) for the same reason.
 The original justification — that the SDK dumps request bodies at DEBUG — no
 longer disqualifies it, since midge now logs those itself in truncated form.
 What remains is that the SDK's DEBUG output can carry the `Authorization`

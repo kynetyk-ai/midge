@@ -118,10 +118,13 @@ class Client:
         max_attempts: int = 3,
         retry_base_delay: float = 0.5,
         provider: str | providers.Provider | None = None,
+        capabilities: providers.Capabilities | None = None,
     ) -> None:
         if isinstance(provider, str) or provider is None:
             name = providers.resolve(provider=provider, base_url=base_url)
-            self.provider = providers.get(name)(api_key=api_key, base_url=base_url)
+            self.provider = providers.get(name)(
+                api_key=api_key, base_url=base_url, capabilities=capabilities
+            )
             # The base_url heuristic in `resolve` is a guess, so which provider
             # it landed on has to be visible or a misrouted request is a mystery.
             _logger.info("provider_selected name=%s", self.provider.name)
@@ -211,9 +214,7 @@ class Client:
                             )
                             content_idx = len(partial.content) - 1
                             tool_idx_map[idx] = content_idx
-                            yield ToolCallStart(
-                                content_index=content_idx, partial=partial
-                            )
+                            yield ToolCallStart(content_index=content_idx, partial=partial)
 
                         if frag.arguments:
                             tool_arg_buffers[idx] += frag.arguments

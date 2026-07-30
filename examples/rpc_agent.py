@@ -19,12 +19,13 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
-import os
 import sys
 from pathlib import Path
 
 from midge.agent import Agent
 from midge.client import Client
+from midge.config import Config
+from midge.config import emit as emit_config_diagnostics
 from midge.extensions import BUILTIN_TOOL_DIRS, load_extensions
 from midge.hooks import Hooks
 from midge.logs import configure as configure_logging
@@ -56,27 +57,28 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 
 
 async def amain(extension_dirs: list[Path]) -> int:
-    configure_logging()
+    config, diagnostics = Config.load()
+    configure_logging(log=config.log)
+    emit_config_diagnostics(diagnostics)
     # Without a Hooks object an extension's `register_hooks` never runs, so a
     # tool-approval policy loaded here would be silently inert — and a
     # sub-agent inherits whatever the parent has.
     hooks = Hooks()
-    registry, prompt_addition = load_extensions(
-        [*BUILTIN_TOOL_DIRS, *extension_dirs], hooks=hooks
-    )
+    registry, prompt_addition = load_extensions([*BUILTIN_TOOL_DIRS, *extension_dirs], hooks=hooks)
     full_prompt = "\n\n".join(p for p in (BASE_SYSTEM_PROMPT, prompt_addition) if p)
 
-    base_url = os.getenv("OPENAI_BASE_URL")
-    model = os.getenv("MIDGE_MODEL", "gpt-4o-mini")
+    model = config.model
     _logger.info(
         "startup mode=rpc model=%s provider=%s tools=%d",
         model,
-        provider_host(base_url),
+        provider_host(config.base_url),
         len(registry),
     )
     client = Client(
-        api_key=os.getenv("OPENAI_API_KEY"),
-        base_url=base_url,
+        base_url=config.base_url,
+        provider=config.provider,
+        max_attempts=config.retry.max_attempts,
+        retry_base_delay=config.retry.base_delay,
     )
     bind_subagents(registry, client=client, model=model, hooks=hooks)
     agent = Agent(
