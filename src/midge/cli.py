@@ -4,7 +4,9 @@ Usage:
     midge [--extension-dir DIR] [--skill-dir DIR] [--session PATH] \\
        [--compaction-threshold N] [--compaction-keep-recent N]
 
-Env: OPENAI_API_KEY, OPENAI_BASE_URL, MIDGE_MODEL (default: gpt-4o-mini).
+Configuration is `.midge/config.toml`, overridden by environment variables,
+overridden by these flags — see `midge.config`. `OPENAI_API_KEY` is read from the
+environment only, and never from the file.
 """
 
 from __future__ import annotations
@@ -12,16 +14,18 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
-import os
 from pathlib import Path
 
 from midge.agent import Agent
 from midge.client import Client
+from midge.config import Config
+from midge.config import emit as emit_config_diagnostics
 from midge.extensions import BUILTIN_TOOL_DIRS, load_extensions
 from midge.hooks import Hooks, SessionEnd, SessionStart
 from midge.logs import configure as configure_logging
 from midge.logs import provider_host
 from midge.persistence import Session
+from midge.providers import Capabilities
 from midge.rpc import RpcServer, serve_stdio
 from midge.skills import default_skill_dirs, load_skills, skills_prompt
 from midge.subagents import bind_subagents
@@ -77,27 +81,51 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         default=None,
         metavar="N",
         help=(
-            "Run compaction after a turn if estimated history tokens exceed N. "
-            "Disabled if not set."
+            "Run compaction after a turn if estimated history tokens exceed N. Disabled if not set."
         ),
     )
     parser.add_argument(
         "--compaction-keep-recent",
         type=int,
-        default=20_000,
+        default=None,
         metavar="N",
-        help="Token budget for the suffix kept verbatim after compaction (default 20000).",
+        help=(
+            "Token budget for the suffix kept verbatim after compaction "
+            "(default 20000, or [compaction] keep_recent)."
+        ),
     )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
+    # Config is parsed before logging is configured, because the log level is one
+    # of the things it resolves. `load` therefore logs nothing and hands back
+    # diagnostics, which are emitted as soon as there is somewhere to put them.
+    config, diagnostics = Config.load()
     # Before `load_extensions`/`load_skills`, which are the two loudest
     # loaders — a handler installed after them loses every startup diagnostic.
     # The TUI needs a handler that resolves per record; RPC needs stderr,
     # because a handler bound to stdout would corrupt the protocol.
-    configure_logging(None if args.rpc else tui_log_handler())
+    configure_logging(
+        None if args.rpc else tui_log_handler(config.log.file),
+        log=config.log,
+    )
+    emit_config_diagnostics(diagnostics)
+
+    # A flag outranks env, which outranks the file. Argparse defaults are None so
+    # that an unset flag does not beat a configured value.
+    keep_recent: int = (
+        config.compaction_keep_recent
+        if args.compaction_keep_recent is None
+        else args.compaction_keep_recent
+    )
+    threshold: int | None = (
+        config.compaction_threshold
+        if args.compaction_threshold is None
+        else args.compaction_threshold
+    )
+
     hooks = Hooks()
     extension_sources = [*BUILTIN_TOOL_DIRS, *args.extension_dir]
     # Explicit paths outrank the defaults: naming a directory on the command
@@ -109,7 +137,7 @@ def main(argv: list[str] | None = None) -> None:
     catalogue = skills_prompt(skills) if "read" in registry else ""
 
     session: Session | None = None
-    model = os.getenv("MIDGE_MODEL", "gpt-4o-mini")
+    model = config.model
     durable = BASE_SYSTEM_PROMPT
 
     if args.session is not None:
@@ -126,19 +154,27 @@ def main(argv: list[str] | None = None) -> None:
     # invisible, and its absolute paths could point at another machine entirely.
     full_prompt = "\n\n".join(p for p in (durable, prompt_addition, catalogue) if p)
 
-    base_url = os.getenv("OPENAI_BASE_URL")
     _logger.info(
         "startup mode=%s model=%s provider=%s tools=%d skills=%d session=%s",
         "rpc" if args.rpc else "tui",
         model,
-        provider_host(base_url),
+        provider_host(config.base_url),
         len(registry),
         len(skills),
         args.session or "-",
     )
+    # No api_key: the provider reads `OPENAI_API_KEY` itself, so the credential
+    # has exactly one reader and never passes through configuration.
     client = Client(
-        api_key=os.getenv("OPENAI_API_KEY"),
-        base_url=base_url,
+        base_url=config.base_url,
+        provider=config.provider,
+        capabilities=(
+            None
+            if config.include_usage is None
+            else Capabilities(stream_usage=config.include_usage)
+        ),
+        max_attempts=config.retry.max_attempts,
+        retry_base_delay=config.retry.base_delay,
     )
     # Tools cannot reach the calling agent, so any sub-agent tool an extension
     # registered gets what it needs to run a child here. No-op without them.
@@ -167,7 +203,7 @@ def main(argv: list[str] | None = None) -> None:
         server = RpcServer(
             agent,
             session=session,
-            compaction_keep_recent=args.compaction_keep_recent,
+            compaction_keep_recent=keep_recent,
             base_prompt=durable,
             extension_prompt=prompt_addition,
             skills=skills,
@@ -197,8 +233,8 @@ def main(argv: list[str] | None = None) -> None:
         run_tui(
             agent,
             session=session,
-            compaction_threshold=args.compaction_threshold,
-            compaction_keep_recent=args.compaction_keep_recent,
+            compaction_threshold=threshold,
+            compaction_keep_recent=keep_recent,
         )
     finally:
         if session is not None:

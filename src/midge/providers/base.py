@@ -26,7 +26,6 @@ format and differ only in what they tolerate. Those differences are declared as
 
 from __future__ import annotations
 
-import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
@@ -101,11 +100,9 @@ class Provider(Protocol):
         """Start the request. Returns an awaitable yielding an async iterator."""
         ...
 
-    def decode(self, chunk: Any) -> Delta:
-        ...
+    def decode(self, chunk: Any) -> Delta: ...
 
-    def is_retryable(self, exc: BaseException) -> bool:
-        ...
+    def is_retryable(self, exc: BaseException) -> bool: ...
 
 
 # --- registry -------------------------------------------------------------
@@ -137,15 +134,17 @@ def names() -> list[str]:
 
 
 def resolve(*, provider: str | None, base_url: str | None) -> str:
-    """Pick a provider name: explicit, then env, then a base_url heuristic.
+    """Pick a provider name: explicit, else a base_url heuristic.
 
     The heuristic is that a `base_url` means someone pointed midge at a server
     that is not OpenAI. It is a guess, so the caller logs what it resolved to —
     an implicit choice that is invisible is a debugging trap.
+
+    Configuration does not reach here. An explicit name arrives as `provider`,
+    which the entrypoint takes from `Config.provider` (itself resolved from
+    `MIDGE_PROVIDER` or the config file); this function only fills the gap when
+    nobody said.
     """
     if provider:
         return provider
-    from_env = os.getenv("MIDGE_PROVIDER")
-    if from_env:
-        return from_env
     return "openai-compatible" if base_url else "openai"

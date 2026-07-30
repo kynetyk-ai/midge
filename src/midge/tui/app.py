@@ -20,7 +20,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import os
+from pathlib import Path
 from typing import Any, ClassVar
 
 from textual import on
@@ -260,9 +260,7 @@ class PiApp(App[None]):
         elif isinstance(ev, ToolExecutionStart):
             bubble = self._tool_bubbles.get(ev.tool_call.id)
             if bubble is not None:
-                bubble.update(
-                    f"⚙ {ev.tool_call.name}({ev.tool_call.arguments}) — running..."
-                )
+                bubble.update(f"⚙ {ev.tool_call.name}({ev.tool_call.arguments}) — running...")
         elif isinstance(ev, ToolExecutionEnd):
             bubble = self._tool_bubbles.get(ev.tool_call.id)
             if bubble is None:
@@ -299,17 +297,17 @@ class PiApp(App[None]):
         self.query_one("#input", _SubmitTextArea).clear()
 
 
-def tui_log_handler() -> logging.Handler | None:
+def tui_log_handler(log_file: Path | None = None) -> logging.Handler | None:
     """A log handler safe to install before `App.run()`.
 
     `logging.StreamHandler` binds `sys.stderr` at construction, so it writes
     straight past Textual's `redirect_stderr` and shreds the display.
     `TextualHandler` resolves the active app per record instead — but it routes
-    to the devtools console, visible only under `textual console`, so
-    `MIDGE_LOG_FILE` is the practical way to read these. `None` hands that case
-    back to `logs.configure`, which opens the file itself.
+    to the devtools console, visible only under `textual console`, so a log file
+    is the practical way to read these. `None` hands that case back to
+    `logs.configure`, which opens the file itself.
     """
-    return None if os.getenv("MIDGE_LOG_FILE") else TextualHandler()
+    return None if log_file else TextualHandler()
 
 
 def run_tui(

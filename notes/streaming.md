@@ -105,7 +105,7 @@ If the tool returns images and the model supports vision, content becomes a list
 - **Reasoning/thinking content from o1/o3-style models** is delivered in a different field (`reasoning_content` on Chat Completions for some providers, or via specific event types on Responses). Skip this in Phase 1 unless we explicitly target reasoning models.
 - **System fingerprint, usage tokens, and service tier** appear on the final chunk — and critically, that chunk's `choices` array is **empty**, so the usual `if not chunk.choices: continue` guard at the top of a chunk loop is exactly what discards it. Usage must be read before that guard.
 
-  `usage` is now captured onto `AssistantMessage.usage` (`client.py`), requested via `stream_options={"include_usage": True}` behind `MIDGE_INCLUDE_USAGE` because support varies across OpenAI-compatible servers and a server that rejects it fails the whole turn. `compaction.measure_context` prefers it over the bytes/4 estimator, which is the point: compaction destroys history and should not trigger on an inflated proxy.
+  `usage` is now captured onto `AssistantMessage.usage` (`client.py`), requested via `stream_options={"include_usage": True}` behind the provider's declared `Capabilities.stream_usage` because support varies across OpenAI-compatible servers and a server that rejects it fails the whole turn. `compaction.measure_context` prefers it over the bytes/4 estimator, which is the point: compaction destroys history and should not trigger on an inflated proxy.
 
   Deliberately **not** captured: system fingerprint and service tier (nothing reads them), and no cost — that needs a price table, which goes stale silently, and cost is a fold over the session file with whatever prices the reader trusts at the time they ask.
 
@@ -143,9 +143,10 @@ would be the main source of bugs. One state machine, N translators.
 Two names are registered against the same adapter, `openai` and
 `openai-compatible`, because they share this wire format entirely. What differs
 is what a server tolerates, and that is declared as `Capabilities`
-(`requires_api_key`, `stream_usage`) rather than discovered by catching a 400.
-`MIDGE_INCLUDE_USAGE` survives as an override for servers that reject
-`stream_options`, but the default now comes from the provider.
+(`stream_usage`) rather than discovered by catching a 400. `[provider]
+include_usage` overrides it for servers that reject `stream_options` outright,
+but the default comes from the provider, and where the override comes from is
+`config.py`'s business rather than the adapter's.
 
 The note above also predates a related split: `to_openai_messages` became
 `messages.repair_history` (dropping failed assistant turns and orphaned tool

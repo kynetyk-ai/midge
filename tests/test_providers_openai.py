@@ -154,18 +154,24 @@ def test_a_provider_without_the_capability_omits_stream_options() -> None:
     assert "stream_options" not in p.encode(messages=[], model="m", tools=None, system=None)
 
 
-def test_the_env_override_beats_the_capability(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`MIDGE_INCLUDE_USAGE` exists because a server that does not support
-    `stream_options` rejects the whole turn with a 400, and an operator hitting
-    that needs a fix that does not require editing code."""
-    monkeypatch.setenv("MIDGE_INCLUDE_USAGE", "0")
-    assert "stream_options" not in _provider().encode(
+def test_a_registered_provider_accepts_a_capability_override() -> None:
+    """How `include_usage` reaches the adapter.
+
+    A server that does not support `stream_options` rejects the whole turn with
+    a 400 rather than ignoring the field, so an operator has to be able to turn
+    it off without editing code. Where that instruction comes from is
+    `midge.config`'s business; the adapter only has to be overridable.
+    """
+    from midge import providers
+
+    factory = providers.get("openai-compatible")
+    default = factory(api_key="k", base_url=None)
+    assert default.capabilities.stream_usage is True
+
+    overridden = factory(api_key="k", base_url=None, capabilities=Capabilities(stream_usage=False))
+    assert "stream_options" not in overridden.encode(
         messages=[], model="m", tools=None, system=None
     )
-
-    monkeypatch.setenv("MIDGE_INCLUDE_USAGE", "1")
-    p = _provider(capabilities=Capabilities(stream_usage=False))
-    assert "stream_options" in p.encode(messages=[], model="m", tools=None, system=None)
 
 
 # --- decoding -------------------------------------------------------------
@@ -269,17 +275,15 @@ def test_both_names_are_registered() -> None:
     assert providers.get("openai")(api_key="k", base_url=None).name == "openai"
 
 
-def test_resolution_prefers_explicit_then_env_then_base_url(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_resolution_prefers_an_explicit_name_over_the_base_url_heuristic() -> None:
+    # An explicit name arrives from `Config.provider`; this only fills the gap
+    # when nobody said. The environment is not consulted here — that is
+    # `midge.config`'s job, tested in test_config.py.
     from midge import providers
 
-    monkeypatch.delenv("MIDGE_PROVIDER", raising=False)
     assert providers.resolve(provider=None, base_url=None) == "openai"
     assert providers.resolve(provider=None, base_url="http://x/v1") == "openai-compatible"
-
-    monkeypatch.setenv("MIDGE_PROVIDER", "openai")
-    assert providers.resolve(provider=None, base_url="http://x/v1") == "openai"
+    assert providers.resolve(provider="openai", base_url="http://x/v1") == "openai"
     assert providers.resolve(provider="openai-compatible", base_url=None) == "openai-compatible"
 
 

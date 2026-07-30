@@ -14,12 +14,13 @@ The KB lives at `~/.midge-notes/kb.json` by default; override with
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from pathlib import Path
 
 from midge.agent import Agent
 from midge.client import Client
+from midge.config import Config
+from midge.config import emit as emit_config_diagnostics
 from midge.extensions import load_extensions
 from midge.logs import configure as configure_logging
 from midge.persistence import Session
@@ -56,7 +57,9 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
-    configure_logging(tui_log_handler())
+    config, diagnostics = Config.load()
+    configure_logging(tui_log_handler(config.log.file), log=config.log)
+    emit_config_diagnostics(diagnostics)
 
     registry, prompt_addition = load_extensions([_EXTENSION_DIR])
     full_prompt = NOTES_SYSTEM_PROMPT
@@ -70,14 +73,14 @@ def main(argv: list[str] | None = None) -> None:
             model = session.header.model
             full_prompt = session.header.system_prompt or full_prompt
         else:
-            model = os.getenv("MIDGE_MODEL", "gpt-4o-mini")
+            model = config.model
             session = Session.new(args.session, model=model, system_prompt=full_prompt)
     else:
-        model = os.getenv("MIDGE_MODEL", "gpt-4o-mini")
+        model = config.model
 
     client = Client(
-        api_key=os.getenv("OPENAI_API_KEY"),
-        base_url=os.getenv("OPENAI_BASE_URL"),
+        base_url=config.base_url,
+        provider=config.provider,
     )
     agent = Agent(
         client=client,

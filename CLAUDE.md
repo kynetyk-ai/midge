@@ -53,18 +53,62 @@ message, so the model chooses inputs but never the child's prompt, tools, or mod
 - WASM / native deps
 - LangChain / LiteLLM (see above)
 
+## Configuration
+
+`src/midge/config.py` owns it. **Anything a user or operator might reasonably want to change goes
+there — extend `Config` rather than inventing a knob locally.** That is the default, not a nicety:
+
+- **Never hardcode a tunable.** A magic number, timeout, threshold, path, level, limit or model
+  id sitting in a module is a config key that was not filed. If a value would plausibly differ
+  between two people, two machines, or two deployments, it belongs on `Config` with a default —
+  not in a constant halfway down a module, and never as a literal at the call site. A library
+  default in a signature (`Client(max_attempts=3)`) is fine and often necessary, but it is not a
+  substitute: the entrypoint must still pass the configured value, or nobody can reach it.
+- **Never add an environment variable.** `os.getenv` in a new module is the smell this section
+  exists to prevent. Add the field to `Config` and give it an env name *there*, so it appears
+  alongside every other setting and in `examples/config.toml`.
+- **Extending is cheap and expected.** Three edits: the field on `Config`, its line in
+  `Config.load`, and its commented entry in `examples/config.toml`. Do not weigh "is this worth a
+  config key?" — a scattered knob costs far more than a field.
+- **The reason is discoverability.** Eight environment variables read in ten places were
+  findable only by grepping the source. One file with the defaults visible is the whole point;
+  every value that escapes back into a module erodes it.
+
+The mechanics, which follow from the same rule as logging below:
+
+- **Only entrypoints construct a `Config`.** It is passed inward; library modules take
+  parameters. There is deliberately **no `get_config()`** — a global would let any module reach
+  configuration, which is the coupling this module exists to remove, and it would be untestable
+  without monkeypatching.
+- **No module reads the environment.** Two `os.getenv` calls exist in the whole harness: the
+  resolver in `config.py`, and `OPENAI_API_KEY` in `providers/openai_compat.py`. Adding a third
+  is the thing to push back on.
+- Precedence is **flag > env > config > default**. `Config.load` resolves the last three; flags
+  win at the call site. An argparse `default=` that is not `None` silently makes the config layer
+  unreachable — the default belongs in `Config`, once.
+- **`load` parses and logs nothing**, returning `Diagnostic`s the entrypoint passes to `emit`
+  after `logs.configure`. It has to run before logging exists, because the log level is one of
+  the things it resolves.
+- **Bad input is a diagnostic, never an exception.** A malformed file, an unknown key or a
+  wrongly typed value degrades to the default and says so. A typo must not stop the harness from
+  starting, and must not silently change what it does either.
+- **A credential is never a config field.** `OPENAI_API_KEY` stays in the environment; a config
+  file gets committed. `api_key` in the file is reported as an unknown key.
+- `tests/test_config.py` asserts `examples/config.toml` still parses with no diagnostics, so
+  documenting a new key is not optional — a field added without its example entry fails CI.
+
 ## Logging
 
 `src/midge/logs.py` owns configuration; every other module only ever acquires a logger.
 
 - `_logger = logging.getLogger(__name__)` at module top. Never `print()`, never a facade, adapter, or wrapper — `getLogger(__name__)` is what makes `%(name)s`, per-module levels, and `caplog` work, and all three break the moment something is put in front of it.
-- **Only entrypoints call `configure()`.** Library code never configures logging, because the right handler depends on the mode and only the entrypoint knows it. Stdout is the protocol in RPC mode and the transcript in headless mode, so nothing may write to it. In the TUI, `logging.StreamHandler` binds `sys.stderr` at construction and so writes straight past Textual's `redirect_stderr` and corrupts the display — use `tui_log_handler()`.
+- **Only entrypoints call `configure()`.** Library code never configures logging, because the right handler depends on the mode and only the entrypoint knows it. Stdout is the protocol in RPC mode and the transcript in headless mode, so nothing may write to it. In the TUI, `logging.StreamHandler` binds `sys.stderr` at construction and so writes straight past Textual's `redirect_stderr` and corrupts the display — use `tui_log_handler(log_file)`.
 - Lazy `%s` arguments, never an f-string in the format string. Enforced by ruff `G`/`LOG`.
 - **The first token is a `snake_case` event identity, then `key=%s` pairs.** `_logger.warning("skill_description_missing path=%s", path)`, not `"Skipping skill %s: description is required"`. Errors have to be countable with `grep -c`, not a regex over English.
 - Levels: **ERROR** the operation failed · **WARNING** degraded but continuing · **INFO** the operational narrative · **DEBUG** why it did that.
 - Every `except` that swallows logs, with `exc_info=e` (or `.exception()`) whenever the traceback would otherwise be lost. A bare `type(e).__name__` is rarely enough to act on.
 - Arguments are evaluated whether or not the level is on, so keep them O(1). Anything expensive goes through `logs.payload()`, which defers the work into `__str__`.
-- **Payloads only at DEBUG, only via `logs.payload()`** — it truncates at `MIDGE_LOG_PAYLOAD_CHARS` (default 2000). Request bodies, tool arguments and results qualify.
+- **Payloads only at DEBUG, only via `logs.payload()`** — it truncates at `LogConfig.payload_chars` (default 2000, `MIDGE_LOG_PAYLOAD_CHARS`). Request bodies, tool arguments and results qualify.
 - **Credentials are not payload and are excluded at every level.** An `api_key` is never logged — not a prefix, not a length. A `base_url` goes through `logs.provider_host()`, which keeps the hostname and drops userinfo and query string.
 - No logging in pure transforms (`session.py`, `tools/__init__.py`) — their failures already raise with real tracebacks.
 
@@ -76,6 +120,7 @@ src/midge/tools/      # @tool decorator + built-in coding tools
 src/midge/extensions.py  # the loader for tool directories
 src/midge/skills.py   # SKILL.md discovery + the system-prompt catalogue
 src/midge/subagents.py # @subagent → spawn_* tools that run nested agents
+src/midge/config.py   # .midge/config.toml → Config (entrypoints only)
 src/midge/logs.py     # logging configuration (entrypoints only)
 src/midge/hooks.py    # lifecycle events + handler registry
 tests/              # pytest tests

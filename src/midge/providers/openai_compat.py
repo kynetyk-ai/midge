@@ -85,9 +85,7 @@ def _tool_result(m: ToolResultMessage) -> dict[str, Any]:
     if any(isinstance(c, ImageContent) for c in m.content):
         # `ToolResultResult.content` permits images, but the tool role carries
         # text only. Dropping them silently loses a hook's output with no trace.
-        _logger.warning(
-            "tool_result_image_dropped tool=%s id=%s", m.tool_name, m.tool_call_id
-        )
+        _logger.warning("tool_result_image_dropped tool=%s id=%s", m.tool_name, m.tool_call_id)
     return {"role": "tool", "tool_call_id": m.tool_call_id, "content": text}
 
 
@@ -186,23 +184,9 @@ class OpenAIProvider:
             model=model,
             tools=tools,
             system=system,
-            stream_usage=self._wants_stream_usage(),
+            stream_usage=self.capabilities.stream_usage,
             **kwargs,
         )
-
-    def _wants_stream_usage(self) -> bool:
-        """The declared capability, with an environment override.
-
-        `MIDGE_INCLUDE_USAGE` exists because a server that does not support
-        `stream_options` rejects the whole turn with a 400 rather than ignoring
-        the field, and an operator hitting that needs a fix that does not
-        require editing code. The capability is the default; this is the escape
-        hatch.
-        """
-        override = os.getenv("MIDGE_INCLUDE_USAGE")
-        if override is not None:
-            return override not in ("0", "false", "no")
-        return self.capabilities.stream_usage
 
     def open(self, body: dict[str, Any]) -> Any:
         return self._client.chat.completions.create(**body)
@@ -252,18 +236,27 @@ class OpenAIProvider:
         return isinstance(exc, openai.APIConnectionError)
 
 
+# `capabilities=None` rather than a hardcoded default, so an operator can
+# override what the adapter declares. That is how `include_usage` reaches here:
+# a server that does not support `stream_options` rejects the whole turn with a
+# 400 rather than ignoring the field, and there has to be a fix for that which
+# does not require editing code.
 register(
     "openai",
-    lambda **kw: OpenAIProvider(name="openai", capabilities=Capabilities(), **kw),
+    lambda capabilities=None, **kw: OpenAIProvider(
+        name="openai",
+        capabilities=capabilities or Capabilities(),
+        **kw,
+    ),
 )
 register(
     "openai-compatible",
     # `stream_usage` stays on: it works on current ollama and vLLM, and the
     # override exists for the servers where it does not. Turning it off by
     # default would silently lose token counts on every local run.
-    lambda **kw: OpenAIProvider(
+    lambda capabilities=None, **kw: OpenAIProvider(
         name="openai-compatible",
-        capabilities=Capabilities(stream_usage=True),
+        capabilities=capabilities or Capabilities(stream_usage=True),
         **kw,
     ),
 )

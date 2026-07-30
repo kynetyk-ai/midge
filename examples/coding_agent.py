@@ -21,7 +21,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
-import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -29,6 +28,8 @@ from pathlib import Path
 from midge.agent import Agent, AgentEnd, ToolExecutionEnd, ToolExecutionStart
 from midge.client import Client, TextDelta
 from midge.compaction import compact, needs_compaction
+from midge.config import Config
+from midge.config import emit as emit_config_diagnostics
 from midge.extensions import BUILTIN_TOOL_DIRS, load_extensions
 from midge.hooks import Hooks
 from midge.logs import configure as configure_logging
@@ -126,15 +127,16 @@ async def amain(
     compaction_threshold: int | None = None,
     compaction_keep_recent: int = 20_000,
 ) -> int:
+    # Config before logging: the log level is one of the things it resolves.
+    config, diagnostics = Config.load()
     # Default handler: stderr. Stdout is the rendered transcript.
-    configure_logging()
+    configure_logging(log=config.log)
+    emit_config_diagnostics(diagnostics)
     # Without a Hooks object an extension's `register_hooks` never runs, so a
     # tool-approval policy loaded here would be silently inert — and a
     # sub-agent inherits whatever the parent has.
     hooks = Hooks()
-    registry, prompt_addition = load_extensions(
-        [*BUILTIN_TOOL_DIRS, *extension_dirs], hooks=hooks
-    )
+    registry, prompt_addition = load_extensions([*BUILTIN_TOOL_DIRS, *extension_dirs], hooks=hooks)
     skills = load_skills([*(skill_dirs or []), *default_skill_dirs()])
     catalogue = skills_prompt(skills) if "read" in registry else ""
 
@@ -148,7 +150,7 @@ async def amain(
             return 2
 
     session: Session | None = None
-    model = os.getenv("MIDGE_MODEL", "gpt-4o-mini")
+    model = config.model
     durable = BASE_SYSTEM_PROMPT
 
     if session_path is not None:
@@ -163,17 +165,18 @@ async def amain(
     # than restored from the header, which froze at session creation.
     full_prompt = "\n\n".join(p for p in (durable, prompt_addition, catalogue) if p)
 
-    base_url = os.getenv("OPENAI_BASE_URL")
     _logger.info(
         "startup mode=headless model=%s provider=%s tools=%d skills=%d",
         model,
-        provider_host(base_url),
+        provider_host(config.base_url),
         len(registry),
         len(skills),
     )
     client = Client(
-        api_key=os.getenv("OPENAI_API_KEY"),
-        base_url=base_url,
+        base_url=config.base_url,
+        provider=config.provider,
+        max_attempts=config.retry.max_attempts,
+        retry_base_delay=config.retry.base_delay,
     )
     bind_subagents(registry, client=client, model=model, hooks=hooks, session_path=session_path)
     agent = Agent(
