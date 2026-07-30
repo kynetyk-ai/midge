@@ -19,6 +19,7 @@ from midge.config import (
     DEFAULT_PAYLOAD_CHARS,
     Config,
     LogConfig,
+    ProviderConfig,
     RetryConfig,
     config_paths,
     emit,
@@ -65,11 +66,15 @@ def _load(tmp_path: Path, *, project: str | None = None, user: str | None = None
     return config
 
 
-def _diagnose(tmp_path: Path, body: str) -> tuple[Config, list[str]]:
+def _project(tmp_path: Path, body: str) -> Path:
     cwd = tmp_path / "project"
     cwd.mkdir(exist_ok=True)
     _write(cwd, body)
-    config, diagnostics = Config.load(cwd=cwd, home=tmp_path / "nowhere")
+    return cwd
+
+
+def _diagnose(tmp_path: Path, body: str) -> tuple[Config, list[str]]:
+    config, diagnostics = Config.load(cwd=_project(tmp_path, body), home=tmp_path / "nowhere")
     return config, [d.event for d in diagnostics]
 
 
@@ -251,6 +256,103 @@ def test_include_usage_is_none_when_nobody_says(tmp_path: Path) -> None:
     assert _load(tmp_path).include_usage is None
 
 
+# --- the registry tables --------------------------------------------------
+
+
+def test_providers_and_models_parse_into_tables(tmp_path: Path) -> None:
+    config = _load(
+        tmp_path,
+        project="""
+        [providers.openai]
+        api_key_env = "OPENAI_API_KEY"
+
+        [providers.local]
+        kind = "openai-compatible"
+        base_url = "http://localhost:11434/v1"
+        include_usage = false
+
+        [models."gpt-4o-mini"]
+        provider = "openai"
+
+        [models."ibm/granite-3.2-8b"]
+        provider = "local"
+        """,
+    )
+    assert config.providers == {
+        "openai": ProviderConfig(kind="openai", api_key_env="OPENAI_API_KEY"),
+        "local": ProviderConfig(
+            kind="openai-compatible",
+            base_url="http://localhost:11434/v1",
+            include_usage=False,
+        ),
+    }
+    assert config.models == {"gpt-4o-mini": "openai", "ibm/granite-3.2-8b": "local"}
+
+
+def test_both_tables_default_to_empty(tmp_path: Path) -> None:
+    # Empty is permissive, and every install predating these tables is empty.
+    config = _load(tmp_path, project='model = "x"')
+    assert config.providers == {} and config.models == {}
+
+
+def test_a_provider_name_is_user_data_not_a_known_key(tmp_path: Path) -> None:
+    # `[providers.whatever]` cannot be checked against a list of known names —
+    # only the keys inside it can be.
+    config = _load(tmp_path, project="[providers.anything_at_all]\nkind = 'openai'")
+    assert "anything_at_all" in config.providers
+
+
+def test_an_unknown_key_inside_a_provider_is_reported(tmp_path: Path) -> None:
+    config, events = _diagnose(tmp_path, "[providers.p]\nkind = 'openai'\napi_key = 'sk-nope'")
+    assert events == ["config_key_unknown"]
+    # The credential rule does not bend for a second provider: `api_key_env`
+    # names a variable, and there is nowhere to put a key itself.
+    assert config.providers["p"].api_key_env is None
+
+
+def test_a_model_without_a_provider_is_dropped(tmp_path: Path) -> None:
+    config, events = _diagnose(
+        tmp_path,
+        '[models."a"]\nprovider = "p"\n[models."b"]\n',
+    )
+    assert events == ["config_model_provider_missing"]
+    assert config.models == {"a": "p"}
+
+
+def test_a_wrongly_typed_provider_name_reports_once(tmp_path: Path) -> None:
+    # One diagnostic, not two — a wrong type must not also read as "missing".
+    config, events = _diagnose(tmp_path, '[models."a"]\nprovider = 3')
+    assert events == ["config_value_invalid"]
+    assert config.models == {}
+
+
+def test_kind_defaults_to_openai(tmp_path: Path) -> None:
+    assert _load(tmp_path, project="[providers.p]\nbase_url = 'http://x/v1'").providers[
+        "p"
+    ].kind == "openai"
+
+
+def test_the_singular_provider_is_reported_when_both_are_set(tmp_path: Path) -> None:
+    """`[providers.*]` is the general form and wins.
+
+    Silently merging would leave a `base_url` that looks configured but is not,
+    which is worse than being told it was ignored.
+    """
+    config, events = _diagnose(
+        tmp_path,
+        "[provider]\nbase_url = 'http://old/v1'\n[providers.p]\nkind = 'openai'\n",
+    )
+    assert events == ["config_provider_singular_ignored"]
+    assert set(config.providers) == {"p"}
+
+
+def test_the_singular_provider_alone_is_silent(tmp_path: Path) -> None:
+    # It shipped in #70 three commits ago; using it must not warn.
+    config, events = _diagnose(tmp_path, "[provider]\nbase_url = 'http://x/v1'")
+    assert events == []
+    assert config.base_url == "http://x/v1"
+
+
 # --- bad input is a diagnostic, never an exception ------------------------
 
 
@@ -268,8 +370,22 @@ def test_an_unknown_key_is_reported(tmp_path: Path) -> None:
 def test_an_unknown_section_is_reported_once(tmp_path: Path) -> None:
     # Once for the section, not once per key inside it — a whole mistyped table
     # is one mistake.
-    _, events = _diagnose(tmp_path, '[providers]\nname = "x"\nbase_url = "y"\n')
+    _, events = _diagnose(tmp_path, '[compactions]\nthreshold = 1\nkeep_recent = 2\n')
     assert events == ["config_section_unknown"]
+
+
+def test_the_singular_plural_near_miss_says_what_is_wrong(tmp_path: Path) -> None:
+    """`[providers]` where `[provider]` was meant.
+
+    Both spellings are real sections now, so this cannot be caught as an unknown
+    section. What it can do is name the key and say a table was expected, which
+    is enough to see the mistake.
+    """
+    config, diagnostics = Config.load(cwd=_project(tmp_path, '[providers]\nname = "x"\n'), home=tmp_path / "nowhere")
+    assert config.providers == {}
+    [d] = diagnostics
+    assert d.event == "config_value_invalid"
+    assert d.fields["key"] == "providers.name" and d.fields["want"] == "table"
 
 
 def test_an_api_key_in_the_file_is_visibly_ignored(tmp_path: Path) -> None:

@@ -80,9 +80,12 @@ The mechanics, which follow from the same rule as logging below:
   parameters. There is deliberately **no `get_config()`** — a global would let any module reach
   configuration, which is the coupling this module exists to remove, and it would be untestable
   without monkeypatching.
-- **No module reads the environment.** Two `os.getenv` calls exist in the whole harness: the
-  resolver in `config.py`, and `OPENAI_API_KEY` in `providers/openai_compat.py`. Adding a third
-  is the thing to push back on.
+- **No module reads the environment for a *setting*.** `os.getenv` appears in exactly three
+  places, and two of them are credentials: the resolver in `config.py`, the `OPENAI_API_KEY`
+  fallback in `providers/openai_compat.py`, and `api_key_env` in `providers/registry.py`. The
+  rule is the category, not the count — **credentials come from the environment, by name, and
+  never from the file; settings never come from the environment outside `config.py`.** A fourth
+  read for anything that is not a credential is the thing to push back on.
 - Precedence is **flag > env > config > default**. `Config.load` resolves the last three; flags
   win at the call site. An argparse `default=` that is not `None` silently makes the config layer
   unreachable — the default belongs in `Config`, once.
@@ -93,7 +96,14 @@ The mechanics, which follow from the same rule as logging below:
   wrongly typed value degrades to the default and says so. A typo must not stop the harness from
   starting, and must not silently change what it does either.
 - **A credential is never a config field.** `OPENAI_API_KEY` stays in the environment; a config
-  file gets committed. `api_key` in the file is reported as an unknown key.
+  file gets committed. `api_key` in the file is reported as an unknown key. A second provider
+  names *which variable* holds its key (`api_key_env`), never the key.
+- **The model registry is the user's, and midge never populates it.** `[models.*]` maps a model
+  id to a `[providers.*]` entry, and `providers/registry.py` resolves it per request. Do not ship
+  a list of models, do not validate a model id against one, and do not add a "did you mean" —
+  vendors churn models continuously and a typo fails at the API with a better error than we could
+  give. Validate the *wiring* (a model naming an undefined provider) and nothing else. An empty
+  registry is permissive; writing a `[models]` table is what turns enforcement on.
 - `tests/test_config.py` asserts `examples/config.toml` still parses with no diagnostics, so
   documenting a new key is not optional — a field added without its example entry fails CI.
 

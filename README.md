@@ -82,6 +82,37 @@ still wins for one run and CI keeps working unchanged. Every key has an environm
 equivalent; an unrecognized key is reported at startup rather than ignored, and a malformed file
 is a warning, not a failure to start.
 
+### The model registry
+
+Optional, and empty by default. Listing models lets midge talk to **more than one service at
+once** — the model determines where a request goes, so `set_model` and a sub-agent's `model=`
+route correctly instead of all landing on one endpoint:
+
+```toml
+[providers.openai]
+api_key_env = "OPENAI_API_KEY"
+
+[providers.local]
+kind = "openai-compatible"
+base_url = "http://localhost:11434/v1"
+
+[models."gpt-4o-mini"]
+provider = "openai"
+
+[models."ibm/granite-3.2-8b"]
+provider = "local"
+```
+
+An **empty registry is permissive** — any model string works, which is what every install without
+these tables gets. Writing even one `[models]` entry turns enforcement on: from then on you are
+declaring what you want available, and `set_model` refuses anything else rather than reporting
+success and failing on the next turn.
+
+midge ships **no list of models** and does not check that a model id exists. Vendors add and
+retire models continuously, so a baked-in list is wrong within weeks, and a typo fails at the API
+with the vendor's own error. What is checked is the wiring: a model naming a provider you never
+defined is dropped with a warning at startup.
+
 `OPENAI_API_KEY` is the one setting that is **not** a config key. A credential does not belong in
 a file that gets committed, so it is read from the environment, in exactly one place, and never
 logged at any level. A `base_url` is logged as its hostname only, because it can carry
@@ -224,7 +255,7 @@ The harness deliberately separates from the "coding agent" identity. See `exampl
 src/midge/
 ├── messages.py        # typed message history (provider-independent)
 ├── client.py          # streaming state machine + retry policy
-├── providers/         # one wire format per adapter; registry + Delta contract
+├── providers/         # one adapter per wire format; the model registry; Delta contract
 ├── tools/
 │   ├── __init__.py    # @tool decorator + Pydantic schema + ToolRegistry
 │   └── coding/        # built-in tools: read, bash, edit, write

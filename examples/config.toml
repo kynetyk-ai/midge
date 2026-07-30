@@ -38,6 +38,48 @@ model = "gpt-4o-mini"
 # include_usage = true
 
 
+# --- the model registry ----------------------------------------------------
+#
+# Optional, and empty by default. What it buys you is more than one service at
+# once: with a registry, the model determines where the request goes, so
+# `set_model` and a sub-agent's `model=` route correctly instead of all landing
+# on whatever `[provider]` above happens to name.
+#
+# THE ASYMMETRY WORTH KNOWING: an empty registry is permissive — any model
+# string is accepted. Writing even one `[models."..."]` entry turns enforcement
+# on, and from then on a model you have not listed is refused. That is the point
+# — you are declaring what you want available.
+#
+# midge ships no list of models and never will: vendors add and retire them
+# continuously, so any list baked into the tool is wrong within weeks. It also
+# does not check that a model id exists — a typo fails at the API with the
+# vendor's own error, which is more accurate than a guess from here. What it
+# does check is the wiring: a model naming a provider you never defined is
+# dropped, and says so at startup.
+#
+# `[providers.*]` says how to reach a service. The name is yours.
+# `[models.*]` says which service a model lives on.
+
+# [providers.openai]
+# kind = "openai"                    # which wire format; see `midge.providers`
+# api_key_env = "OPENAI_API_KEY"     # the NAME of the variable, never the key
+
+# [providers.local]
+# kind = "openai-compatible"
+# base_url = "http://localhost:11434/v1"
+# include_usage = false              # per-provider; overrides what the adapter declares
+
+# [models."gpt-4o-mini"]
+# provider = "openai"
+
+# [models."ibm/granite-3.2-8b"]
+# provider = "local"
+
+# The top-level `model` above selects which of these to start with, so with a
+# registry it has to name one of them. There is no separate default here — one
+# setting, one spelling.
+
+
 [retry]
 # How many times a request may be attempted in total, and the base for the
 # exponential backoff between attempts, in seconds. Only errors the provider

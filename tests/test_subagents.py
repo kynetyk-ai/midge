@@ -20,7 +20,7 @@ from midge.subagents import (
     subagent,
 )
 from midge.tools import Tool, ToolRegistry, tool
-from tests.fakes import ScriptedProvider, finish, install, say, tcall
+from tests.fakes import FakeProvider, ScriptedProvider, finish, install, say, tcall
 
 PROMPT = "You are a test explorer."
 
@@ -559,3 +559,48 @@ async def test_plain_tools_are_unaffected_by_call_id() -> None:
     registry = ToolRegistry([read])
     assert await registry.invoke("read", {"path": "a"}, call_id="c1") == "contents of a"
     assert await registry.invoke("read", {"path": "a"}) == "contents of a"
+
+
+async def test_a_child_on_another_provider_routes_there(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The sub-agent half of #71.
+
+    A child shares the parent's `Client` — `subagents.py` passes
+    `client=runtime.client, model=spec.model or runtime.model` — so before the
+    registry, `@subagent(model=...)` only worked when the child's model happened
+    to live on the parent's provider. Now the model chooses, per call.
+    """
+    from midge.config import ProviderConfig
+    from midge.providers import ModelRegistry
+
+    # Keyed by adapter kind, which is what `get` resolves.
+    built: dict[str, FakeProvider] = {}
+
+    def fake_get(kind: str) -> Any:
+        def factory(**_: Any) -> FakeProvider:
+            provider = FakeProvider([_says("ok")])
+            built[kind] = provider
+            return provider
+
+        return factory
+
+    monkeypatch.setattr("midge.providers.registry.get", fake_get)
+    client = Client(
+        registry=ModelRegistry(
+            models={"parent-model": "up", "child-model": "down"},
+            providers={
+                "up": ProviderConfig(kind="upstream"),
+                "down": ProviderConfig(kind="downstream"),
+            },
+        )
+    )
+    registry = ToolRegistry([_explorer(model="child-model")])
+    bind_subagents(registry, client=client, model="parent-model")
+
+    await registry.invoke("spawn_explore", {"question": "q"}, call_id="c1")
+
+    # Only the child ran here, and it went to its own provider — the parent's
+    # was never touched.
+    assert set(built) == {"downstream"}
+    assert built["downstream"].bodies[0]["model"] == "child-model"
