@@ -263,7 +263,7 @@ register(
     # default would silently lose token counts on every local run.
     lambda **kw: OpenAIProvider(
         name="openai-compatible",
-        capabilities=Capabilities(requires_api_key=False, stream_usage=True),
+        capabilities=Capabilities(stream_usage=True),
         **kw,
     ),
 )

@@ -38,14 +38,16 @@ from midge.messages import Message, StopReason, Usage
 class Capabilities:
     """What a provider tolerates, declared rather than probed.
 
-    `requires_api_key` is False for local servers, which accept any placeholder.
     `stream_usage` says the provider accepts a request for token counts on the
-    stream; a server that does not may reject the whole turn with a 400 rather
+    stream. A server that does not may reject the whole turn with a 400 rather
     than ignoring the field, which is why this is declared per provider instead
     of always sent.
+
+    Deliberately one field. A `requires_api_key` flag was tried and removed: the
+    behaviour it was supposed to express is already the `or "not-needed"`
+    fallback, which applies to every provider here, so the flag had no reader.
     """
 
-    requires_api_key: bool = True
     stream_usage: bool = True
 
 

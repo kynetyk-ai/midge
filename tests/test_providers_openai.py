@@ -262,18 +262,6 @@ def test_the_sdk_does_not_retry_on_its_own() -> None:
     assert _provider()._client.max_retries == 0
 
 
-def test_a_compatible_server_needs_no_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    p = OpenAIProvider(
-        name="openai-compatible",
-        capabilities=Capabilities(requires_api_key=False),
-        base_url="http://localhost:11434/v1",
-    )
-    assert p.capabilities.requires_api_key is False
-    # The SDK insists on something; a placeholder is what local servers accept.
-    assert p._client.api_key == "not-needed"
-
-
 def test_both_names_are_registered() -> None:
     from midge import providers
 
@@ -300,3 +288,15 @@ def test_an_unknown_provider_names_the_registered_ones() -> None:
 
     with pytest.raises(KeyError, match="openai-compatible"):
         providers.get("anthropic")
+
+
+def test_the_env_var_supplies_the_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-from-env")
+    assert OpenAIProvider(name="openai")._client.api_key == "sk-from-env"
+
+
+def test_a_local_server_gets_a_placeholder(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The SDK insists on a credential; local servers accept anything.
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    p = OpenAIProvider(name="openai-compatible", base_url="http://localhost:11434/v1")
+    assert p._client.api_key == "not-needed"
