@@ -22,6 +22,8 @@ from midge.persistence import (
     Session,
     SessionHeader,
     fold_history,
+    list_sessions,
+    read_summary,
     read_transcript,
     resolve_session_path,
     session_chain,
@@ -850,3 +852,121 @@ def test_a_multiline_prompt_round_trips(tmp_path: Path) -> None:
 
     assert Session.load(path).system_prompt == prompt
     assert len([ln for ln in path.read_text().splitlines() if ln.strip()]) == 2
+
+
+# --- session discovery ----------------------------------------------------
+
+
+def _session(dir: Path, stem: str, *, messages: int = 0, name: str | None = None,
+             origin: Origin | None = None, model: str = "m") -> Path:
+    path = dir / f"{stem}.jsonl"
+    with Session.new(path, model=model, origin=origin) as s:
+        for i in range(messages):
+            s.append(UserMessage(content=f"m{i}"))
+        if name is not None:
+            s.set_name(name)
+    return path
+
+
+def test_a_summary_reports_what_a_picker_shows(tmp_path: Path) -> None:
+    path = _session(tmp_path, "a", messages=3, name="auth refactor", model="gpt-4o")
+
+    summary = read_summary(path)
+
+    assert summary is not None
+    assert summary.name == "auth refactor"
+    assert summary.model == "gpt-4o"
+    assert summary.messages == 3
+    assert summary.origin is None
+
+
+def test_a_summary_takes_the_last_name(tmp_path: Path) -> None:
+    """The cheap reader has its own scan, so `Session.load` agreeing proves
+    nothing about it."""
+    path = tmp_path / "a.jsonl"
+    with Session.new(path, model="m") as s:
+        s.set_name("first")
+        s.set_name("second")
+
+    summary = read_summary(path)
+    assert summary is not None and summary.name == "second"
+
+
+def test_an_unnamed_session_has_no_name(tmp_path: Path) -> None:
+    summary = read_summary(_session(tmp_path, "a"))
+    assert summary is not None and summary.name is None
+
+
+def test_a_summary_does_not_parse_the_messages(tmp_path: Path) -> None:
+    """The count is a line-type test, so a message this build cannot validate
+    still counts. That is the point: a listing must not be the thing that fails
+    on a transcript written by a newer build."""
+    path = _session(tmp_path, "a", messages=1)
+    with path.open("a", encoding="utf-8") as f:
+        f.write('{"type": "message", "data": {"role": "from_the_future"}}\n')
+
+    summary = read_summary(path)
+    assert summary is not None and summary.messages == 2
+
+
+@pytest.mark.parametrize(
+    ("label", "content"),
+    [
+        ("empty", ""),
+        ("blank", "\n\n"),
+        ("headerless", '{"type": "message", "data": {}}\n'),
+        ("not json", "hello\n"),
+        ("newer version", '{"type":"header","version":999,"created_at":"x","model":"m"}\n'),
+    ],
+)
+def test_an_unreadable_file_is_skipped_not_raised(tmp_path: Path, label: str, content: str) -> None:
+    # `read_transcript` raises on all of these, which is right when someone asked
+    # for *that* transcript. In a listing one bad file must not hide the rest.
+    path = tmp_path / "bad.jsonl"
+    path.write_text(content, encoding="utf-8")
+    assert read_summary(path) is None
+
+
+def test_a_truncated_final_line_still_summarizes(tmp_path: Path) -> None:
+    # `append` is write-then-flush, not atomic, so a crash mid-write leaves a
+    # partial last line — the same case `read_transcript` recovers from.
+    path = _session(tmp_path, "a", messages=2)
+    with path.open("a", encoding="utf-8") as f:
+        f.write('{"type": "session_i')
+
+    summary = read_summary(path)
+    assert summary is not None and summary.messages == 2
+
+
+def test_a_listing_is_newest_first(tmp_path: Path) -> None:
+    # Ordered by the header's `created_at`, not the filename: the stamp in a
+    # generated name agrees with it, but the header is the fact and a
+    # `--session` path names whatever the user liked.
+    _session(tmp_path, "zzz", name="older")
+    _session(tmp_path, "aaa", name="middle")
+    _session(tmp_path, "mmm", name="newest")
+
+    assert [s.name for s in list_sessions(tmp_path)] == ["newest", "middle", "older"]
+
+
+def test_delegations_and_excursions_are_not_conversations(tmp_path: Path) -> None:
+    # They are siblings on disk because a child writes beside its parent, but
+    # reopening one would resume the middle of a tool call.
+    _session(tmp_path, "root", name="root")
+    _session(tmp_path, "child", origin="subagent")
+    _session(tmp_path, "excursion", origin="profile")
+
+    assert [s.name for s in list_sessions(tmp_path)] == ["root"]
+    assert len(list_sessions(tmp_path, roots_only=False)) == 3
+
+
+def test_one_bad_file_does_not_hide_the_others(tmp_path: Path) -> None:
+    _session(tmp_path, "good", name="fine")
+    (tmp_path / "bad").write_text("garbage\n", encoding="utf-8")
+
+    assert [s.name for s in list_sessions(tmp_path)] == ["fine"]
+
+
+def test_a_missing_directory_is_an_empty_listing(tmp_path: Path) -> None:
+    # Nothing has been recorded yet, which is not an error.
+    assert list_sessions(tmp_path / "nope") == []

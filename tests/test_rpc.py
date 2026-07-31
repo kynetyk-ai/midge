@@ -2585,3 +2585,108 @@ async def test_the_response_says_whether_the_change_is_durable(tmp_path: Path) -
     inbox.close()
     await task
     session.close()
+
+
+# --- list_sessions --------------------------------------------------------
+
+
+def _server_with_sessions(
+    agent: Agent, directory: Path, session: Session | None = None
+) -> tuple[RpcServer, _Inbox, _Outbox, asyncio.Task[None]]:
+    server = RpcServer(agent, session=session, session_dir=directory)
+    inbox, outbox = _Inbox(), _Outbox()
+    task = asyncio.create_task(server.serve(read_line=inbox.read_line, write=outbox.write))
+    return server, inbox, outbox, task
+
+
+async def _sessions(
+    inbox: _Inbox, outbox: _Outbox, *, id: str = "1", **kw: Any
+) -> list[dict[str, Any]]:
+    resp = await _command(inbox, outbox, {"id": id, "type": "list_sessions", **kw})
+    assert resp["success"], resp
+    return resp["data"]["sessions"]
+
+
+async def test_list_sessions_reports_what_is_on_disk(tmp_path: Path) -> None:
+    with Session.new(tmp_path / "a.jsonl", model="gpt-4o") as s:
+        s.append(UserMessage(content="hi"))
+        s.set_name("auth refactor")
+    agent = Agent(client=Client(), model="m")
+    _server, inbox, outbox, task = _server_with_sessions(agent, tmp_path)
+
+    [entry] = await _sessions(inbox, outbox)
+
+    assert entry["name"] == "auth refactor"
+    assert entry["model"] == "gpt-4o"
+    assert entry["messages"] == 1
+    assert entry["current"] is False
+    inbox.close()
+    await task
+
+
+async def test_the_open_session_is_marked_current(tmp_path: Path) -> None:
+    # A picker must not invite you to reopen the conversation you are in, and
+    # comparing paths at every call site is how one of them gets it wrong.
+    open_session = Session.new(tmp_path / "a.jsonl", model="m")
+    Session.new(tmp_path / "b.jsonl", model="m").close()
+    agent = Agent(client=Client(), model="m")
+    _server, inbox, outbox, task = _server_with_sessions(agent, tmp_path, open_session)
+
+    current = {e["path"]: e["current"] for e in await _sessions(inbox, outbox)}
+
+    assert current[str(tmp_path / "a.jsonl")] is True
+    assert current[str(tmp_path / "b.jsonl")] is False
+    inbox.close()
+    await task
+
+
+async def test_subagent_transcripts_are_not_listed(tmp_path: Path) -> None:
+    Session.new(tmp_path / "root.jsonl", model="m").close()
+    Session.new(tmp_path / "child.jsonl", model="m", origin="subagent").close()
+    agent = Agent(client=Client(), model="m")
+    _server, inbox, outbox, task = _server_with_sessions(agent, tmp_path)
+
+    assert len(await _sessions(inbox, outbox)) == 1
+    assert len(await _sessions(inbox, outbox, id="2", roots_only=False)) == 2
+    inbox.close()
+    await task
+
+
+async def test_list_sessions_is_not_a_builtin_command(tmp_path: Path) -> None:
+    """A read that renders a picker, not an action a user invokes — the same
+    relationship `get_profiles` has to `use_profile`."""
+    agent = Agent(client=Client(), model="m")
+    _server, inbox, outbox, task = _server_with_sessions(agent, tmp_path)
+
+    names = [c["name"] for c in await _commands(inbox, outbox)]
+
+    assert "list_sessions" not in names
+    assert "open_session" in names
+    inbox.close()
+    await task
+
+
+async def test_a_listing_survives_a_damaged_transcript(tmp_path: Path) -> None:
+    with Session.new(tmp_path / "good.jsonl", model="m") as s:
+        s.set_name("fine")
+    (tmp_path / "bad.jsonl").write_text("not json at all\n", encoding="utf-8")
+    agent = Agent(client=Client(), model="m")
+    _server, inbox, outbox, task = _server_with_sessions(agent, tmp_path)
+
+    assert [e["name"] for e in await _sessions(inbox, outbox)] == ["fine"]
+    inbox.close()
+    await task
+
+
+async def test_a_bad_roots_only_is_rejected(tmp_path: Path) -> None:
+    agent = Agent(client=Client(), model="m")
+    _server, inbox, outbox, task = _server_with_sessions(agent, tmp_path)
+
+    resp = await _command(
+        inbox, outbox, {"id": "1", "type": "list_sessions", "roots_only": "yes"}
+    )
+
+    assert resp["success"] is False
+    assert "boolean" in resp["error"]
+    inbox.close()
+    await task

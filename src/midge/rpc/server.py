@@ -65,6 +65,7 @@ class RpcServer:
         resume_fallback: Literal["fork", "continue"] = "fork",
         extension_sources: Sequence[Path] | None = None,
         skill_sources: Sequence[Path] | None = None,
+        session_dir: Path | None = None,
         controls: Controls | None = None,
     ) -> None:
         # An entrypoint that already built one passes it in, so the TUI and the
@@ -89,6 +90,7 @@ class RpcServer:
             # an empty list.
             extension_sources=list(extension_sources) if extension_sources is not None else None,
             skill_sources=list(skill_sources) if skill_sources is not None else None,
+            session_dir=session_dir,
         )
         self.controls.runner = self
         self.controls.on_subagent_event = self.subagent_event
@@ -204,6 +206,8 @@ class RpcServer:
                 await self._handle_get_system_prompt(cmd_id)
             case "get_profiles":
                 await self._handle_get_profiles(cmd_id)
+            case "list_sessions":
+                await self._handle_list_sessions(cmd_id, cmd)
             case "set_system_prompt":
                 await self._handle_set_system_prompt(cmd_id, cmd)
             case "set_model":
@@ -349,6 +353,27 @@ class RpcServer:
                 break
         await self._respond(
             cmd_id, "get_last_assistant_text", success=True, data={"text": text}
+        )
+
+    async def _handle_list_sessions(self, cmd_id: str | None, cmd: dict[str, Any]) -> None:
+        """What conversations exist on disk.
+
+        In the `get_*` family rather than `BUILTIN_COMMANDS`, the same way
+        `get_profiles` is: this renders a picker, and `open_session` is the
+        command it fires. Listing what a user could switch to is not itself a
+        thing a user invokes.
+        """
+        roots_only = cmd.get("roots_only", True)
+        if not isinstance(roots_only, bool):
+            await self._respond(
+                cmd_id, "list_sessions", success=False, error="`roots_only` must be a boolean"
+            )
+            return
+        await self._respond(
+            cmd_id,
+            "list_sessions",
+            success=True,
+            data={"sessions": self.controls.session_list(roots_only=roots_only)},
         )
 
     async def _handle_get_profiles(self, cmd_id: str | None) -> None:

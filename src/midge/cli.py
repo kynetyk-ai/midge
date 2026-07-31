@@ -395,6 +395,9 @@ def main(argv: list[str] | None = None) -> None:
             # the library defaults each time.
             subagents=config.subagents,
             resume_fallback="continue" if config.resume_fallback == "continue" else "fork",
+            # Where `list_sessions` looks. The same directory `resolve_session_path`
+            # writes into, so a listing shows what this process has been creating.
+            session_dir=config.session.dir,
             # The same lists the loaders above were given, so `reload` repeats
             # that call rather than rebuilding it.
             extension_sources=extension_sources,

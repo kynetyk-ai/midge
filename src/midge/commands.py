@@ -50,7 +50,13 @@ from midge.config import SubagentConfig
 from midge.config import emit as emit_diagnostics
 from midge.extensions import load_extensions
 from midge.messages import UserMessage
-from midge.persistence import ProfileRecord, Session, read_transcript, session_chain
+from midge.persistence import (
+    ProfileRecord,
+    Session,
+    list_sessions,
+    read_transcript,
+    session_chain,
+)
 from midge.profiles import Profile, ProfileSet
 from midge.profiles import validate as validate_profiles
 from midge.skills import Skill, load_skills, skill_message, skills_prompt
@@ -206,6 +212,7 @@ class Controls:
         resume_fallback: Literal["fork", "continue"] = "fork",
         extension_sources: Sequence[Path] | None = None,
         skill_sources: Sequence[Path] | None = None,
+        session_dir: Path | None = None,
         runner: Runner | None = None,
         on_subagent_event: Any = None,
     ) -> None:
@@ -237,6 +244,10 @@ class Controls:
         self.subagents = subagents
         self.extension_sources = extension_sources
         self.skill_sources = skill_sources
+        # Where to look when asked what sessions exist. `None` means the
+        # default, resolved at call time rather than here — `Path.cwd()` frozen
+        # at construction is the trap `default_session_dir` exists to avoid.
+        self.session_dir = session_dir
         self.runner = runner
         self.on_subagent_event = on_subagent_event
 
@@ -359,6 +370,30 @@ class Controls:
                 "source": str(path) if (path := self.profiles.path_of(p.name)) else None,
             }
             for p in self.profiles
+        ]
+
+    def session_list(self, *, roots_only: bool = True) -> list[dict[str, Any]]:
+        """What conversations exist, for something that offers a choice of them.
+
+        A read, not a command — the same relationship `get_profiles` has to
+        `use_profile`. This renders the picker; `open_session` is the act.
+
+        `current` is here because the one thing a picker must not do is invite
+        you to reopen what you are already in. Comparing paths at the call site
+        would mean every front-end getting the same comparison right.
+        """
+        current = self.session.path if self.session is not None else None
+        return [
+            {
+                "path": str(s.path),
+                "name": s.name,
+                "created_at": s.created_at,
+                "model": s.model,
+                "messages": s.messages,
+                "modified": s.modified,
+                "current": s.path == current,
+            }
+            for s in list_sessions(self.session_dir, roots_only=roots_only)
         ]
 
     def expand(self, text: str) -> str | UserMessage:
