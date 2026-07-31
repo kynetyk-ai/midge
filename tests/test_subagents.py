@@ -11,7 +11,7 @@ from pydantic import ValidationError
 
 from midge.agent import Agent
 from midge.client import Client
-from midge.config import ProviderConfig
+from midge.config import ProviderConfig, SubagentConfig
 from midge.hooks import (
     Hooks,
     ProviderRequestResult,
@@ -251,6 +251,25 @@ def _slow_agent(**kw: Any) -> SubagentTool:
     return explore
 
 
+async def test_an_agent_that_declares_no_timeout_gets_the_configured_one() -> None:
+    """A concrete default on the spec would make `[subagents] timeout`
+    unreachable — the argparse trap, one layer down."""
+    client = Client()
+
+    async def on_open(body: Any) -> list[Any]:
+        await asyncio.sleep(10)
+        return []
+
+    client.provider = ScriptedProvider(on_open)
+    registry = ToolRegistry([read, _explorer()])
+    bind_subagents(
+        registry, client=client, model="m", subagents=SubagentConfig(timeout=0.05)
+    )
+
+    out = await registry.invoke("spawn_explore", {"question": "q"}, call_id="c1")
+    assert "timed out after 0s" in out
+
+
 def test_a_caller_timeout_appears_only_when_the_author_offers_it() -> None:
     # "The function signature is the tool schema" with no exception: an author
     # who wants a fixed budget simply does not declare the parameter.
@@ -285,7 +304,9 @@ async def test_the_operator_ceiling_clamps_the_caller() -> None:
 
     client.provider = ScriptedProvider(on_open)
     registry = ToolRegistry([read, _slow_agent(timeout=60)])
-    bind_subagents(registry, client=client, model="m", max_timeout=0.05)
+    bind_subagents(
+        registry, client=client, model="m", subagents=SubagentConfig(max_timeout=0.05)
+    )
 
     out = await registry.invoke(
         "spawn_explore", {"question": "q", "timeout": 3600}, call_id="c1"
@@ -554,7 +575,9 @@ async def test_semaphore_caps_concurrent_children() -> None:
 
     client.provider = ScriptedProvider(on_open)
     registry = ToolRegistry([read, _explorer()])
-    bind_subagents(registry, client=client, model="m", max_concurrent=2)
+    bind_subagents(
+        registry, client=client, model="m", subagents=SubagentConfig(max_concurrent=2)
+    )
 
     await asyncio.gather(
         *(registry.invoke("spawn_explore", {"question": str(i)}, call_id=f"c{i}") for i in range(6))

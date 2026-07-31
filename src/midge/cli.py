@@ -364,8 +364,7 @@ def main(argv: list[str] | None = None) -> None:
         model=model,
         hooks=hooks,
         session=session,
-        max_concurrent=config.subagents.max_concurrent,
-        max_timeout=config.subagents.max_timeout,
+        subagents=config.subagents,
     )
     agent = Agent(
         client=client,
