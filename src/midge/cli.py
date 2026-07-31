@@ -18,6 +18,7 @@ from pathlib import Path
 
 from midge.agent import Agent
 from midge.client import Client
+from midge.commands import Controls
 from midge.config import Config
 from midge.config import emit as emit_config_diagnostics
 from midge.extensions import BUILTIN_TOOL_DIRS, load_extensions
@@ -379,30 +380,33 @@ def main(argv: list[str] | None = None) -> None:
 
     session_path = str(session_file) if session_file is not None else None
 
+    # Built once, whichever front-end runs. The two modes differ in how a human
+    # or a client reaches the agent, not in what reaching it can do.
+    controls = Controls(
+        agent,
+        session=session,
+        compaction_keep_recent=keep_recent,
+        base_prompt=durable,
+        extension_prompt=prompt_addition,
+        skills=skills,
+        profiles=profiles,
+        # Sub-agents are re-bound on reload, `new_session` and a profile switch,
+        # so the limits are held rather than reached for each time.
+        subagents=config.subagents,
+        resume_fallback="continue" if config.resume_fallback == "continue" else "fork",
+        # Where `list_sessions` looks. The same directory `resolve_session_path`
+        # writes into, so a listing shows what this process has been creating.
+        session_dir=config.session.dir,
+        # The same lists the loaders above were given, so `reload` repeats that
+        # call rather than rebuilding it.
+        extension_sources=extension_sources,
+        skill_sources=skill_sources,
+    )
+
     if args.rpc:
         # RPC owns its loop, so the session bookends run inside it rather than
         # in their own `asyncio.run` the way the TUI's do.
-        server = RpcServer(
-            agent,
-            session=session,
-            compaction_keep_recent=keep_recent,
-            base_prompt=durable,
-            extension_prompt=prompt_addition,
-            skills=skills,
-            profiles=profiles,
-            # The server re-binds sub-agents on reload, `new_session` and a
-            # profile switch, so it needs the limits rather than reaching for
-            # the library defaults each time.
-            subagents=config.subagents,
-            resume_fallback="continue" if config.resume_fallback == "continue" else "fork",
-            # Where `list_sessions` looks. The same directory `resolve_session_path`
-            # writes into, so a listing shows what this process has been creating.
-            session_dir=config.session.dir,
-            # The same lists the loaders above were given, so `reload` repeats
-            # that call rather than rebuilding it.
-            extension_sources=extension_sources,
-            skill_sources=skill_sources,
-        )
+        server = RpcServer(agent, controls=controls)
 
         async def _serve() -> None:
             await hooks.emit(SessionStart(path=session_path))
@@ -421,13 +425,11 @@ def main(argv: list[str] | None = None) -> None:
     # event instead.
     asyncio.run(hooks.emit(SessionStart(path=session_path)))
     try:
-        run_tui(
-            agent,
-            session=session,
-            compaction_threshold=threshold,
-            compaction_keep_recent=keep_recent,
-        )
+        run_tui(controls, compaction_threshold=threshold)
     finally:
-        if session is not None:
-            session.close()
+        # `controls.session`, not the one opened at startup: `new_session` and a
+        # profile fork replace it, and closing the original would leave the file
+        # actually being written to open.
+        if controls.session is not None:
+            controls.session.close()
         asyncio.run(hooks.emit(SessionEnd(path=session_path)))

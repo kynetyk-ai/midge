@@ -138,10 +138,13 @@ src/midge/tools/      # @tool decorator + built-in coding tools
 src/midge/extensions.py  # the loader for tool directories
 src/midge/skills.py   # SKILL.md discovery + the system-prompt catalogue
 src/midge/subagents.py # @subagent → spawn_* tools that run nested agents
-src/midge/profiles.py # Profile discovery + validation; applying one is #67
+src/midge/profiles.py # Profile discovery + validation; applying one is `use_profile`
 src/midge/config.py   # .midge/config.toml → Config (entrypoints only)
 src/midge/logs.py     # logging configuration (entrypoints only)
 src/midge/hooks.py    # lifecycle events + handler registry
+src/midge/commands.py # Controls + BUILTIN_COMMANDS — what both front-ends call
+src/midge/rpc/        # JSON-on-stdio front-end: wire / server / transport
+src/midge/tui/        # Textual front-end: palette, slash commands, steering
 tests/              # pytest tests
 examples/           # entrypoints
 notes/              # port-era reading notes; historical, may be stale (#76)

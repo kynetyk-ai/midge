@@ -11,28 +11,45 @@ A minimum-viable shell:
 - Esc clears the input draft.
 
 No custom widgets, no markdown rendering during streaming (markdown re-parse
-on every token is laggy). Polish later — Phase 4 is just "interactive UI
-suitable for daily use".
+on every token is laggy).
+
+The control surface — compact, clear, reload, switch model, switch profile — is
+not reimplemented here. It is `midge.commands.Controls`, the same object the RPC
+server drives, and both surfaces enumerate the same `BUILTIN_COMMANDS`. That is
+what keeps them from drifting: a command added to that table appears in the
+palette without this file being edited.
+
+Two ways to reach it, one table behind both. **Ctrl+P** opens Textual's command
+palette, which offers the commands that need no argument and the two whose valid
+values are knowable — `set_model` and `use_profile` come with enums, so they
+become sub-entries rather than a prompt for free text. **A leading slash** in the
+input box does the same and can carry an argument.
+
+A slash only intercepts when the word after it is a command anyone could invoke.
+`/etc/hosts is missing` is a sentence, and treating it as a failed command would
+make the input box refuse ordinary English about paths.
 """
 
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
+from collections.abc import Callable
+from functools import partial
 from pathlib import Path
 from typing import Any, ClassVar
 
 from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
+from textual.command import DiscoveryHit, Hit, Hits, Provider
 from textual.containers import VerticalScroll
 from textual.logging import TextualHandler
 from textual.message import Message
 from textual.widgets import Footer, Header, Static, TextArea
-from textual.worker import Worker, WorkerCancelled, WorkerFailed, WorkerState
+from textual.worker import Worker, WorkerState
 
-from midge.agent import Agent, AgentEnd, ToolExecutionEnd, ToolExecutionStart
+from midge.agent import Agent, AgentEnd, SteeringQueue, ToolExecutionEnd, ToolExecutionStart
 from midge.client import (
     Done,
     Error,
@@ -41,6 +58,7 @@ from midge.client import (
     ToolCallEnd,
     ToolCallStart,
 )
+from midge.commands import BUILTIN_COMMANDS, Controls, Refused
 from midge.compaction import compact, needs_compaction
 from midge.messages import TextContent, ToolCall
 from midge.persistence import Session
@@ -120,9 +138,82 @@ class ToolCallBubble(Static):
 
 
 class StatusLine(Static):
+    """A one-line note about what just happened, rendered literally.
+
+    `markup=False` because everything that lands here is someone else's text —
+    a model id, a path, a provider's error message — and Textual reads square
+    brackets as style tags. `[model is now gpt-4o]` parses as a tag and renders
+    as nothing at all, which is the worst way for a status line to fail.
+    """
+
     DEFAULT_CSS = """
     StatusLine { color: $text-muted; padding: 0 1; }
     """
+
+    def __init__(self, content: str) -> None:
+        super().__init__(content, markup=False)
+
+
+class MidgeCommands(Provider):
+    """The palette, over the same table the RPC server enumerates."""
+
+    @property
+    def _app(self) -> PiApp:
+        app = self.app
+        assert isinstance(app, PiApp)
+        return app
+
+    def _entries(self) -> list[tuple[str, str, str | None]]:
+        """(display, description, argument) for everything the palette offers.
+
+        Read off the schema rather than a list kept here, so a command becomes
+        palette-invocable the moment its arguments are knowable — and cannot be
+        offered before that. Three cases:
+
+        - **No required argument** — one entry that fires it. `compact`.
+        - **One required argument with an enum** — one entry per value, because
+          a palette is a list you filter, so `set_model gpt-4o` is a thing to
+          find rather than a prompt for free text.
+        - **Anything else** — omitted. A path or a prompt has to be typed, and
+          the slash form is where you can type it.
+
+        The third case is why this is derived: `set_model` has an enum only once
+        a `[models]` table exists. With an empty registry it is *not* knowable,
+        and an entry firing it with no value would set the model to "".
+        """
+        app = self._app
+        out: list[tuple[str, str, str | None]] = []
+        for command in BUILTIN_COMMANDS:
+            schema = app.controls.builtin_schema(command)
+            properties = schema.get("properties", {})
+            required = list(schema.get("required", ()))
+            if not required:
+                out.append((command.name, command.description, None))
+                continue
+            if len(required) == 1 and (values := properties[required[0]].get("enum")):
+                out.extend(
+                    (f"{command.name} {v}", command.description, v) for v in values
+                )
+        for skill in app.controls.skills:
+            out.append((f"skill:{skill.name}", skill.description, None))
+        return out
+
+    async def discover(self) -> Hits:
+        for display, description, argument in self._entries():
+            yield DiscoveryHit(
+                display, partial(self._app.invoke, display, argument), help=description
+            )
+
+    async def search(self, query: str) -> Hits:
+        matcher = self.matcher(query)
+        for display, description, argument in self._entries():
+            if (score := matcher.match(display)) > 0:
+                yield Hit(
+                    score,
+                    matcher.highlight(display),
+                    partial(self._app.invoke, display, argument),
+                    help=description,
+                )
 
 
 class PiApp(App[None]):
@@ -132,6 +223,8 @@ class PiApp(App[None]):
     #input { height: 6; border-top: solid $accent; }
     """
 
+    COMMANDS: ClassVar[set[type[Provider] | Callable[[], type[Provider]]]] = {MidgeCommands}
+
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("ctrl+c", "interrupt", "Interrupt", priority=True),
         Binding("ctrl+d", "quit", "Quit", priority=True),
@@ -140,21 +233,46 @@ class PiApp(App[None]):
 
     def __init__(
         self,
-        agent: Agent,
+        controls: Controls,
         *,
-        session: Session | None = None,
         compaction_threshold: int | None = None,
-        compaction_keep_recent: int = 20_000,
     ) -> None:
         super().__init__()
-        self.agent = agent
-        self.session = session
+        self.controls = controls
+        # The threshold stays here rather than on `Controls`: automatic
+        # compaction is this interface deciding when to act, not an operation
+        # anyone invokes. `keep_recent` is shared, because it is the same
+        # summary either way.
         self.compaction_threshold = compaction_threshold
-        self.compaction_keep_recent = compaction_keep_recent
+        controls.runner = self
+        # Steering has to be a real queue before a turn starts, or a message
+        # typed mid-turn has nowhere to land.
+        if controls.agent.steering is None:
+            controls.agent.steering = SteeringQueue()
         self._current_assistant: AssistantBubble | None = None
         self._tool_bubbles: dict[str, ToolCallBubble] = {}
         self._current_worker: Worker[None] | None = None
-        self.title = f"midge · {agent.model}"
+        self.title = f"midge · {controls.agent.model}"
+
+    @property
+    def agent(self) -> Agent:
+        return self.controls.agent
+
+    @property
+    def session(self) -> Session | None:
+        return self.controls.session
+
+    @property
+    def compaction_keep_recent(self) -> int:
+        return self.controls.compaction_keep_recent
+
+    # `Controls.Runner`: what "a run is in flight" means here is a worker.
+    def busy(self) -> bool:
+        return self._current_worker is not None and self._current_worker.state is WorkerState.RUNNING
+
+    def cancel(self) -> None:
+        if self._current_worker is not None:
+            self._current_worker.cancel()
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
@@ -168,21 +286,132 @@ class PiApp(App[None]):
             log = self.query_one("#log", VerticalScroll)
             log.mount(StatusLine(f"[resumed: {len(self.agent.history)} prior messages]"))
 
+    def _as_command(self, text: str) -> tuple[str, str] | None:
+        """`(name, argument)` if this is a command, else None.
+
+        Only a name from the table intercepts. Anything else starting with a
+        slash is a sentence about a path, and refusing it as an unknown command
+        would make the input box reject ordinary English.
+        """
+        if not text.startswith("/"):
+            return None
+        name, _, argument = text[1:].partition(" ")
+        known = {c.name for c in BUILTIN_COMMANDS}
+        if name in known:
+            return name, argument.strip()
+        if name.startswith("skill:") and any(
+            s.name == name[len("skill:") :] for s in self.controls.skills
+        ):
+            return name, argument.strip()
+        return None
+
     @on(_SubmitTextArea.Submitted)
     async def _on_submit(self, message: _SubmitTextArea.Submitted) -> None:
-        # `exclusive=True` cancels the previous worker but does not wait for it.
-        # Its teardown still appends tool results, so starting the next turn
-        # immediately interleaves two writers into `Agent.history`.
-        prev = self._current_worker
-        if prev is not None and prev.state is WorkerState.RUNNING:
-            prev.cancel()
-            with contextlib.suppress(WorkerCancelled, WorkerFailed):
-                await prev.wait()
+        command = self._as_command(message.value)
+        if command is not None:
+            await self.invoke(f"{command[0]} {command[1]}".strip(), None)
+            return
+
+        if self.busy():
+            # Queued, not cancel-and-restart. The old path cancelled the worker
+            # and awaited its teardown so two writers could not interleave into
+            # `Agent.history` — steering removes the second writer instead, and
+            # keeps the work already done in the turn.
+            steering = self.agent.steering
+            assert steering is not None, "steering is created in __init__"
+            steering.steer(self.controls.expand(message.value))
+            log = self.query_one("#log", VerticalScroll)
+            await log.mount(StatusLine(f"[queued: {message.value}]"))
+            log.scroll_end(animate=False)
+            return
+
         self._current_worker = self.run_worker(
             self._run_turn(message.value),
             exclusive=True,
             exit_on_error=False,
         )
+
+    async def invoke(self, display: str, argument: str | None) -> None:
+        """Run one command and say what happened.
+
+        `display` is `name` or `name argument` — the palette builds it that way
+        so an entry is a thing you can read, and the slash path produces the
+        same string. A skill is not a command: it expands to a prompt, which is
+        the `invoke: "prompt"` the command table already declares.
+        """
+        name, _, inline = display.partition(" ")
+        value = argument if argument is not None else inline.strip()
+        log = self.query_one("#log", VerticalScroll)
+
+        if name.startswith("skill:"):
+            self._current_worker = self.run_worker(
+                self._run_turn(f"/{display}"), exclusive=True, exit_on_error=False
+            )
+            return
+
+        try:
+            result = await self._dispatch(name, value)
+        except Refused as e:
+            await log.mount(StatusLine(f"[{name}: {e}]"))
+        except (OSError, ValueError) as e:
+            _logger.exception("tui_command_failed command=%s", name)
+            await log.mount(StatusLine(f"[{name} failed: {e}]"))
+        else:
+            await log.mount(StatusLine(f"[{result}]"))
+            self.title = f"midge · {self.agent.model}"
+        log.scroll_end(animate=False)
+
+    async def _dispatch(self, name: str, value: str) -> str:
+        """Call the operation and describe it. Refusals propagate."""
+        c = self.controls
+        # A command whose argument is required cannot run without one. The
+        # palette never offers these bare; a slash can be typed bare.
+        if not value and name in {
+            "set_model",
+            "use_profile",
+            "set_session_name",
+            "set_system_prompt",
+            "new_session",
+            "open_session",
+        }:
+            raise Refused(f"{name} needs an argument")
+        match name:
+            case "abort":
+                dropped = c.abort()
+                return f"aborted; {len(dropped)} queued message(s) dropped"
+            case "compact":
+                data = await c.compact()
+                if data["summary"] is None:
+                    return "nothing to compact"
+                return (
+                    f"compacted: {data['cut_index']} messages summarized; "
+                    f"history is now {data['message_count']} messages"
+                )
+            case "clear_context":
+                return f"cleared {c.clear_context()['cleared']} messages"
+            case "reload":
+                data = await c.reload()
+                return (
+                    f"reloaded {', '.join(data['targets']) or 'nothing'} — "
+                    f"{data['tools']} tools, {data['skills']} skills"
+                )
+            case "set_model":
+                c.set_model(value)
+                return f"model is now {value}"
+            case "use_profile":
+                data = c.use_profile(value)
+                return f"profile {data['profile']} — {len(data['tools'])} tools, {data['model']}"
+            case "set_session_name":
+                return f"session named {c.set_session_name(value)['name']}"
+            case "set_system_prompt":
+                c.set_system_prompt(value)
+                return "system prompt replaced"
+            case "new_session":
+                return f"recording to {c.new_session(Path(value))['session']}"
+            case "open_session":
+                data = c.open_session(Path(value))
+                return f"opened {data['session']} — {data['messages']} messages"
+        raise Refused(f"unknown command {name!r}")
 
     async def _run_turn(self, prompt: str) -> None:
         log = self.query_one("#log", VerticalScroll)
@@ -310,16 +539,5 @@ def tui_log_handler(log_file: Path | None = None) -> logging.Handler | None:
     return None if log_file else TextualHandler()
 
 
-def run_tui(
-    agent: Agent,
-    *,
-    session: Session | None = None,
-    compaction_threshold: int | None = None,
-    compaction_keep_recent: int = 20_000,
-) -> None:
-    PiApp(
-        agent,
-        session=session,
-        compaction_threshold=compaction_threshold,
-        compaction_keep_recent=compaction_keep_recent,
-    ).run()
+def run_tui(controls: Controls, *, compaction_threshold: int | None = None) -> None:
+    PiApp(controls, compaction_threshold=compaction_threshold).run()

@@ -431,13 +431,15 @@ class Controls:
     async def compact(self) -> dict[str, Any]:
         """Summarize older turns to reclaim context.
 
-        Not refused mid-run, and that is a known hazard rather than a decision:
-        summarizing is itself a provider call, so `agent.history` is reassigned
-        *after* an await, and a turn running across that window appends to the
-        list being replaced. Those messages are dropped from context with
-        nothing saying so. Unreachable today — nothing invokes this during a run
-        — and guarded when the TUI puts it on a keystroke.
+        Refused mid-run, and the reason is sharper than it looks: summarizing is
+        itself a provider call, so `agent.history` is reassigned *after* an
+        await. A turn running across that window appends to the list being
+        replaced, and those messages are dropped from context with nothing
+        saying so. The TUI's automatic compaction was only ever safe because it
+        runs between turns; putting it on a keystroke is what made this
+        reachable.
         """
+        self._refuse_if_busy("compact")
         result = await compact(
             self.agent.history,
             client=self.agent.client,
@@ -466,8 +468,11 @@ class Controls:
         conversation went sideways and finding it restored on the next resume
         was the surprising behaviour. Use `new_session` for a fresh log.
 
-        Carries the same unguarded-mid-run hazard as `compact`.
+        Refused mid-run for the same reason as `compact`: emptying the list a
+        turn is appending to leaves it building its next request from a history
+        it did not start with.
         """
+        self._refuse_if_busy("clear the context")
         cleared = len(self.agent.history)
         self.agent.history = []
         if self.session is not None:
