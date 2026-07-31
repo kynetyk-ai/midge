@@ -54,7 +54,7 @@ from midge.persistence import (
     ProfileRecord,
     Session,
     list_sessions,
-    read_transcript,
+    read_records,
     session_chain,
 )
 from midge.profiles import Profile, ProfileSet
@@ -803,14 +803,14 @@ class Controls:
             return None
         best: tuple[int, Path] | None = None
         for path in session_chain(self.session.path):
-            try:
-                header, entries = read_transcript(path)
-            except (OSError, ValueError):
+            scanned = read_records(path)
+            if scanned is None:
                 continue
+            header, records = scanned
             if header.origin == "subagent":
                 continue
             last = None
-            for entry in reversed(entries):
+            for entry in reversed(records):
                 if isinstance(entry, ProfileRecord):
                     last = entry
                     break

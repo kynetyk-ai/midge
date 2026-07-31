@@ -284,70 +284,102 @@ class SessionSummary:
     origin: Literal["subagent", "profile", "fork"] | None
 
 
-def read_summary(path: str | Path) -> SessionSummary | None:
-    """Describe a transcript cheaply, or None if it is not one.
+@dataclass(frozen=True, slots=True)
+class _Scan:
+    header: SessionHeader
+    records: list[SessionRecord]
+    messages: int
 
-    `read_transcript` is the wrong tool for a listing: it validates every
-    message through `_MESSAGE_ADAPTER`, base64 image payloads included, so
-    rendering a menu of twenty conversations would parse all twenty in full.
-    This reads the header properly — it is one line and its fields are the
-    answer — and then only looks at the *type* of each remaining line.
 
-    That is why the count is a string test rather than a parse: `append` writes
-    `type` first, so a message line always starts `{"type": "message"`. The name
-    still needs the record decoded, but only `session_info` lines are, and a
-    session is named a handful of times at most.
+def _scan(path: str | Path) -> tuple[_Scan, float] | None:
+    """Read a transcript without parsing a single message.
+
+    `read_transcript` validates every message through `_MESSAGE_ADAPTER`, base64
+    image payloads included. Everything that only wants the header and the
+    records — a listing, a chain walk, "which profile was this last under" —
+    pays for that and uses none of it.
+
+    Messages are counted by a string test rather than decoded, which is sound
+    because `append` writes `type` first. That also makes this reader immune to
+    a message shape it does not understand: a listing must not be the thing that
+    fails on a transcript written by a newer build.
 
     **Returns None instead of raising.** `read_transcript` refuses an empty
-    file, a missing header, a version it cannot understand and a corrupt line,
-    which is right when someone asked for *that* transcript. Here one damaged
-    file among twenty must not hide the other nineteen, so anything unreadable
-    is logged and skipped.
+    file, a missing header, a version from the future and a corrupt line — right
+    when someone asked for *that* transcript, wrong for every caller here, each
+    of which is walking a set and must skip what it cannot read. The mtime rides
+    along because the one `stat` is already paid for.
     """
     p = Path(path)
     try:
-        stat = p.stat()
+        modified = p.stat().st_mtime
         with p.open("r", encoding="utf-8") as f:
             first = f.readline()
             if not first.strip():
-                _logger.warning("session_summary_empty path=%s", p)
+                _logger.warning("session_scan_empty path=%s", p)
                 return None
             raw = json.loads(first)
             if raw.get("type") != "header":
-                _logger.warning("session_summary_headerless path=%s", p)
+                _logger.warning("session_scan_headerless path=%s", p)
                 return None
             version = raw.get("version")
             if not isinstance(version, int) or version > VERSION:
-                _logger.warning("session_summary_version path=%s version=%s", p, version)
+                _logger.warning("session_scan_version path=%s version=%s", p, version)
                 return None
             header = SessionHeader.model_validate(raw)
 
             messages = 0
-            name: str | None = None
+            records: list[SessionRecord] = []
             for line in f:
                 if line.startswith('{"type": "message"'):
                     messages += 1
-                elif '"session_info"' in line:
-                    try:
-                        record = json.loads(line)
-                    except json.JSONDecodeError:
-                        # A half-written final line, the same case
-                        # `read_transcript` tolerates. Nothing after it matters.
-                        break
-                    if record.get("type") == "session_info":
-                        name = record.get("name")
+                    continue
+                if not line.strip():
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    # A half-written final line, the same case `read_transcript`
+                    # tolerates. Nothing after it can be read either.
+                    break
+                record = decode_record(entry)
+                if record is not None:
+                    records.append(record)
     except (OSError, ValueError) as e:
-        _logger.warning("session_summary_unreadable path=%s error=%s", p, e)
+        _logger.warning("session_scan_unreadable path=%s error=%s", p, e)
         return None
+    return _Scan(header=header, records=records, messages=messages), modified
 
+
+def read_records(path: str | Path) -> tuple[SessionHeader, list[SessionRecord]] | None:
+    """The header and every record, skipping the messages entirely.
+
+    What a chain walk actually wants. `ContinuedRecord` has always promised this
+    — "one header and the records, never every message" — and until this existed
+    the promise was made by a function that read every message.
+    """
+    scanned = _scan(path)
+    return (scanned[0].header, scanned[0].records) if scanned is not None else None
+
+
+def read_summary(path: str | Path) -> SessionSummary | None:
+    """Describe a transcript cheaply, or None if it is not one.
+
+    A projection over `_scan`; the name is the last `session_info` record, which
+    is the same "last one wins" rule `session_name` applies to a full read.
+    """
+    scanned = _scan(path)
+    if scanned is None:
+        return None
+    scan, modified = scanned
     return SessionSummary(
-        path=p,
-        name=name,
-        created_at=header.created_at,
-        model=header.model,
-        messages=messages,
-        modified=stat.st_mtime,
-        origin=header.origin,
+        path=Path(path),
+        name=_last(scan.records, SessionInfoRecord, "name"),
+        created_at=scan.header.created_at,
+        model=scan.header.model,
+        messages=scan.messages,
+        modified=modified,
+        origin=scan.header.origin,
     )
 
 
@@ -372,6 +404,29 @@ def list_sessions(
     if roots_only:
         found = [s for s in found if s.origin is None]
     return sorted(found, key=lambda s: s.created_at, reverse=True)
+
+
+_RECORD_TYPES: dict[str, type[SessionRecord]] = {
+    "compaction": CompactionRecord,
+    "clear": ClearRecord,
+    "session_info": SessionInfoRecord,
+    "model_change": ModelChangeRecord,
+    "identity": IdentityRecord,
+    "continued": ContinuedRecord,
+    "profile": ProfileRecord,
+}
+
+
+def decode_record(raw: dict[str, Any]) -> SessionRecord | None:
+    """One non-message line as its record, or None if this build has no such type.
+
+    A table rather than a chain of `elif`s because two readers need it — the one
+    that parses everything and the one that skips the messages — and a record
+    type remembered in only one of them is a transcript that reads differently
+    depending on which door you came in.
+    """
+    model = _RECORD_TYPES.get(raw.get("type", ""))
+    return model.model_validate(raw) if model is not None else None
 
 
 def read_transcript(path: str | Path) -> tuple[SessionHeader, list[TranscriptEntry]]:
@@ -415,25 +470,16 @@ def read_transcript(path: str | Path) -> tuple[SessionHeader, list[TranscriptEnt
                 _logger.warning("session_trailing_line_truncated path=%s line=%d", p, i + 1)
                 break
             raise
-        entry_type = raw.get("type")
-        if entry_type == "message":
+        if raw.get("type") == "message":
             entries.append(_MESSAGE_ADAPTER.validate_python(raw["data"]))
-        elif entry_type == "compaction":
-            entries.append(CompactionRecord.model_validate(raw))
-        elif entry_type == "clear":
-            entries.append(ClearRecord.model_validate(raw))
-        elif entry_type == "session_info":
-            entries.append(SessionInfoRecord.model_validate(raw))
-        elif entry_type == "model_change":
-            entries.append(ModelChangeRecord.model_validate(raw))
-        elif entry_type == "identity":
-            entries.append(IdentityRecord.model_validate(raw))
-        elif entry_type == "continued":
-            entries.append(ContinuedRecord.model_validate(raw))
-        elif entry_type == "profile":
-            entries.append(ProfileRecord.model_validate(raw))
-        else:
-            _logger.warning("session_unknown_entry_type type=%r path=%s", entry_type, p)
+            continue
+        record = decode_record(raw)
+        if record is None:
+            _logger.warning(
+                "session_unknown_entry_type type=%r path=%s", raw.get("type"), p
+            )
+            continue
+        entries.append(record)
 
     return header, entries
 
@@ -522,10 +568,10 @@ def session_chain(path: str | Path) -> list[Path]:
     seen_up: set[Path] = set()
     while root not in seen_up:
         seen_up.add(root)
-        try:
-            header, _entries = read_transcript(root)
-        except (OSError, ValueError):
+        scanned = read_records(root)
+        if scanned is None:
             break
+        header, _records = scanned
         if not header.parent_session:
             break
         root = Path(header.parent_session)
@@ -538,12 +584,12 @@ def session_chain(path: str | Path) -> list[Path]:
         if current in visited:
             continue
         visited.add(current)
-        try:
-            _header, entries = read_transcript(current)
-        except (OSError, ValueError):
+        scanned = read_records(current)
+        if scanned is None:
             continue
+        _header, records = scanned
         order.append(current)
-        queue.extend(current.parent / link.path for link in session_continuations(entries))
+        queue.extend(current.parent / link.path for link in session_continuations(records))
     return order
 
 
