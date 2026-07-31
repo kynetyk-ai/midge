@@ -46,7 +46,8 @@ from textual.command import DiscoveryHit, Hit, Hits, Provider
 from textual.containers import VerticalScroll
 from textual.logging import TextualHandler
 from textual.message import Message
-from textual.widgets import Footer, Header, Static, TextArea
+from textual.widgets import Footer, Header, OptionList, Static, TextArea
+from textual.widgets.option_list import Option
 from textual.worker import Worker, WorkerState
 
 from midge.agent import Agent, AgentEnd, SteeringQueue, ToolExecutionEnd, ToolExecutionStart
@@ -216,6 +217,90 @@ class MidgeCommands(Provider):
                 )
 
 
+class Sidebar(VerticalScroll):
+    """What the agent *is*, and what it could be instead.
+
+    The palette is verbs — compact, clear, reload, things you do once. This is
+    nouns: the session, the profile and the model are each a set of named
+    alternatives with exactly one current, which is a different shape and wants
+    a different affordance. `Controls` already reports all three that way, so
+    this renders rather than computes.
+
+    It also answers a question the TUI could not previously answer at all. A
+    modal shows you the list only while you are choosing and then vanishes;
+    docked, it shows what you are on. Before this the only visible state was the
+    model in the title bar.
+
+    A section with nothing to offer is omitted rather than shown empty — the
+    same rule the palette follows, and the reason the model section disappears
+    without a `[models]` table: with an empty registry midge cannot know what
+    the alternatives are.
+    """
+
+    DEFAULT_CSS = """
+    Sidebar { dock: left; width: 34; border-right: solid $accent; padding: 0 1; }
+    Sidebar.hidden { display: none; }
+    Sidebar > .section { color: $text-muted; text-style: bold; padding: 1 0 0 0; }
+    Sidebar > OptionList { border: none; background: transparent; height: auto; }
+    """
+
+    def rebuild(self, controls: Controls) -> None:
+        """Read the current state and redraw. Called on every open.
+
+        Cheaper than staying in sync: sessions appear on disk from other
+        processes, and a profile switch changes two sections at once.
+        """
+        self.remove_children()
+        sections = 0
+        for title, options in (
+            ("sessions", _session_options(controls)),
+            ("profiles", _profile_options(controls)),
+            ("model", _model_options(controls)),
+        ):
+            if not options:
+                continue
+            sections += 1
+            self.mount(Static(title, classes="section"))
+            self.mount(OptionList(*options))
+        if not sections:
+            self.mount(Static("nothing to switch to", classes="section"))
+
+
+# NUL, because the argument half is a filesystem path and everything printable
+# can appear in one.
+_ARG = "\x00"
+_CURRENT = "\u25cf"
+
+
+def _mark(label: str, *, current: bool) -> str:
+    return f"{_CURRENT if current else ' '} {label}"
+
+
+def _session_options(controls: Controls) -> list[Option]:
+    return [
+        Option(
+            _mark(s["name"] or Path(s["path"]).name, current=bool(s["current"])),
+            id=f"open_session{_ARG}{s['path']}",
+        )
+        for s in controls.session_list()
+    ]
+
+
+def _profile_options(controls: Controls) -> list[Option]:
+    return [
+        Option(_mark(name, current=name == controls.profile), id=f"use_profile{_ARG}{name}")
+        for name in controls.profiles.names()
+    ]
+
+
+def _model_options(controls: Controls) -> list[Option]:
+    registry = controls.agent.client.registry
+    return [
+        Option(_mark(name, current=name == controls.agent.model), id=f"set_model{_ARG}{name}")
+        for name in (registry.names() if registry else ())
+    ]
+
+
 class PiApp(App[None]):
     CSS = """
     Screen { layout: vertical; }
@@ -228,6 +313,7 @@ class PiApp(App[None]):
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("ctrl+c", "interrupt", "Interrupt", priority=True),
         Binding("ctrl+d", "quit", "Quit", priority=True),
+        Binding("ctrl+b", "toggle_sidebar", "Switch to…", priority=True),
         Binding("escape", "clear_input", "Clear input"),
     ]
 
@@ -276,9 +362,36 @@ class PiApp(App[None]):
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
+        yield Sidebar(id="sidebar", classes="hidden")
         yield VerticalScroll(id="log")
         yield _SubmitTextArea(id="input", soft_wrap=True)
         yield Footer()
+
+    def action_toggle_sidebar(self) -> None:
+        sidebar = self.query_one("#sidebar", Sidebar)
+        if sidebar.has_class("hidden"):
+            sidebar.rebuild(self.controls)
+            sidebar.remove_class("hidden")
+            # Focus follows, or the arrow keys would still be editing the draft.
+            lists = sidebar.query(OptionList)
+            if lists:
+                lists.first().focus()
+        else:
+            self._close_sidebar()
+
+    def _close_sidebar(self) -> None:
+        self.query_one("#sidebar", Sidebar).add_class("hidden")
+        self.query_one("#input", _SubmitTextArea).focus()
+
+    @on(OptionList.OptionSelected)
+    async def _on_sidebar_choice(self, event: OptionList.OptionSelected) -> None:
+        if event.option_id is None:
+            return
+        name, _, argument = event.option_id.partition(_ARG)
+        # Closed first: the choice changes what the panel would show, and
+        # leaving it open displaying the old state is worse than dismissing it.
+        self._close_sidebar()
+        await self.invoke(name, argument)
 
     def on_mount(self) -> None:
         self.query_one("#input", _SubmitTextArea).focus()
@@ -523,6 +636,9 @@ class PiApp(App[None]):
             worker.cancel()
 
     def action_clear_input(self) -> None:
+        if not self.query_one("#sidebar", Sidebar).has_class("hidden"):
+            self._close_sidebar()
+            return
         self.query_one("#input", _SubmitTextArea).clear()
 
 

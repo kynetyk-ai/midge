@@ -40,9 +40,11 @@ Python 3.11+. Poetry for env and dep management.
 poetry run midge
 ```
 
-Flags: `--extension-dir DIR` (repeatable), `--session PATH`, `--compaction-threshold N`, `--compaction-keep-recent N`. Bindings: `Enter` submit, `Alt+Enter` newline, `Ctrl+P` command palette, `Ctrl+C` interrupt, `Ctrl+D` quit, `Esc` clear input.
+Flags: `--extension-dir DIR` (repeatable), `--session PATH`, `--compaction-threshold N`, `--compaction-keep-recent N`. Bindings: `Enter` submit, `Alt+Enter` newline, `Ctrl+P` command palette, `Ctrl+B` switch-to panel, `Ctrl+C` interrupt, `Ctrl+D` quit, `Esc` close the panel or clear input.
 
 The TUI and the RPC server drive the same `Controls` object and enumerate the same command table, so neither can offer less than the other. `Ctrl+P` lists what needs no argument (`compact`, `clear_context`, `reload`, `abort`) plus anything whose values are knowable — with a `[models]` table configured, `set_model` appears once per registered model rather than as a prompt for free text. A leading slash does the same and can carry an argument: `/compact`, `/set_model gpt-4o`, `/open_session prior.jsonl`, `/skill:review`. A slash only intercepts when the word after it is a real command, so `/etc/hosts is missing` is still a message.
+
+`Ctrl+B` opens a panel on the left for the things you *switch between* rather than do: the session, the profile and the model are each a set of named alternatives with one current, and the current one is marked — so it also answers "what am I on?", which nothing else in the TUI did. A section with nothing to offer is omitted, which is why the model list appears only once a `[models]` table says what the alternatives are.
 
 **Typing while a turn is running queues the message** rather than cancelling the turn: it lands at the next tool boundary, so nothing already done is thrown away. `Ctrl+C` is the explicit interrupt.
 
@@ -377,7 +379,7 @@ src/midge/
 ├── subagents.py       # @subagent → spawn_* tools running nested agents
 ├── profiles.py        # Profile discovery + validation (what the agent *is*)
 ├── hooks.py           # lifecycle events + handler registry
-├── tui/app.py         # Textual TUI: palette, slash commands, steering
+├── tui/app.py         # Textual TUI: palette, slash commands, steering, switch panel
 └── cli.py             # `midge` entrypoint
 examples/
 ├── coding_agent.py    # one-shot CLI for the coding domain

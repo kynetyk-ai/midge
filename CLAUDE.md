@@ -144,7 +144,7 @@ src/midge/logs.py     # logging configuration (entrypoints only)
 src/midge/hooks.py    # lifecycle events + handler registry
 src/midge/commands.py # Controls + BUILTIN_COMMANDS — what both front-ends call
 src/midge/rpc/        # JSON-on-stdio front-end: wire / server / transport
-src/midge/tui/        # Textual front-end: palette, slash commands, steering
+src/midge/tui/        # Textual front-end: palette, slash commands, steering, panel
 tests/              # pytest tests
 examples/           # entrypoints
 notes/              # port-era reading notes; historical, may be stale (#76)
