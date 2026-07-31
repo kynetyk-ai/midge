@@ -484,6 +484,12 @@ def test_a_wrongly_typed_value_falls_back_to_the_default(tmp_path: Path) -> None
     assert config.retry.max_attempts == 3
 
 
+def test_a_bad_retry_ceiling_falls_back_to_the_default(tmp_path: Path) -> None:
+    config, events = _diagnose(tmp_path, "[retry]\nmax_delay = 'a while'")
+    assert events == ["config_value_invalid"]
+    assert config.retry.max_delay == 60.0
+
+
 def test_a_boolean_is_not_accepted_as_an_integer(tmp_path: Path) -> None:
     # `bool` is a subclass of `int` in Python; reading `true` as 1 would be a
     # silent misreading of an obvious mistake.

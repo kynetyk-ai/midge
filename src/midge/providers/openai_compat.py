@@ -11,6 +11,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 import openai
@@ -36,6 +38,35 @@ _FINISH_REASON_TO_STOP_REASON: dict[str, StopReason] = {
     "length": "length",
     "content_filter": "error",
 }
+
+
+def _positive_float(raw: str | None) -> float | None:
+    """A header value as a number, or None if it is absent or not one.
+
+    Zero and negatives are "not one": a server telling us to wait no time at
+    all is either confused or reporting a deadline that has already passed, and
+    the honest response to both is to fall back to the jittered backoff rather
+    than to retry instantly.
+    """
+    if raw is None:
+        return None
+    try:
+        value = float(raw.strip())
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
+def _seconds_until(raw: str) -> float | None:
+    """`Retry-After` in its other legal form, an RFC 7231 date."""
+    try:
+        when = parsedate_to_datetime(raw)
+    except (TypeError, ValueError):
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=UTC)
+    delta = (when - datetime.now(UTC)).total_seconds()
+    return delta if delta > 0 else None
 
 
 # --- request encoding -----------------------------------------------------
@@ -234,6 +265,30 @@ class OpenAIProvider:
             return exc.status_code == 429 or exc.status_code >= 500
         # APITimeoutError subclasses APIConnectionError.
         return isinstance(exc, openai.APIConnectionError)
+
+    def retry_after(self, exc: BaseException) -> float | None:
+        """Read the wait the server asked for off the response headers.
+
+        `APIConnectionError` never gets this far — it has no response, because
+        nothing answered.
+        """
+        if not isinstance(exc, openai.APIStatusError):
+            return None
+        headers = exc.response.headers
+
+        # OpenAI sends both; the millisecond one is what its own SDK prefers,
+        # since `Retry-After: 1` is a whole second rounded up from 200ms.
+        ms = _positive_float(headers.get("retry-after-ms"))
+        if ms is not None:
+            return ms / 1000
+
+        raw = headers.get("retry-after")
+        if raw is None:
+            return None
+        seconds = _positive_float(raw)
+        if seconds is not None:
+            return seconds
+        return _seconds_until(raw)
 
 
 # `capabilities=None` rather than a hardcoded default, so an operator can

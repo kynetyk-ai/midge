@@ -354,6 +354,7 @@ def main(argv: list[str] | None = None) -> None:
         ),
         max_attempts=config.retry.max_attempts,
         retry_base_delay=config.retry.base_delay,
+        retry_max_delay=config.retry.max_delay,
         registry=model_registry,
     )
     # Tools cannot reach the calling agent, so any sub-agent tool an extension

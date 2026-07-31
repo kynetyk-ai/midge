@@ -84,6 +84,9 @@ class LogConfig:
 class RetryConfig:
     max_attempts: int = 3
     base_delay: float = 0.5
+    # A ceiling on any single wait, including one the server asked for. Without
+    # it a `Retry-After: 3600` would park a turn for an hour.
+    max_delay: float = 60.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,6 +199,7 @@ class Config:
             retry=RetryConfig(
                 max_attempts=src.integer("retry", "max_attempts", default=3),
                 base_delay=src.number("retry", "base_delay", default=0.5),
+                max_delay=src.number("retry", "max_delay", default=60.0),
             ),
             subagents=SubagentConfig(
                 max_concurrent=src.integer("subagents", "max_concurrent", default=4),
