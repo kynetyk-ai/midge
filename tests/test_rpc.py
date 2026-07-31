@@ -5,7 +5,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-from midge import rpc
 from midge.agent import Agent
 from midge.client import Client
 from midge.config import ProviderConfig
@@ -17,6 +16,7 @@ from midge.profiles import Profile, ProfileSet
 from midge.profiles import validate as validate_profiles
 from midge.providers import ModelRegistry
 from midge.rpc import RpcServer, event_to_wire
+from midge.rpc import server as rpc_server
 from midge.skills import Skill, load_skills, skills_prompt
 from midge.subagents import bind_subagents
 from midge.tools import ToolRegistry, tool
@@ -1307,7 +1307,7 @@ async def test_listed_builtins_are_all_really_dispatchable() -> None:
     inbox.close()
     await task
 
-    source = Path(rpc.__file__).read_text(encoding="utf-8")
+    source = Path(rpc_server.__file__).read_text(encoding="utf-8")
     for c in commands:
         if c["source"] == "builtin":
             assert f'case "{c["name"]}"' in source, f"{c['name']} is listed but not dispatched"

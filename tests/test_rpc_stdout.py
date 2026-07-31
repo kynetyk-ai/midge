@@ -9,7 +9,10 @@ from pathlib import Path
 
 import pytest
 
-import midge.rpc as rpc
+# The module that owns the stdout globals, not the package that re-exports
+# them: `claim_stdout`'s `global` binds here, so patching the package would
+# leave the real state untouched.
+import midge.rpc.transport as rpc
 from tests.fakes import install_gated
 
 
@@ -123,7 +126,7 @@ async def test_a_stalled_writer_does_not_stop_the_dispatch_loop() -> None:
     """
     from midge.agent import Agent
     from midge.client import Client
-    from midge.rpc import RpcServer
+    from midge.rpc.server import RpcServer
 
     released = asyncio.Event()
     written: list[bytes] = []
@@ -173,7 +176,7 @@ async def test_a_stalled_writer_does_not_stop_the_dispatch_loop() -> None:
 def test_writer_falls_back_to_blocking_for_a_regular_file(tmp_path: Path) -> None:
     """`midge --rpc > out.jsonl`: asyncio refuses to wrap a regular file, and a
     file has no reader to stall behind, so blocking writes are correct there."""
-    from midge.rpc import _stdout_writer
+    from midge.rpc.transport import _stdout_writer
 
     async def go() -> None:
         path = tmp_path / "out.jsonl"
@@ -188,7 +191,7 @@ def test_writer_falls_back_to_blocking_for_a_regular_file(tmp_path: Path) -> Non
 
 def test_writer_uses_a_draining_transport_for_a_pipe() -> None:
     """The pipe case is the one that used to wedge the loop."""
-    from midge.rpc import _stdout_writer
+    from midge.rpc.transport import _stdout_writer
 
     async def go() -> None:
         r_fd, w_fd = os.pipe()
