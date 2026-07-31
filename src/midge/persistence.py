@@ -45,6 +45,7 @@ import json
 import logging
 import secrets
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from io import TextIOBase
 from pathlib import Path
@@ -262,6 +263,115 @@ def resolve_session_path(
     # processes started in the same second would otherwise fail at startup.
     stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     return root / f"{stamp}-{secrets.token_hex(2)}.jsonl"
+
+
+@dataclass(frozen=True, slots=True)
+class SessionSummary:
+    """One transcript, described without reading it properly.
+
+    Everything here is what a picker shows before anyone has chosen: which
+    conversation this is, when it started, how big it got. Deliberately not the
+    messages — a listing that loaded every conversation to render a list of
+    conversations would get slower with every session ever recorded.
+    """
+
+    path: Path
+    name: str | None
+    created_at: str
+    model: str
+    messages: int
+    modified: float
+    origin: Literal["subagent", "profile", "fork"] | None
+
+
+def read_summary(path: str | Path) -> SessionSummary | None:
+    """Describe a transcript cheaply, or None if it is not one.
+
+    `read_transcript` is the wrong tool for a listing: it validates every
+    message through `_MESSAGE_ADAPTER`, base64 image payloads included, so
+    rendering a menu of twenty conversations would parse all twenty in full.
+    This reads the header properly — it is one line and its fields are the
+    answer — and then only looks at the *type* of each remaining line.
+
+    That is why the count is a string test rather than a parse: `append` writes
+    `type` first, so a message line always starts `{"type": "message"`. The name
+    still needs the record decoded, but only `session_info` lines are, and a
+    session is named a handful of times at most.
+
+    **Returns None instead of raising.** `read_transcript` refuses an empty
+    file, a missing header, a version it cannot understand and a corrupt line,
+    which is right when someone asked for *that* transcript. Here one damaged
+    file among twenty must not hide the other nineteen, so anything unreadable
+    is logged and skipped.
+    """
+    p = Path(path)
+    try:
+        stat = p.stat()
+        with p.open("r", encoding="utf-8") as f:
+            first = f.readline()
+            if not first.strip():
+                _logger.warning("session_summary_empty path=%s", p)
+                return None
+            raw = json.loads(first)
+            if raw.get("type") != "header":
+                _logger.warning("session_summary_headerless path=%s", p)
+                return None
+            version = raw.get("version")
+            if not isinstance(version, int) or version > VERSION:
+                _logger.warning("session_summary_version path=%s version=%s", p, version)
+                return None
+            header = SessionHeader.model_validate(raw)
+
+            messages = 0
+            name: str | None = None
+            for line in f:
+                if line.startswith('{"type": "message"'):
+                    messages += 1
+                elif '"session_info"' in line:
+                    try:
+                        record = json.loads(line)
+                    except json.JSONDecodeError:
+                        # A half-written final line, the same case
+                        # `read_transcript` tolerates. Nothing after it matters.
+                        break
+                    if record.get("type") == "session_info":
+                        name = record.get("name")
+    except (OSError, ValueError) as e:
+        _logger.warning("session_summary_unreadable path=%s error=%s", p, e)
+        return None
+
+    return SessionSummary(
+        path=p,
+        name=name,
+        created_at=header.created_at,
+        model=header.model,
+        messages=messages,
+        modified=stat.st_mtime,
+        origin=header.origin,
+    )
+
+
+def list_sessions(
+    directory: Path | None = None, *, roots_only: bool = True
+) -> list[SessionSummary]:
+    """Every transcript in the session directory, newest first.
+
+    `roots_only` drops sub-agent runs and profile excursions. They are on disk
+    as siblings because a delegation writes beside the conversation that spawned
+    it, but they are not conversations anyone means to reopen — picking one would
+    resume the middle of a tool call.
+
+    Sorted by `created_at` rather than mtime: which conversation this *is* does
+    not change because something appended to it, and the filename stamp was
+    chosen to make this ordering the natural one.
+    """
+    root = directory if directory is not None else default_session_dir()
+    if not root.is_dir():
+        return []
+    found = [s for p in sorted(root.glob("*.jsonl")) if (s := read_summary(p)) is not None]
+    if roots_only:
+        found = [s for s in found if s.origin is None]
+    return sorted(found, key=lambda s: s.created_at, reverse=True)
 
 
 def read_transcript(path: str | Path) -> tuple[SessionHeader, list[TranscriptEntry]]:
