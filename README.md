@@ -40,6 +40,8 @@ Python 3.11+. Poetry for env and dep management.
 poetry run midge
 ```
 
+Extensions load from `--extension-dir DIR` (repeatable). To stop typing it, set `[extensions] enabled = true` in `.midge/config.toml` and they are read from `.agents/extensions/` — **off by default**, because an extension is arbitrary Python imported at startup, before your first prompt. The flag is honoured either way.
+
 Flags: `--extension-dir DIR` (repeatable), `--session PATH`, `--compaction-threshold N`, `--compaction-keep-recent N`. Bindings: `Enter` submit, `Alt+Enter` newline, `Ctrl+P` command palette, `Ctrl+B` switch-to panel, `Ctrl+C` interrupt, `Ctrl+D` quit, `Esc` close the panel or clear input.
 
 The TUI and the RPC server drive the same `Controls` object and enumerate the same command table, so neither can offer less than the other. `Ctrl+P` lists what needs no argument (`compact`, `clear_context`, `reload`, `abort`) plus anything whose values are knowable — with a `[models]` table configured, `set_model` appears once per registered model rather than as a prompt for free text. A leading slash does the same and can carry an argument: `/compact`, `/set_model gpt-4o`, `/open_session prior.jsonl`, `/skill:review`. A slash only intercepts when the word after it is a real command, so `/etc/hosts is missing` is still a message.

@@ -163,6 +163,28 @@ base_delay = 0.5
 max_delay = 60.0
 
 
+[extensions]
+# Load extension `.py` files from a directory without naming it on every run.
+#
+# **Off by default, and worth understanding before turning on.** An extension is
+# arbitrary Python imported into this process at startup, before your first
+# prompt — it can register tools, add hooks, and change what the agent is
+# allowed to do. `--extension-dir` is the deliberate, per-run form; this is the
+# standing permission.
+#
+# This table follows the same precedence as every other one, which means a
+# *project* `.midge/config.toml` can set it. midge gitignores that file, but
+# another repository need not — so a checkout you did not write could enable
+# this and point it at its own directory. Running an agent in a repository you
+# do not trust is already a decision; this is one more reason it is one.
+#
+# `dir` defaults to `cwd/.agents/extensions` — `.agents/` rather than `.midge/`
+# because an extension is source you would commit, not runtime state.
+# Env: MIDGE_EXTENSIONS, MIDGE_EXTENSION_DIR
+# enabled = false
+# dir = ".agents/extensions"
+
+
 [compaction]
 # Summarize history after a turn once its estimated tokens exceed this.
 # Omit to disable. Flag: --compaction-threshold

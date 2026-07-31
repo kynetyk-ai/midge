@@ -103,6 +103,27 @@ class SubagentConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class ExtensionConfig:
+    """Whether to load extensions nobody named on the command line.
+
+    Same shape as `SessionConfig`, and off by default where that is on. The
+    asymmetry is the risk: a session writes a file, an extension is arbitrary
+    Python imported into this process before the first prompt. Turning this on
+    says "run whatever is in that directory", so it is a thing you do rather
+    than a thing that happens to you.
+
+    `--extension-dir` is unaffected — naming a directory is a deliberate
+    request, the same rule `resolve_session_path` states for `--session`.
+    """
+
+    enabled: bool = False
+    # None means `cwd/.agents/extensions`, resolved where it is used. `.agents/`
+    # rather than `.midge/` because an extension is source you would commit,
+    # and `.midge/` is runtime state this repo gitignores.
+    dir: Path | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class SessionConfig:
     enabled: bool = True
     # None means `cwd/.midge/sessions`, resolved where it is used rather than
@@ -155,6 +176,7 @@ class Config:
     compaction_keep_recent: int = DEFAULT_KEEP_RECENT
     log: LogConfig = LogConfig()
     retry: RetryConfig = RetryConfig()
+    extensions: ExtensionConfig = ExtensionConfig()
     session: SessionConfig = SessionConfig()
     subagents: SubagentConfig = SubagentConfig()
     # The model registry. Empty is permissive — any model string is accepted and
@@ -205,6 +227,10 @@ class Config:
                 max_concurrent=src.integer("subagents", "max_concurrent", default=4),
                 timeout=src.number("subagents", "timeout", default=300.0),
                 max_timeout=src.number("subagents", "max_timeout", default=900.0),
+            ),
+            extensions=ExtensionConfig(
+                enabled=src.flag("extensions", "enabled", "MIDGE_EXTENSIONS", default=False),
+                dir=src.path("extensions", "dir", "MIDGE_EXTENSION_DIR"),
             ),
             session=SessionConfig(
                 enabled=src.flag("session", "enabled", "MIDGE_SESSION", default=True),
@@ -505,6 +531,7 @@ __all__ = [
     "DEFAULT_PAYLOAD_CHARS",
     "Config",
     "Diagnostic",
+    "ExtensionConfig",
     "LogConfig",
     "ProviderConfig",
     "RetryConfig",

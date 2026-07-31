@@ -556,3 +556,56 @@ def test_emit_of_nothing_is_silent(caplog: pytest.LogCaptureFixture) -> None:
     with caplog.at_level(logging.WARNING, logger="midge.config"):
         emit([])
     assert caplog.records == []
+
+
+# --- extension autoload ---------------------------------------------------
+
+
+def test_extensions_are_not_autoloaded_by_default() -> None:
+    # Off where `[session] enabled` is on, because the risk is not the same: a
+    # session writes a file, an extension is arbitrary Python imported into the
+    # process before the first prompt.
+    assert Config().extensions.enabled is False
+    assert Config().extensions.dir is None
+
+
+def test_a_configured_extension_directory_is_read(tmp_path: Path) -> None:
+    config = _load(
+        tmp_path,
+        project='[extensions]\nenabled = true\ndir = ".agents/extensions"\n',
+    )
+    assert config.extensions.enabled is True
+    assert config.extensions.dir == Path(".agents/extensions")
+
+
+def test_the_extension_table_follows_ordinary_precedence(tmp_path: Path) -> None:
+    """Deliberately not special-cased to the home config.
+
+    Restricting one table to `~/.midge/config.toml` would close a real hole — a
+    committed project config enabling it — at the cost of a rule nobody reading
+    this file would expect. For a codebase whose point is being readable, the
+    surprising exception costs more than it buys; the risk is documented in
+    `examples/config.toml` instead.
+    """
+    config = _load(
+        tmp_path,
+        project="[extensions]\nenabled = true\n",
+        user="[extensions]\nenabled = false\n",
+    )
+    assert config.extensions.enabled is True
+
+
+def test_the_environment_can_enable_extensions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MIDGE_EXTENSIONS", "1")
+    monkeypatch.setenv("MIDGE_EXTENSION_DIR", "/opt/ext")
+    config = _load(tmp_path)
+    assert config.extensions.enabled is True
+    assert config.extensions.dir == Path("/opt/ext")
+
+
+def test_an_unparseable_extension_flag_falls_back_to_off(tmp_path: Path) -> None:
+    config, events = _diagnose(tmp_path, '[extensions]\nenabled = "maybe"')
+    assert events == ["config_value_invalid"]
+    assert config.extensions.enabled is False

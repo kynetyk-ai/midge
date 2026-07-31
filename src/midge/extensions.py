@@ -34,6 +34,17 @@ BUILTIN_TOOL_DIRS: list[Path] = [_BUILTIN_TOOL_ROOT / "coding"]
 _logger = logging.getLogger(__name__)
 
 
+def default_extension_dir() -> Path:
+    """Where `[extensions] enabled` looks when no `dir` is given.
+
+    `.agents/` rather than `.midge/`: an extension is source you would commit,
+    and `.midge/` is runtime state. A function, not a constant, for the reason
+    `default_skill_dirs` gives — `Path.cwd()` at import time freezes whatever
+    directory the interpreter started in.
+    """
+    return Path.cwd() / ".agents" / "extensions"
+
+
 def load_extensions(
     sources: Iterable[Path | str],
     *,
