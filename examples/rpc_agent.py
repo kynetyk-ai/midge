@@ -95,7 +95,7 @@ async def amain(extension_dirs: list[Path]) -> int:
         agent,
         session=None,
         base_prompt=BASE_SYSTEM_PROMPT,
-        prompt_suffix=prompt_addition,
+        extension_prompt=prompt_addition,
     )
     # Claims stdout for the protocol, installs SIGTERM/SIGHUP handlers, and
     # reads stdin to EOF.
