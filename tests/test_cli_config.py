@@ -271,3 +271,81 @@ def test_a_profile_that_failed_validation_says_so(
     message = str(excinfo.value)
     assert "failed validation" in message
     assert "was not discovered" not in message
+
+
+# --- extension autoload, end to end ---------------------------------------
+
+_MARKER_EXT = (
+    "from midge.tools import tool\n"
+    "\n"
+    "@tool\n"
+    "async def autoloaded_marker() -> str:\n"
+    "    '''Proves the directory was loaded.'''\n"
+    "    return 'here'\n"
+)
+
+
+def _write_config(tmp_path: Path, body: str) -> None:
+    d = tmp_path / ".midge"
+    d.mkdir(exist_ok=True)
+    (d / "config.toml").write_text(body)
+
+
+def _with_extension_dir(tmp_path: Path, relative: str) -> None:
+    d = tmp_path / relative
+    d.mkdir(parents=True)
+    (d / "marker.py").write_text(_MARKER_EXT)
+
+
+def test_a_configured_directory_loads_without_a_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _with_extension_dir(tmp_path, ".agents/extensions")
+    _write_config(tmp_path, "[extensions]\nenabled = true\n")
+
+    agent = _start(tmp_path, monkeypatch, [])
+
+    assert "autoloaded_marker" in agent.tools
+
+
+def test_the_default_directory_is_dot_agents(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # `.agents/` rather than `.midge/`: an extension is source you would commit.
+    _with_extension_dir(tmp_path, ".agents/extensions")
+    _write_config(tmp_path, "[extensions]\nenabled = true\n")
+
+    assert "autoloaded_marker" in _start(tmp_path, monkeypatch, []).tools
+
+
+def test_nothing_autoloads_while_the_key_is_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The default. A directory sitting there is not permission to run it."""
+    _with_extension_dir(tmp_path, ".agents/extensions")
+
+    assert "autoloaded_marker" not in _start(tmp_path, monkeypatch, []).tools
+
+
+def test_the_flag_still_loads_when_autoload_is_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Naming a directory is a deliberate request; a default-off is only a
+    default — the rule `resolve_session_path` states for `--session`."""
+    _with_extension_dir(tmp_path, "elsewhere")
+    _write_config(tmp_path, "[extensions]\nenabled = false\n")
+
+    agent = _start(
+        tmp_path, monkeypatch, ["--extension-dir", str(tmp_path / "elsewhere")]
+    )
+
+    assert "autoloaded_marker" in agent.tools
+
+
+def test_a_configured_directory_that_is_missing_is_a_warning_not_a_crash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Turning the key on before creating the directory must not stop startup.
+    _write_config(tmp_path, "[extensions]\nenabled = true\n")
+
+    assert _start(tmp_path, monkeypatch, []) is not None

@@ -21,7 +21,11 @@ from midge.client import Client
 from midge.commands import Controls
 from midge.config import Config
 from midge.config import emit as emit_config_diagnostics
-from midge.extensions import BUILTIN_TOOL_DIRS, load_extensions
+from midge.extensions import (
+    BUILTIN_TOOL_DIRS,
+    default_extension_dir,
+    load_extensions,
+)
 from midge.hooks import Hooks, SessionEnd, SessionStart
 from midge.logs import configure as configure_logging
 from midge.logs import provider_host
@@ -207,7 +211,16 @@ def main(argv: list[str] | None = None) -> None:
     )
 
     hooks = Hooks()
-    extension_sources = [*BUILTIN_TOOL_DIRS, *args.extension_dir]
+    # A configured directory is a standing permission; `--extension-dir` is the
+    # per-run form and is honoured either way, because naming a directory is a
+    # deliberate request and a default-off is only a default — the rule
+    # `resolve_session_path` already states for `--session`.
+    configured = (
+        [config.extensions.dir or default_extension_dir()]
+        if config.extensions.enabled
+        else []
+    )
+    extension_sources = [*BUILTIN_TOOL_DIRS, *configured, *args.extension_dir]
     # Explicit paths outrank the defaults: naming a directory on the command
     # line is a deliberate override. Note this is the opposite nesting from the
     # extension sources above, where the built-ins must not be shadowed.
