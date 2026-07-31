@@ -430,3 +430,90 @@ explicitly invited a second attempt.
 - **`reload` is idempotent.** Two reloads produced two `repo_guard_unloaded`
   lines, and one tool call afterwards produced exactly **one** observe line, so
   handlers did not stack. That is what `add_cleanup` exists for, and it holds.
+
+---
+
+## Phase 4 — sub-agents, against `gpt-5.4-mini`
+
+~30 turns plus two purpose-built fixtures. The delegation machinery is in good
+shape; the one finding is the third instance of the same theme.
+
+### F15 · The "read-only" explorer can write — **midge**
+
+**Severity: medium.** It is an example, but the false claim is in the text the
+*parent model* reads when deciding whether delegating is safe.
+
+`examples/subagent_extension/explore.py` says read-only three times:
+
+| line | text |
+|---|---|
+| 1 | "a **read-only** explorer the main agent can delegate to" |
+| 29 | child's own prompt: "You are read-only. **You have no tools that modify anything**" |
+| 38 | tool description the parent sees: "**Not for edits: the explorer cannot change anything.**" |
+| 45 | `tools=("read", "bash")` |
+
+Tested with a canary file containing `ORIGINAL`:
+
+```
+subagent_start agent=explore depth=0 tools=2
+tool_start tool=bash  {'command': "printf 'CHANGED' > /work/canary.txt"}
+$ cat /work/canary.txt  →  CHANGED
+```
+
+The child mutated the workspace, and its own system prompt had asserted it
+could not.
+
+This is F13 and F14 a third time, and the sharpest version: **an allowlist
+containing `bash` is not an allowlist.** #79's stated position is that "the
+allowlist is the rein" and that a cap which overrides a declaration is the wrong
+mechanism — which is right, and exactly why the example matters: it is the
+reference for how to write one, and it demonstrates a constraint that does not
+constrain. Dropping `bash`, or dropping the word read-only, would fix the
+example; the general lesson is that `bash` in any allowlist makes the rest of it
+advisory.
+
+### F16 · Sub-agents are bound twice at startup — **midge**, low
+
+`subagents_bound count=1 max_concurrent=2 timeout=45 max_timeout=60` appears
+twice, same millisecond. `cli.py:376` calls `bind_subagents(...)`, and then
+`RpcServer.__init__` (`server.py:97`) calls `self.controls.bind_subagents(...)`
+again.
+
+Harmless — the second binding replaces the first with identical arguments — but
+redundant, and worth noting given #79 and #85 were both about re-binding losing
+settings. One of the two is unnecessary.
+
+### Confirmed working
+
+- **The correlation envelope.** Nested events carry
+  `{"agent": "explore", "agent_id": "call_…", "parent_id": null, "depth": 1}`;
+  43 top-level frames in the same run carried none, so a client ignoring the key
+  sees exactly the stream it saw before. `agent_id` is the spawning tool call's
+  id — the same id the child's transcript records as `parent_tool_call_id`, one
+  scheme rather than two. Only structural events are forwarded: tool executions
+  and results, never the child's text deltas.
+- **Recursion is denied precisely.** A purpose-built `looper` whose allowlist
+  names its own spawn tool got `subagent_start … tools=1`, not 2 — the ancestor
+  set removed `spawn_looper` and left `bash`. The shipped example cannot reach
+  this path at all, since its allowlist never names a spawn tool.
+- **The cyclic-allowlist warning fires** alongside it:
+  `subagent_cycle agents=looper -> looper`, at startup, without taking the agent
+  away — both halves of #79's position, verified together.
+- **`max_timeout` clamps a declaration.** A `slowpoke` declaring `timeout=600`
+  under `[subagents] max_timeout = 60` was killed at
+  `subagent_timeout … seconds=60` after 62 s wall clock, and the parent received
+  a clean `[slowpoke timed out after 60s]` tool result rather than an exception.
+- **Multi-file session intelligibility (#62)**, in both directions:
+
+  ```
+  20260731-164805-8672.jsonl                      origin=None
+    └─ "continued" → path=…explore-call_Oq8….jsonl, reason=subagent
+  20260731-164805-8672.explore-call_Oq8….jsonl    origin=subagent
+       parent_session=… parent_tool_call_id=call_Oq8…
+  ```
+
+### Untested
+
+`[subagents] max_concurrent` — proving a semaphore of 2 needs several
+simultaneous slow children and a minute of wall clock per run. Deferred rather
+than guessed at.
