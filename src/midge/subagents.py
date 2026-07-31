@@ -7,18 +7,13 @@ because the registry enforces it; the `tool_call` hook can block one agent by
 name; and recursion control is the same mechanism as tool subsetting, since a
 child only has `spawn_*` tools if its own allowlist names them.
 
-There is deliberately **no depth cap**. The allowlist is the control, and an
-author who names a `spawn_*` tool has granted nesting on purpose — a global
-number would only override a declaration sitting in their file.
-
-What must not happen is recursion with no end, and that is denied precisely: a
-child never receives a `spawn_*` tool for an agent already running above it.
-So `alpha -> beta` always works and `beta -> alpha` is refused only where alpha
-is on the stack. Nothing is dropped and no declaration is edited, and
-termination follows anyway — the ancestor set grows by one name per level from
-a finite declared set, so no path outlives the number of agents. A cyclic
-allowlist is a bug worth reporting, so `validate` warns about it; it does not
-need to be a refusal.
+There is no depth cap: the allowlist is the control, and a global number would
+override a declaration in the author's file. Recursion is instead denied where
+it would close — a child gets no `spawn_*` tool for an agent already running
+above it, so `alpha -> beta` always works and `beta -> alpha` is refused only
+when alpha is on the stack. That also guarantees termination, since the ancestor
+set grows one name per level from a finite declared set. `validate` warns about
+a cyclic allowlist rather than refusing it.
 
 The `.py` file declares what the agent is for *and* the inputs midge must
 supply. The decorated function's signature becomes the tool schema and its
@@ -57,29 +52,17 @@ from typing import Any
 
 from midge.agent import Agent, AgentEnd, ToolExecutionEnd, ToolExecutionStart
 from midge.client import Client, Done, Error
-from midge.config import Diagnostic
+from midge.config import Diagnostic, SubagentConfig
 from midge.hooks import Hooks
 from midge.messages import AssistantMessage, TextContent, ToolCall
 from midge.persistence import Session
 from midge.providers import ModelRegistry
 from midge.tools import Tool, ToolFn, ToolRegistry, _build_params_model
 
-DEFAULT_TIMEOUT = 300.0
-DEFAULT_MAX_CONCURRENT = 4
-# The operator's ceiling. An author sets a budget per agent and a caller may ask
-# for more, but nothing runs longer than this — a delegation that never returns
-# is the failure worth bounding unconditionally.
-DEFAULT_MAX_TIMEOUT = 900.0
-
-# A nested agent's events, each with the envelope that says which run produced
-# it. `Any` rather than `AgentEvent` because this module does not care what the
-# events are — it only relays them.
 SubagentEvent = Callable[[Any, dict[str, Any]], Awaitable[None]]
 
-# What a client needs to see a delegation happening, and nothing more. Text and
-# tool-argument deltas are excluded on purpose: a child emits hundreds per turn,
-# nothing renders its prose today, and its full stream is in its own transcript
-# for anyone who wants it.
+# Enough to see a delegation happening. Deltas are excluded because a child
+# emits hundreds per turn and its full stream is in its own transcript.
 FORWARDED_EVENTS = (
     ToolExecutionStart,
     ToolExecutionEnd,
@@ -99,7 +82,10 @@ class SubagentSpec:
     prompt: str
     tools: tuple[str, ...] = ()
     model: str = ""
-    timeout: float = DEFAULT_TIMEOUT
+    # None means "whatever `[subagents] timeout` says". A concrete default here
+    # would make the config key unreachable, the same trap an argparse
+    # `default=` sets.
+    timeout: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,33 +95,25 @@ class SubagentRuntime:
     registry: ToolRegistry
     limit: asyncio.Semaphore
     hooks: Hooks | None = None
-    # The parent's open session, not just its path: a child transcript is
-    # recorded in the parent, and the parent's handle is the only one that may
-    # write to that file. A second handle would append past the parent's own
-    # file position and its next write would overwrite the record.
+    # The parent's open `Session`, not its path: only that handle may write to
+    # the file, and a second one would append past its position so the parent's
+    # next write overwrites the record.
     session: Session | None = None
-    # Kept for the logs, where it is what makes a nested run readable. It bounds
-    # nothing — `ancestors` does.
+    # For the logs. It bounds nothing — `ancestors` does.
     depth: int = 0
-    # The agents running above this one. A child never gets a `spawn_*` tool for
-    # one of them, which is what stops recursion without touching any
-    # declaration: `beta -> alpha` is denied only where it would actually
-    # recurse, and works called from anywhere else.
-    #
-    # It is also what guarantees termination, more simply than acyclicity would:
-    # the set grows by one name per level and names come from a finite declared
-    # set, so no path is longer than the number of agents declared.
+    # The agents running above this one. A child gets no `spawn_*` tool for any
+    # of them, so recursion is denied where it would close and nowhere else.
+    # Also what guarantees termination: the set grows one name per level from a
+    # finite declared set.
     ancestors: frozenset[str] = frozenset()
-    max_timeout: float = DEFAULT_MAX_TIMEOUT
-    # The tool call that spawned the agent this runtime belongs to, or None at
-    # the top level. Deliberately the *same* id the transcript already uses as
-    # `parent_tool_call_id`, so a wire envelope and a session file name the run
-    # identically rather than inventing a second scheme.
+    timeout: float = 300.0
+    max_timeout: float = 900.0
+    # The tool call that spawned this runtime's agent, None at the top level.
+    # The same id the transcript records as `parent_tool_call_id`, so the wire
+    # and the session name a run identically.
     agent_id: str | None = None
-    # Where a nested agent's events go. Raw events plus an envelope, never
-    # wire-shaped: `event_to_wire` is the one mapping layer and it stays in
-    # `rpc.py`. Dumping internal events straight onto the wire is how pi ended
-    # up with TUI-only events in its protocol.
+    # Where a nested agent's events go: raw events plus an envelope, never
+    # wire-shaped. `event_to_wire` stays the one mapping layer, in `rpc.py`.
     on_event: SubagentEvent | None = None
 
 
@@ -209,10 +187,8 @@ class SubagentTool(Tool):
         validated = self.params_model.model_validate(arguments)
         kwargs = {f: getattr(validated, f) for f in self.params_model.model_fields}
         opening = await self.fn(**kwargs)
-        # Opt-in: a `timeout` parameter reaches the schema only because the
-        # author put it in the signature, which keeps "the signature is the tool
-        # schema" true with no exception. An author who wants a fixed budget
-        # simply does not offer the knob.
+        # Opt-in: `timeout` reaches the schema only because the author put it
+        # in the signature, so "the signature is the tool schema" holds.
         asked = kwargs.get("timeout")
         return await _run(
             self.spec,
@@ -229,7 +205,7 @@ def subagent(
     prompt: str,
     tools: tuple[str, ...] = (),
     model: str = "",
-    timeout: float = DEFAULT_TIMEOUT,
+    timeout: float | None = None,
     name: str | None = None,
 ) -> Callable[[ToolFn], SubagentTool]:
     """Declare a sub-agent. The decorated function's signature is the tool's
@@ -267,24 +243,27 @@ def bind_subagents(
     model: str,
     hooks: Hooks | None = None,
     session: Session | None = None,
-    max_concurrent: int = DEFAULT_MAX_CONCURRENT,
-    max_timeout: float = DEFAULT_MAX_TIMEOUT,
+    subagents: SubagentConfig | None = None,
     on_event: SubagentEvent | None = None,
 ) -> None:
     """Give every `SubagentTool` in `registry` what it needs to run a child.
 
     A no-op on a registry with no sub-agents, so entrypoints can call it
-    unconditionally.
+    unconditionally. Takes the config section rather than loose limits, the way
+    `logs.configure` takes a `LogConfig` — three parameters that must be kept in
+    step is three chances to forget one.
     """
+    limits = subagents if subagents is not None else SubagentConfig()
     runtime = SubagentRuntime(
         client=client,
         model=model,
         registry=registry,
-        limit=asyncio.Semaphore(max(1, max_concurrent)),
+        limit=asyncio.Semaphore(max(1, limits.max_concurrent)),
         hooks=hooks,
         session=session,
         depth=0,
-        max_timeout=max_timeout,
+        timeout=limits.timeout,
+        max_timeout=limits.max_timeout,
         on_event=on_event,
     )
     bound = 0
@@ -294,10 +273,11 @@ def bind_subagents(
             bound += 1
     if bound:
         _logger.info(
-            "subagents_bound count=%d max_concurrent=%d max_timeout=%.0f",
+            "subagents_bound count=%d max_concurrent=%d timeout=%.0f max_timeout=%.0f",
             bound,
-            max_concurrent,
-            max_timeout,
+            limits.max_concurrent,
+            limits.timeout,
+            limits.max_timeout,
         )
 
 
@@ -310,22 +290,13 @@ def validate(
     one agent's allowlist may name another declared in a different file, and no
     ordering makes per-file checking correct.
 
-    **An unregistered model drops the agent.** A declared model no `[models]`
-    entry names would otherwise surface as the vendor's 404, inside a turn, as a
-    tool result. It is dropped rather than degraded, matching profiles: a tool
-    the model can see but that always fails is worse than one that is absent.
-    Empty registry stays permissive, as everywhere else.
+    An **unregistered model** drops the agent, matching profiles: it would
+    otherwise fail mid-turn as the vendor's 404 in a tool result. Empty registry
+    stays permissive.
 
-    **An unknown tool name is a warning.** The agent still loads, because the
-    rest of its allowlist works and a typo in one name should not cost the whole
-    agent. Without this, `tools=("raed",)` silently yielded a smaller child
-    registry and nothing said so.
-
-    **A cyclic allowlist is a warning too, and drops nothing.** It is a bug in
-    the declaration, and saying so is what the author needs; taking their agents
-    away is not. The recursion itself cannot happen regardless — a child never
-    receives a `spawn_*` tool for an agent already running above it, so the
-    cycle is denied exactly where it would close and works everywhere else.
+    An **unknown tool name** and a **cyclic allowlist** are warnings only. A
+    typo in one name should not cost the whole agent, and a cycle cannot recurse
+    anyway — `_child_registry` denies it where it would close.
     """
     diagnostics: list[Diagnostic] = []
     agents = {t.name: t for t in registry if isinstance(t, SubagentTool)}
@@ -398,13 +369,9 @@ def _child_registry(
         if t.name not in spec.tools:
             continue
         if isinstance(t, SubagentTool):
-            # No depth cap. The allowlist above *is* the control, and an author
-            # who names a `spawn_*` tool here has granted nesting on purpose —
-            # a global number would only override a declaration sitting in
-            # their file. The one thing that must not happen is recursion with
-            # no end, and this denies exactly that: an agent already running
-            # above this one, and nothing else. `beta -> alpha` still works
-            # called from anywhere alpha is not already on the stack.
+            # The allowlist above is the control; this denies only the one
+            # thing it cannot express — an agent already running above this
+            # one, which is where a cycle would close.
             if t.spec.name in child_runtime.ancestors:
                 continue
             allowed.add(t.rebound(child_runtime))
@@ -422,15 +389,9 @@ async def _drain(
 ) -> AssistantMessage:
     """Run the child, relaying the events worth seeing.
 
-    `Agent.run` is this loop with the events thrown away, which is exactly the
-    gap: a delegation that takes ninety seconds and returns one paragraph, with
-    nothing on the wire in between. The child's turns still stay out of the
-    parent's *context* — that is what delegating is for — but they no longer
-    have to stay out of its *observability*.
-
-    The envelope rides alongside rather than inside the event, so `event_to_wire`
-    keeps mapping exactly what it mapped before and correlation is a separate
-    concern a client can ignore.
+    `Agent.run` is this loop with the events discarded, which is why a
+    delegation used to be a black box. The envelope rides alongside the event
+    rather than inside it, so `event_to_wire` maps what it always mapped.
     """
     envelope = {
         "agent": spec.name,
@@ -446,10 +407,7 @@ async def _drain(
             try:
                 await runtime.on_event(ev, envelope)
             except Exception as e:
-                # Losing a frame is a worse outcome than losing the delegation
-                # only if you value the telemetry above the work. A relay that
-                # is closed, full or broken must not take the child down with
-                # it.
+                # A closed or broken relay must not take the child down with it.
                 _logger.warning(
                     "subagent_event_relay_failed agent=%s call=%s error=%s",
                     spec.name,
@@ -468,11 +426,10 @@ async def _run(
     call_id: str | None,
     asked_timeout: float | None = None,
 ) -> str:
-    # Three layers, each owned by whoever is placed to judge it: the author sets
-    # a budget for this agent, the caller may say this particular job is bigger,
-    # and the operator caps the lot. The clamp is what keeps the caller's say
-    # safe to offer — otherwise "specify a timeout" is "specify no timeout".
-    budget = min(asked_timeout or spec.timeout, runtime.max_timeout)
+    # Author's budget, or the caller's if they asked, clamped by the operator's
+    # ceiling. Without the clamp, offering the caller a timeout would be
+    # offering them none.
+    budget = min(asked_timeout or spec.timeout or runtime.timeout, runtime.max_timeout)
     child = Agent(
         client=runtime.client,
         model=spec.model or runtime.model,
@@ -608,9 +565,6 @@ def _candidate_names(base: str, stem: str) -> list[str]:
 
 
 __all__ = [
-    "DEFAULT_MAX_CONCURRENT",
-    "DEFAULT_MAX_TIMEOUT",
-    "DEFAULT_TIMEOUT",
     "SubagentRuntime",
     "SubagentSpec",
     "SubagentTool",

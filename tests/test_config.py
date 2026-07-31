@@ -261,8 +261,10 @@ def test_the_subagent_limits_are_named_in_the_file(tmp_path: Path) -> None:
     # The two an operator owns. Prompt, tools, model and per-agent timeout are
     # declared in the `.py` file, not here.
     assert _load(tmp_path).subagents == SubagentConfig()
-    config = _load(tmp_path, project="[subagents]\nmax_concurrent = 2\nmax_timeout = 60")
-    assert (config.subagents.max_concurrent, config.subagents.max_timeout) == (2, 60.0)
+    config = _load(
+        tmp_path, project="[subagents]\nmax_concurrent = 2\ntimeout = 30\nmax_timeout = 60"
+    )
+    assert config.subagents == SubagentConfig(max_concurrent=2, timeout=30.0, max_timeout=60.0)
 
 
 def test_there_is_no_max_depth_key(tmp_path: Path) -> None:

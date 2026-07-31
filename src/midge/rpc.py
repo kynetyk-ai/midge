@@ -949,12 +949,11 @@ class RpcServer:
     def _bind_subagents(
         self, registry: ToolRegistry, *, model: str | None = None
     ) -> None:
-        """Every re-bind goes through here so none of them can forget a setting.
+        """Every re-bind goes through here so none can forget a setting.
 
-        A re-import produces new `SubagentTool` instances and a session swap
-        invalidates the old handle, so binding happens more than once — and
-        each site rebuilding the argument list by hand is how the operator's
-        limits used to get reset to the defaults.
+        Reload, `new_session`, `open_session` and a profile switch all re-bind;
+        each rebuilding the argument list by hand is how the operator's limits
+        used to get reset to the defaults.
         """
         bind_subagents(
             registry,
@@ -962,23 +961,17 @@ class RpcServer:
             model=model if model is not None else self.agent.model,
             hooks=self.agent.hooks,
             session=self.session,
-            max_concurrent=self._subagents.max_concurrent,
-            max_timeout=self._subagents.max_timeout,
+            subagents=self._subagents,
             on_event=self.subagent_event,
         )
 
     async def subagent_event(self, event: Any, envelope: dict[str, Any]) -> None:
         """Relay a nested agent's event, correlated.
 
-        Hand this to `bind_subagents(on_event=...)`. It is the mapping seam
-        doing its job: the child's events go through the same `event_to_wire`
-        the parent's do, so nothing internal reaches the protocol and a client
-        has one vocabulary rather than two.
-
-        The envelope is a sibling key, not a merge, so an existing client that
-        ignores `agent` sees exactly the frames it saw before — and a new one
-        can build the tree from `agent_id` / `parent_id` / `depth` without
-        parsing anything else.
+        Hand this to `bind_subagents(on_event=...)`. Child events go through the
+        same `event_to_wire` the parent's do, so nothing internal reaches the
+        protocol. The envelope is a sibling key rather than a merge, so a client
+        that ignores it sees the frames it always saw.
         """
         wire = event_to_wire(event)
         if wire is None:

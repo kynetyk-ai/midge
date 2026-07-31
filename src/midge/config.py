@@ -88,12 +88,13 @@ class RetryConfig:
 
 @dataclass(frozen=True, slots=True)
 class SubagentConfig:
-    """The two limits an operator owns. Everything else about a sub-agent —
-    prompt, tools, model, its own timeout — is declared in the `.py` file, where
-    it sits next to the prompt it belongs to."""
+    """What an operator owns about sub-agents. Prompt, tools and model are
+    declared per agent in the `.py` file."""
 
     max_concurrent: int = 4
-    # A ceiling, not a default: the author sets the budget and a caller may ask
+    # The budget an agent that declares no `timeout` of its own gets.
+    timeout: float = 300.0
+    # A ceiling, not a default: an author sets the budget and a caller may ask
     # for more, but nothing gets past this.
     max_timeout: float = 900.0
 
@@ -198,6 +199,7 @@ class Config:
             ),
             subagents=SubagentConfig(
                 max_concurrent=src.integer("subagents", "max_concurrent", default=4),
+                timeout=src.number("subagents", "timeout", default=300.0),
                 max_timeout=src.number("subagents", "max_timeout", default=900.0),
             ),
             session=SessionConfig(
