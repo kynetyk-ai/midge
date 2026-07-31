@@ -8,6 +8,7 @@ same format — what differs is what they tolerate, and that is expressed as
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -28,7 +29,13 @@ from midge.messages import (
     Usage,
     UserMessage,
 )
-from midge.providers.base import Capabilities, Delta, ToolCallFragment, register
+from midge.providers.base import (
+    Capabilities,
+    Delta,
+    RateLimiter,
+    ToolCallFragment,
+    register,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -67,6 +74,93 @@ def _seconds_until(raw: str) -> float | None:
         when = when.replace(tzinfo=UTC)
     delta = (when - datetime.now(UTC)).total_seconds()
     return delta if delta > 0 else None
+
+
+def _retry_after(exc: BaseException) -> float | None:
+    """Read the wait the server asked for off the response headers.
+
+    `APIConnectionError` never gets this far — it has no response, because
+    nothing answered.
+    """
+    if not isinstance(exc, openai.APIStatusError):
+        return None
+    headers = exc.response.headers
+
+    # OpenAI sends both; the millisecond one is what its own SDK prefers, since
+    # `Retry-After: 1` is a whole second rounded up from 200ms.
+    ms = _positive_float(headers.get("retry-after-ms"))
+    if ms is not None:
+        return ms / 1000
+
+    raw = headers.get("retry-after")
+    if raw is None:
+        return None
+    seconds = _positive_float(raw)
+    if seconds is not None:
+        return seconds
+    return _seconds_until(raw)
+
+
+class CoolOff:
+    """Hold everything back until a limit the server reported has passed.
+
+    Without this, N concurrent sub-agents each spend a request discovering the
+    same 429: the first one learns the window is closed and waits, and the rest
+    fire into the closed window anyway, each earning its own rejection and each
+    making the limit worse. One rejection is enough for all of them.
+
+    Keyed by model, because that is OpenAI's own unit — a 429 on `gpt-4o` says
+    nothing about `gpt-4o-mini`, and parking both would be a self-inflicted
+    outage on a model that was never limited.
+
+    Deadlines are on the event loop's monotonic clock, so a system clock change
+    cannot strand a request. Purely reactive: `observe` is where reading
+    `x-ratelimit-remaining-*` off a success would go, and adding it changes
+    nothing outside this file.
+    """
+
+    def __init__(self) -> None:
+        self._until: dict[str, float] = {}
+
+    def _now(self) -> float:
+        return asyncio.get_running_loop().time()
+
+    def wait_for(self, model: str) -> float:
+        until = self._until.get(model)
+        if until is None:
+            return 0.0
+        return max(0.0, until - self._now())
+
+    def observe(self, response: Any) -> None:
+        return None
+
+    def penalize(self, exc: BaseException) -> None:
+        # Only a wait the server actually named. Guessing one from a bare 429
+        # would park every other model's traffic on no evidence.
+        if not isinstance(exc, openai.APIStatusError) or exc.status_code != 429:
+            return
+        delay = _retry_after(exc)
+        if delay is None:
+            return
+        model = _requested_model(exc)
+        if model is None:
+            return
+        # The longest deadline wins: a later 429 asking for less does not
+        # release requests an earlier one already parked.
+        until = self._now() + delay
+        self._until[model] = max(self._until.get(model, 0.0), until)
+
+
+def _requested_model(exc: openai.APIStatusError) -> str | None:
+    """Which model the rejected request was for, read back off its own body."""
+    content = exc.response.request.content
+    if not content:
+        return None
+    try:
+        model = json.loads(content).get("model")
+    except (ValueError, AttributeError):
+        return None
+    return model if isinstance(model, str) else None
 
 
 # --- request encoding -----------------------------------------------------
@@ -192,6 +286,9 @@ class OpenAIProvider:
     ) -> None:
         self.name = name
         self.capabilities = capabilities or Capabilities()
+        # Per provider instance, and `ModelRegistry` caches those — so the
+        # parent and every sub-agent routed here share one deadline.
+        self.limiter: RateLimiter | None = CoolOff()
         self._client = openai.AsyncOpenAI(
             # A local server needs no credential but the SDK insists on one.
             api_key=api_key or os.getenv("OPENAI_API_KEY") or "not-needed",
@@ -267,28 +364,7 @@ class OpenAIProvider:
         return isinstance(exc, openai.APIConnectionError)
 
     def retry_after(self, exc: BaseException) -> float | None:
-        """Read the wait the server asked for off the response headers.
-
-        `APIConnectionError` never gets this far — it has no response, because
-        nothing answered.
-        """
-        if not isinstance(exc, openai.APIStatusError):
-            return None
-        headers = exc.response.headers
-
-        # OpenAI sends both; the millisecond one is what its own SDK prefers,
-        # since `Retry-After: 1` is a whole second rounded up from 200ms.
-        ms = _positive_float(headers.get("retry-after-ms"))
-        if ms is not None:
-            return ms / 1000
-
-        raw = headers.get("retry-after")
-        if raw is None:
-            return None
-        seconds = _positive_float(raw)
-        if seconds is not None:
-            return seconds
-        return _seconds_until(raw)
+        return _retry_after(exc)
 
 
 # `capabilities=None` rather than a hardcoded default, so an operator can

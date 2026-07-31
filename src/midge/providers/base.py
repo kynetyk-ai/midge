@@ -15,6 +15,7 @@ So the contract is deliberately small:
     decode()        one vendor chunk -> a `Delta`
     is_retryable()  an exception    ->  worth another attempt?
     retry_after()   an exception    ->  how long the server asked us to wait
+    limiter         this vendor's rate limits, or None if it has none
 
 `Delta` is the normalization point. Everything above it speaks midge's own
 vocabulary; everything below is the vendor's.
@@ -81,9 +82,52 @@ class Delta:
 
 
 @runtime_checkable
+class RateLimiter(Protocol):
+    """What one vendor's rate limits look like, and when it is safe to send.
+
+    Owned by the provider rather than by `client.py` because almost nothing
+    about a rate limit is portable. OpenAI counts per model per org and resets
+    on `x-ratelimit-reset-*` durations like `6m0s`; Anthropic counts per org
+    across a tier and resets on an RFC 3339 timestamp; ollama has no limits at
+    all. Key any of that into the core and the next provider has to fight it.
+
+    So the core owns only the mechanics — making N in-flight requests respect
+    one answer — and asks three questions:
+
+        wait_for()  how long before it is safe to send?
+        observe()   a response arrived; learn from it
+        penalize()  a request was rejected; learn from that
+
+    `wait_for` reports rather than sleeps. The wait has to pass the ceiling in
+    `[retry] max_delay` and get logged, and both of those live in `client.py`;
+    a limiter that blocked internally would put the duration out of reach of
+    either. Same division as `retry_after`.
+
+    One instance per provider instance, which `ModelRegistry` already caches —
+    so everything routed to a provider shares its limiter, sub-agents included,
+    without the core holding any of it.
+    """
+
+    def wait_for(self, model: str) -> float:
+        """Seconds to hold off before sending, or 0 when clear."""
+        ...
+
+    def observe(self, response: Any) -> None:
+        """A request succeeded. The argument is the vendor's own object."""
+        ...
+
+    def penalize(self, exc: BaseException) -> None:
+        """A request failed. Only the vendor knows which failures mean a limit."""
+        ...
+
+
+@runtime_checkable
 class Provider(Protocol):
     name: str
     capabilities: Capabilities
+    # None means this server has no rate limits worth modelling — a local
+    # llama.cpp does not — and the core skips the whole path.
+    limiter: RateLimiter | None
 
     def encode(
         self,

@@ -34,7 +34,7 @@ from midge.client import (
 from midge.config import ProviderConfig
 from midge.messages import Message, TextContent, ToolCall, UserMessage
 from midge.providers import ModelRegistry
-from midge.providers.openai_compat import OpenAIProvider
+from midge.providers.openai_compat import CoolOff, OpenAIProvider
 from tests.fakes import (
     FakeProvider,
     finish,
@@ -57,9 +57,9 @@ async def _run(client: Client) -> list[StreamEvent]:
 
 
 def _status_error(
-    status: int, headers: dict[str, str] | None = None
+    status: int, headers: dict[str, str] | None = None, model: str | None = None
 ) -> openai.APIStatusError:
-    request = httpx.Request("POST", "http://x")
+    request = httpx.Request("POST", "http://x", json={"model": model} if model else None)
     response = httpx.Response(status_code=status, request=request, headers=headers)
     return openai.APIStatusError("boom", response=response, body=None)
 
@@ -504,6 +504,114 @@ async def test_abandoning_the_stream_mid_response_does_not_re_enter_the_body() -
         if isinstance(ev, TextDelta):
             break
     await stream.aclose()
+
+
+# --- the shared cool-off --------------------------------------------------
+#
+# The limiter itself is the provider's and is tested in `test_providers_openai`.
+# What is core is the plumbing: that a limit one request discovered is waited
+# out by the next, capped, staggered, and logged.
+
+
+def _cool_offs(caplog: pytest.LogCaptureFixture) -> list[float]:
+    return [
+        float(dict(p.split("=", 1) for p in m.split(" ")[1:])["delay"])
+        for m in (r.getMessage() for r in caplog.records)
+        if m.startswith("provider_cool_off ")
+    ]
+
+
+def _limited_client() -> tuple[Client, FakeProvider]:
+    # `max_attempts=1` so the rejection is spent immediately and the next
+    # request is the one doing the waiting, which is the case under test.
+    client = Client(retry_base_delay=0, retry_max_delay=0.05, max_attempts=1)
+    provider = install_provider(
+        client,
+        [
+            [_status_error(429, {"retry-after": "3600"}, model="gpt-4o")],
+            [say("second"), finish()],
+        ],
+    )
+    provider.limiter = CoolOff()
+    return client, provider
+
+
+async def test_a_limit_one_request_hit_is_waited_out_by_the_next(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # The point of sharing: the second request does not have to spend its own
+    # 429 to learn the window is closed.
+    client, provider = _limited_client()
+    assert isinstance((await _run(client))[-1], Error)
+
+    with caplog.at_level(logging.INFO, logger="midge.client"):
+        done = (await _run(client))[-1]
+
+    assert isinstance(done, Done)
+    assert provider.attempts == 2
+    assert len(_cool_offs(caplog)) == 1
+
+
+async def test_the_hold_off_is_capped_by_the_ceiling(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # The server asked for an hour. Nobody waits an hour.
+    client, _ = _limited_client()
+    await _run(client)
+
+    with caplog.at_level(logging.INFO, logger="midge.client"):
+        async with asyncio.timeout(5):
+            await _run(client)
+
+    assert _cool_offs(caplog) == [0.05]
+
+
+async def test_another_model_is_not_held_off(caplog: pytest.LogCaptureFixture) -> None:
+    client, _ = _limited_client()
+    await _run(client)
+
+    with caplog.at_level(logging.INFO, logger="midge.client"):
+        await _collect(client.stream(messages=USER, model="gpt-4o-mini"))
+
+    assert _cool_offs(caplog) == []
+
+
+async def test_a_provider_with_no_limiter_never_holds_off(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # `limiter = None` is a local server with no limits, and the whole path is
+    # skipped rather than answered with zero.
+    client = Client(retry_base_delay=0, max_attempts=1)
+    provider = install_provider(client, [[_status_error(429, {"retry-after": "3600"})]])
+    assert provider.limiter is None
+
+    with caplog.at_level(logging.INFO, logger="midge.client"):
+        await _run(client)
+
+    assert _cool_offs(caplog) == []
+
+
+async def test_the_release_is_staggered(caplog: pytest.LogCaptureFixture) -> None:
+    # Everything parked behind one deadline waking on the same instant would
+    # re-collide — the jitter problem, reintroduced at the release.
+    client = Client(retry_base_delay=0.04, retry_max_delay=0.01, max_attempts=1)
+    provider = install_provider(
+        client,
+        [
+            [_status_error(429, {"retry-after": "3600"}, model="gpt-4o")],
+            [say("second"), finish()],
+        ],
+    )
+    provider.limiter = CoolOff()
+    await _run(client)
+
+    with caplog.at_level(logging.INFO, logger="midge.client"):
+        await _run(client)
+
+    # The deadline caps to 0.01, so anything above it is the spread — and it is
+    # added on top rather than inside, so nobody wakes before the server said.
+    [delay] = _cool_offs(caplog)
+    assert 0.01 < delay <= 0.05
 
 
 # --- provider selection ---------------------------------------------------
