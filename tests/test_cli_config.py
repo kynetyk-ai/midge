@@ -158,7 +158,8 @@ def _start(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, argv: list[str]) -> 
     """Drive `main` far enough to inspect the composed agent."""
     captured: list[Agent] = []
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cli, "run_tui", lambda agent, **kw: captured.append(agent))
+    # `run_tui` takes the `Controls` both front-ends share; the agent is on it.
+    monkeypatch.setattr(cli, "run_tui", lambda controls, **kw: captured.append(controls.agent))
     main(argv)
     return captured[0]
 

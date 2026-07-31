@@ -18,6 +18,7 @@ import httpx
 import openai
 import pytest
 
+from midge import client as client_module
 from midge.client import (
     Client,
     Done,
@@ -591,9 +592,23 @@ async def test_a_provider_with_no_limiter_never_holds_off(
     assert _cool_offs(caplog) == []
 
 
-async def test_the_release_is_staggered(caplog: pytest.LogCaptureFixture) -> None:
+async def test_the_release_is_staggered(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # Everything parked behind one deadline waking on the same instant would
     # re-collide — the jitter problem, reintroduced at the release.
+    # The spread is pinned rather than sampled: the log rounds to two decimals,
+    # so a real draw below 0.005 would round back down onto the cap and fail a
+    # test that is not about the draw. What is under test is that the spread is
+    # added *on top of* the deadline — nobody wakes before the server said.
+    spread: list[tuple[float, float]] = []
+
+    def _widest(a: float, b: float) -> float:
+        spread.append((a, b))
+        return b
+
+    monkeypatch.setattr(client_module.random, "uniform", _widest)
+
     client = Client(retry_base_delay=0.04, retry_max_delay=0.01, max_attempts=1)
     provider = install_provider(
         client,
@@ -608,10 +623,10 @@ async def test_the_release_is_staggered(caplog: pytest.LogCaptureFixture) -> Non
     with caplog.at_level(logging.INFO, logger="midge.client"):
         await _run(client)
 
-    # The deadline caps to 0.01, so anything above it is the spread — and it is
-    # added on top rather than inside, so nobody wakes before the server said.
-    [delay] = _cool_offs(caplog)
-    assert 0.01 < delay <= 0.05
+    assert _cool_offs(caplog) == [0.05]
+    # Drawn across `[0, base_delay]`, so the stagger scales with the backoff
+    # rather than being a second number nobody configured.
+    assert spread == [(0, 0.04)]
 
 
 # --- provider selection ---------------------------------------------------

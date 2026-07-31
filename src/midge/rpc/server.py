@@ -424,7 +424,12 @@ class RpcServer:
         await self._call(cmd_id, "set_model", lambda: self.controls.set_model(model))
 
     async def _handle_compact(self, cmd_id: str | None) -> None:
-        await self._respond(cmd_id, "compact", success=True, data=await self.controls.compact())
+        try:
+            data = await self.controls.compact()
+        except Refused as e:
+            await self._respond(cmd_id, "compact", success=False, error=str(e))
+            return
+        await self._respond(cmd_id, "compact", success=True, data=data)
 
     async def _handle_clear_context(self, cmd_id: str | None) -> None:
         await self._call(cmd_id, "clear_context", self.controls.clear_context)

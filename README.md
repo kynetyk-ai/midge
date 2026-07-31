@@ -40,7 +40,11 @@ Python 3.11+. Poetry for env and dep management.
 poetry run midge
 ```
 
-Flags: `--extension-dir DIR` (repeatable), `--session PATH`, `--compaction-threshold N`, `--compaction-keep-recent N`. Bindings: `Ctrl+J` submit, `Ctrl+C` interrupt, `Ctrl+D` quit, `Esc` clear input.
+Flags: `--extension-dir DIR` (repeatable), `--session PATH`, `--compaction-threshold N`, `--compaction-keep-recent N`. Bindings: `Enter` submit, `Alt+Enter` newline, `Ctrl+P` command palette, `Ctrl+C` interrupt, `Ctrl+D` quit, `Esc` clear input.
+
+The TUI and the RPC server drive the same `Controls` object and enumerate the same command table, so neither can offer less than the other. `Ctrl+P` lists what needs no argument (`compact`, `clear_context`, `reload`, `abort`) plus anything whose values are knowable — with a `[models]` table configured, `set_model` appears once per registered model rather than as a prompt for free text. A leading slash does the same and can carry an argument: `/compact`, `/set_model gpt-4o`, `/open_session prior.jsonl`, `/skill:review`. A slash only intercepts when the word after it is a real command, so `/etc/hosts is missing` is still a message.
+
+**Typing while a turn is running queues the message** rather than cancelling the turn: it lands at the next tool boundary, so nothing already done is thrown away. `Ctrl+C` is the explicit interrupt.
 
 ### One-shot CLI
 
@@ -364,6 +368,7 @@ src/midge/
 ├── agent.py           # the loop: stream → dispatch tools → repeat
 ├── compaction.py      # post-turn summarize-and-replace
 ├── persistence.py     # JSONL session save / load / resume
+├── commands.py        # Controls: the operations both front-ends call
 ├── rpc/               # JSON-on-stdio front-end: wire / server / transport
 ├── extensions.py      # load_extensions(dirs) → (ToolRegistry, prompt_addition)
 ├── config.py          # .midge/config.toml → a Config the entrypoint passes inward
@@ -372,7 +377,7 @@ src/midge/
 ├── subagents.py       # @subagent → spawn_* tools running nested agents
 ├── profiles.py        # Profile discovery + validation (what the agent *is*)
 ├── hooks.py           # lifecycle events + handler registry
-├── tui/app.py         # Textual TUI
+├── tui/app.py         # Textual TUI: palette, slash commands, steering
 └── cli.py             # `midge` entrypoint
 examples/
 ├── coding_agent.py    # one-shot CLI for the coding domain

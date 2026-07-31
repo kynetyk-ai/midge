@@ -384,7 +384,8 @@ async def test_forced_skill_reaches_history_without_agent_changes(tmp_path: Path
 def _run_cli(argv: list[str], monkeypatch: pytest.MonkeyPatch) -> Agent:
     """Drive `cli.main` far enough to inspect the composed agent."""
     captured: list[Agent] = []
-    monkeypatch.setattr(cli, "run_tui", lambda agent, **kw: captured.append(agent))
+    # `run_tui` takes the `Controls` both front-ends share; the agent is on it.
+    monkeypatch.setattr(cli, "run_tui", lambda controls, **kw: captured.append(controls.agent))
     cli.main(argv)
     return captured[0]
 
