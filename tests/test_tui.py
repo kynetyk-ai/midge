@@ -1,18 +1,28 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Any
 
 import pytest
-from textual.widgets import TextArea
+from textual.widgets import OptionList, Static, TextArea
 
 from midge.agent import Agent
 from midge.client import Client
 from midge.commands import Controls
 from midge.config import ProviderConfig
 from midge.messages import UserMessage
+from midge.persistence import Session
+from midge.profiles import Profile, ProfileSet
 from midge.providers import ModelRegistry
-from midge.tui.app import AssistantBubble, MidgeCommands, PiApp, StatusLine, UserBubble
+from midge.tui.app import (
+    AssistantBubble,
+    MidgeCommands,
+    PiApp,
+    Sidebar,
+    StatusLine,
+    UserBubble,
+)
 from tests.fakes import finish, install, install_gated, say
 
 
@@ -284,3 +294,123 @@ async def test_a_command_needing_an_argument_refuses_without_one() -> None:
 
         assert app.agent.model == "m", "an empty argument must not be applied"
         assert any("needs an argument" in s for s in _status(app))
+
+
+# --- the drawer -----------------------------------------------------------
+
+
+def _registry(*models: str) -> ModelRegistry:
+    return ModelRegistry(
+        models=dict.fromkeys(models, "p"), providers={"p": ProviderConfig(kind="openai")}
+    )
+
+
+def _profiles(*names: str) -> ProfileSet:
+    profiles = ProfileSet()
+    for name in names:
+        profiles.add(
+            Profile(name=name, prompt="p", tools=(), description=name),
+            path=Path(f"{name}.py"),
+        )
+    return profiles
+
+
+def _sections(app: PiApp) -> list[str]:
+    bar = app.query_one("#sidebar", Sidebar)
+    return [str(c.visual) for c in bar.children if isinstance(c, Static)]
+
+
+def _options(app: PiApp) -> list[tuple[str, str | None]]:
+    bar = app.query_one("#sidebar", Sidebar)
+    return [
+        (str(o.prompt), o.id) for lst in bar.query(OptionList) for o in lst.options
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_drawer_is_closed_until_asked_for() -> None:
+    app = _app([])
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app.query_one("#sidebar", Sidebar).has_class("hidden")
+
+
+@pytest.mark.asyncio
+async def test_the_drawer_lists_what_the_agent_could_be(tmp_path: Path) -> None:
+    with Session.new(tmp_path / "a.jsonl", model="gpt-4o") as s:
+        s.set_name("auth refactor")
+    agent = Agent(client=Client(registry=_registry("gpt-4o", "haiku")), model="gpt-4o")
+    app = PiApp(Controls(agent, profiles=_profiles("builder"), session_dir=tmp_path))
+    async with app.run_test() as pilot:
+        await pilot.press("ctrl+b")
+        await _settle(pilot)
+
+        assert not app.query_one("#sidebar", Sidebar).has_class("hidden")
+        assert _sections(app) == ["sessions", "profiles", "model"]
+        labels = [prompt for prompt, _id in _options(app)]
+        assert "  auth refactor" in labels
+        assert "  builder" in labels
+        # The one you are on is marked, which is the thing a modal cannot do.
+        assert "● gpt-4o" in labels
+        assert "  haiku" in labels
+
+
+@pytest.mark.asyncio
+async def test_a_section_with_nothing_to_offer_is_omitted() -> None:
+    # Same rule the palette follows: with an empty registry midge cannot know
+    # what the alternatives are, so it does not pretend to.
+    app = _app([])
+    async with app.run_test() as pilot:
+        await pilot.press("ctrl+b")
+        await _settle(pilot)
+
+        assert _sections(app) == ["nothing to switch to"]
+        assert _options(app) == []
+
+
+@pytest.mark.asyncio
+async def test_choosing_applies_it_and_closes(tmp_path: Path) -> None:
+    agent = Agent(client=Client(), model="m")
+    app = PiApp(Controls(agent, profiles=_profiles("builder", "reviewer")))
+    async with app.run_test() as pilot:
+        await pilot.press("ctrl+b")
+        await _settle(pilot)
+        options = app.query_one("#sidebar", Sidebar).query(OptionList).first()
+        options.highlighted = 1
+        await pilot.pause()
+        options.action_select()
+        await _settle(pilot)
+
+        assert app.controls.profile == "reviewer"
+        assert app.query_one("#sidebar", Sidebar).has_class("hidden")
+        assert any("profile reviewer" in s for s in _status(app))
+
+
+@pytest.mark.asyncio
+async def test_the_drawer_reflects_a_switch_made_elsewhere() -> None:
+    # Rebuilt on every open rather than kept in sync: a `/set_model` typed into
+    # the input box has to move the mark.
+    agent = Agent(client=Client(registry=_registry("gpt-4o", "haiku")), model="gpt-4o")
+    app = PiApp(Controls(agent))
+    async with app.run_test() as pilot:
+        app.query_one("#input", TextArea).text = "/set_model haiku"
+        await pilot.press("enter")
+        await _settle(pilot)
+        await pilot.press("ctrl+b")
+        await _settle(pilot)
+
+        assert "● haiku" in [prompt for prompt, _id in _options(app)]
+
+
+@pytest.mark.asyncio
+async def test_escape_closes_the_drawer_before_it_clears_the_draft() -> None:
+    app = PiApp(Controls(_build_agent([]), profiles=_profiles("builder")))
+    async with app.run_test() as pilot:
+        app.query_one("#input", TextArea).text = "a draft"
+        await pilot.press("ctrl+b")
+        await _settle(pilot)
+        await pilot.press("escape")
+        await _settle(pilot)
+
+        assert app.query_one("#sidebar", Sidebar).has_class("hidden")
+        assert app.query_one("#input", TextArea).text == "a draft"
