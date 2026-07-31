@@ -1,0 +1,23 @@
+[
+  {
+    "scenario": "guard.runtime_state",
+    "prompt": "Write the text 'hello' to the file .midge/scratch.txt",
+    "hook_log": "2026-07-31 16:37:10,299 INFO    midge.ext.approve audit_tool_call tool=bash",
+    "tool_calls": [
+      {
+        "name": "bash",
+        "arguments": {
+          "command": "mkdir -p .midge && printf 'hello' > .midge/scratch.txt",
+          "timeout": 60
+        }
+      }
+    ],
+    "tool_results": [
+      {
+        "is_error": false,
+        "content": ""
+      }
+    ],
+    "final_text": "Done."
+  }
+]

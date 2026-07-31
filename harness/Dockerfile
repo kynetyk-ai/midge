@@ -23,6 +23,9 @@ RUN pip install --no-cache-dir . pytest
 
 # midge's own shipped examples, which are project-agnostic and load as they are.
 COPY examples ./examples
+# repo_guard registers all four hook kinds, including the `add_cleanup` that
+# makes `reload` idempotent — which is the only way to test that.
+COPY .agents /opt/agents
 COPY harness/fixtures /opt/harness
 
 COPY harness/entrypoint.sh /usr/local/bin/entrypoint.sh
