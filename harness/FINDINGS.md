@@ -517,3 +517,101 @@ settings. One of the two is unnecessary.
 `[subagents] max_concurrent` — proving a semaphore of 2 needs several
 simultaneous slow children and a minute of wall clock per run. Deferred rather
 than guessed at.
+
+---
+
+## Phase 5 — profiles, against `gpt-5.4-mini`
+
+~20 turns plus two purpose-built profiles. The profile machinery is sound, and
+testing it uncovered the most serious defect the harness has found — which is
+not about profiles at all.
+
+### F17 · RPC mode never writes messages to the transcript — **midge**
+
+**Severity: high.** Every RPC session records a header and nothing else.
+
+`RpcServer._run_prompt` streams the agent's events to the wire and never touches
+`self.session`. There is no `append_many` anywhere under `src/midge/rpc/`. The
+TUI has it twice — `tui/app.py:545` on `AgentEnd` and `:548` on interrupt — and
+RPC has it nowhere.
+
+Direct proof:
+
+```
+agent.history after one turn : 2
+lines on disk                : 1     (the header)
+message records on disk      : 0
+```
+
+The asymmetry that makes it unmistakable: **a sub-agent's transcript is
+complete, its parent's is empty.** `subagents.py:475` does
+`session.append_many(child.history)`, so a child persists while the parent that
+spawned it does not:
+
+```
+…explore-call_CxjQ….jsonl   messages=6     the child
+…6d6b.jsonl                 messages=0     its parent
+```
+
+What this silently breaks, all of it shipped and tested at the unit level:
+
+- **`--session PATH` in RPC mode records no conversation.** The file exists, is
+  named, carries `profile` / `continued` / `session_info` records — everything
+  except what was said.
+- **`open_session` (#63) restores nothing.** `agent.history = list(opened.messages)`
+  on an empty file empties the agent.
+- **`resume_last` (#67) returns to the right file with no context.** This is how
+  I found it: ADR 0001's motivating round trip — build, fork to a reviewer,
+  return to the build thread — landed on the correct transcript and the agent
+  had forgotten the conversation. *"What number did I ask you to remember?"* →
+  *"I don't have a number from you to remember."*
+- **Resuming after a restart loses everything.**
+
+Why the unit tests miss it: `tests/test_rpc.py` drives `RpcServer` with a fake
+provider and asserts on the wire frames, and `tests/test_persistence.py` drives
+`Session` directly. Nothing asserts that a turn *through the server* lands on
+disk. The TUI's equivalent is covered because `tui/app.py` does the appending
+inline where it can be seen.
+
+It also retroactively explains phase 0: `list_sessions` reported `messages: 0`
+for every session, which I read as "nothing has happened yet".
+
+### Confirmed working
+
+**The catalogue gate — phase 2's open question, now answered.** A profile
+projecting `read` away removes the skills catalogue from the prompt, and the
+switch re-derives it:
+
+```
+before: catalogue=True   appended=868 chars  base="You are a coding assistant…"
+use_profile blind (tools=["bash"])
+after : catalogue=False  appended=134 chars  base="You cannot read files directly…"
+```
+
+That is `generated_prompt()`'s gate working live, not just at startup.
+
+**Tool projection** narrows `agent.tools` to exactly the declared set, and the
+profile's prompt replaces the base while the generated half is recomposed.
+
+**All three transcript modes**, including the two degradations:
+
+| requested | result |
+|---|---|
+| `continue` | stays on the thread |
+| `fork` | new sibling `…adversarial-reviewer-0.jsonl`, history kept in context |
+| `resume_last`, nothing to resume | degrades to `fork` per `[profiles] resume_fallback`, and reports both `requested` and `transcript` |
+| `resume_last`, thread exists | returns to the correct file |
+
+**`profile_hook_undecided`** fires and the profile is dropped: `no-hooks`
+declares `hooks={}` while `approve` is registered, so it is registered then
+removed, absent from `get_profiles`, with a named warning. Taking the profile
+away rather than guessing a default is the documented position, and it holds.
+
+**Both `approve`-dependency directions** behave as designed — the shipped
+`adversarial-reviewer` loads and validates only when `approval_extension` is
+loaded beside it.
+
+### Note on severity ordering
+
+F17 outranks everything else here. A profile switch that lands on the right
+transcript is worth little when the transcript has nothing in it.
