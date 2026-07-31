@@ -7,6 +7,8 @@ chat-completions wire format has to be caught.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+from email.utils import format_datetime
 from types import SimpleNamespace
 from typing import Any
 
@@ -54,9 +56,11 @@ def _tcd(
     )
 
 
-def _status_error(status: int) -> openai.APIStatusError:
+def _status_error(
+    status: int, headers: dict[str, str] | None = None
+) -> openai.APIStatusError:
     request = httpx.Request("POST", "http://x")
-    response = httpx.Response(status_code=status, request=request)
+    response = httpx.Response(status_code=status, request=request, headers=headers)
     return openai.APIStatusError("boom", response=response, body=None)
 
 
@@ -258,6 +262,52 @@ def test_non_retryable_errors() -> None:
     assert not p.is_retryable(_status_error(401))
     assert not p.is_retryable(_status_error(404))
     assert not p.is_retryable(RuntimeError("boom"))
+
+
+# --- the wait the server asked for ----------------------------------------
+
+
+def test_retry_after_in_seconds() -> None:
+    assert _provider().retry_after(_status_error(429, {"retry-after": "20"})) == 20
+
+
+def test_retry_after_ms_wins_when_both_are_present() -> None:
+    # `Retry-After: 1` is 200ms rounded up to a whole second; the precise one is
+    # what OpenAI's own SDK prefers.
+    p = _provider()
+    exc = _status_error(429, {"retry-after": "1", "retry-after-ms": "200"})
+    assert p.retry_after(exc) == pytest.approx(0.2)
+
+
+def test_retry_after_as_an_http_date() -> None:
+    when = datetime.now(UTC) + timedelta(seconds=30)
+    exc = _status_error(429, {"retry-after": format_datetime(when, usegmt=True)})
+    delay = _provider().retry_after(exc)
+    assert delay is not None
+    # The date has one-second resolution and time passes between the two calls.
+    assert 28 <= delay <= 30
+
+
+def test_a_date_already_past_is_not_a_hint() -> None:
+    when = datetime.now(UTC) - timedelta(seconds=30)
+    exc = _status_error(429, {"retry-after": format_datetime(when, usegmt=True)})
+    assert _provider().retry_after(exc) is None
+
+
+@pytest.mark.parametrize("value", ["", "soon", "-5", "0", "NaN "])
+def test_an_unusable_retry_after_is_no_hint(value: str) -> None:
+    # Falls back to the jittered backoff rather than retrying instantly.
+    assert _provider().retry_after(_status_error(429, {"retry-after": value})) is None
+
+
+def test_no_headers_at_all_is_no_hint() -> None:
+    assert _provider().retry_after(_status_error(429)) is None
+
+
+def test_a_connection_error_carries_no_hint() -> None:
+    # Nothing answered, so there is no response to read a header off.
+    exc = openai.APIConnectionError(request=httpx.Request("POST", "http://x"))
+    assert _provider().retry_after(exc) is None
 
 
 # --- construction ---------------------------------------------------------

@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import openai
@@ -56,10 +56,28 @@ async def _run(client: Client) -> list[StreamEvent]:
     return await _collect(client.stream(messages=USER, model="gpt-4o"))
 
 
-def _status_error(status: int) -> openai.APIStatusError:
+def _status_error(
+    status: int, headers: dict[str, str] | None = None
+) -> openai.APIStatusError:
     request = httpx.Request("POST", "http://x")
-    response = httpx.Response(status_code=status, request=request)
+    response = httpx.Response(status_code=status, request=request, headers=headers)
     return openai.APIStatusError("boom", response=response, body=None)
+
+
+def _waits(caplog: pytest.LogCaptureFixture) -> list[tuple[float, str]]:
+    """The delay and its origin, off the `provider_retry` line.
+
+    The log is the only place the chosen wait is observable, which is the point
+    — a hint that was parsed but silently not honoured would be invisible.
+    """
+    out: list[tuple[float, str]] = []
+    for record in caplog.records:
+        message = record.getMessage()
+        if not message.startswith("provider_retry "):
+            continue
+        fields = dict(p.split("=", 1) for p in message.split(" ")[1:])
+        out.append((float(fields["delay"]), fields["source"]))
+    return out
 
 
 # --- assembling a response ------------------------------------------------
@@ -365,6 +383,127 @@ async def test_cancellation_during_retry_backoff_propagates() -> None:
 
     assert provider.attempts == 1
     assert [type(e) for e in collected] == [StreamStart]
+
+
+# --- choosing the wait ----------------------------------------------------
+#
+# These assert on the delay rather than on elapsed time, and keep the real
+# waits in the tens of milliseconds. Where a hint has to *beat* the backoff,
+# the backoff is set absurdly high and the test is given a timeout — so an
+# ignored hint fails in a second rather than parking the suite for an hour.
+
+
+async def test_a_rate_limit_hint_replaces_the_backoff(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    client = Client(retry_base_delay=3600, retry_max_delay=3600)
+    provider = install_provider(
+        client,
+        [[_status_error(429, {"retry-after-ms": "50"})], [say("ok"), finish()]],
+    )
+
+    with caplog.at_level(logging.WARNING, logger="midge.client"):
+        async with asyncio.timeout(5):
+            done = (await _run(client))[-1]
+
+    assert provider.attempts == 2
+    assert isinstance(done, Done)
+    assert _waits(caplog) == [(0.05, "header")]
+
+
+async def test_a_hint_longer_than_the_ceiling_is_capped(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # The whole reason the ceiling exists: an hour is a wedged turn.
+    client = Client(retry_base_delay=3600, retry_max_delay=0.01)
+    install(client, [[_status_error(429, {"retry-after": "3600"})], [say("ok"), finish()]])
+
+    with caplog.at_level(logging.WARNING, logger="midge.client"):
+        async with asyncio.timeout(5):
+            await _run(client)
+
+    assert _waits(caplog) == [(0.01, "header")]
+
+
+async def test_a_rate_limit_without_a_hint_falls_back_to_the_backoff(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    client = Client(retry_base_delay=0.01)
+    install(client, [[_status_error(429)], [say("ok"), finish()]])
+
+    with caplog.at_level(logging.WARNING, logger="midge.client"):
+        await _run(client)
+
+    [(delay, source)] = _waits(caplog)
+    assert source == "backoff"
+    assert 0 <= delay <= 0.01
+
+
+async def test_the_backoff_is_jittered(caplog: pytest.LogCaptureFixture) -> None:
+    # Full jitter: a random point inside the window rather than its endpoint.
+    # The old policy returned the endpoint exactly every time, so `< ceiling` is
+    # what separates the two — and for a continuous uniform draw it is certain.
+    client = Client(retry_base_delay=0.02, max_attempts=4)
+    install(
+        client,
+        [
+            [_status_error(503)],
+            [_status_error(503)],
+            [_status_error(503)],
+            [say("ok"), finish()],
+        ],
+    )
+
+    with caplog.at_level(logging.WARNING, logger="midge.client"):
+        await _run(client)
+
+    waits = _waits(caplog)
+    ceilings = [0.02, 0.04, 0.08]
+    assert [source for _, source in waits] == ["backoff"] * 3
+    assert all(0 <= delay <= c for (delay, _), c in zip(waits, ceilings, strict=True))
+    assert any(delay < c for (delay, _), c in zip(waits, ceilings, strict=True))
+
+
+async def test_the_ceiling_also_caps_the_backoff(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    client = Client(retry_base_delay=3600, retry_max_delay=0.01)
+    install(client, [[_status_error(503)], [say("ok"), finish()]])
+
+    with caplog.at_level(logging.WARNING, logger="midge.client"):
+        async with asyncio.timeout(5):
+            await _run(client)
+
+    [(delay, source)] = _waits(caplog)
+    assert source == "backoff"
+    assert 0 <= delay <= 0.01
+
+
+async def test_a_hint_on_a_non_retryable_error_is_not_honoured() -> None:
+    # `Retry-After` says how long to wait, never whether to try again. A 400
+    # with one is still a 400.
+    client = Client(retry_base_delay=0)
+    provider = install_provider(client, [[_status_error(400, {"retry-after": "1"})]])
+
+    assert isinstance((await _run(client))[-1], Error)
+    assert provider.attempts == 1
+
+
+async def test_abandoning_the_stream_mid_response_does_not_re_enter_the_body() -> None:
+    # A consumer that stops iterating throws GeneratorExit in at the yield.
+    # `AttemptManager.__exit__` swallows it and hands it to the retry predicate,
+    # so if that predicate ever said "retry" the body would be re-entered and
+    # yield during cleanup — the "async generator ignored GeneratorExit" error.
+    client = Client(retry_base_delay=0)
+    install(client, [[say("one"), say("two"), finish()]])
+
+    # `stream` is annotated as the interface it means; `aclose` is the generator
+    # underneath, which is what a consumer walking away actually triggers.
+    stream = cast(AsyncGenerator[StreamEvent, None], client.stream(messages=USER, model="gpt-4o"))
+    async for ev in stream:
+        if isinstance(ev, TextDelta):
+            break
+    await stream.aclose()
 
 
 # --- provider selection ---------------------------------------------------

@@ -148,8 +148,19 @@ max_timeout = 900.0
 # exponential backoff between attempts, in seconds. Only errors the provider
 # classifies as retryable — rate limits, 5xx, transport faults — are retried,
 # and never once any content has already been streamed to the caller.
+#
+# The backoff is jittered: the wait is a random point in `[0, base * 2**n]`
+# rather than the endpoint. Concurrent sub-agents share one client, so a
+# deterministic delay would have them all wake at the same instant and collide
+# on the limit they were backing off from.
 max_attempts = 3
 base_delay = 0.5
+
+# A ceiling on any single wait, in seconds. When a 429 carries `Retry-After`
+# that hint is honoured instead of the backoff — the server knows when the
+# window resets and we do not — but it is capped here, so a server asking for
+# an hour cannot park a turn for one.
+max_delay = 60.0
 
 
 [compaction]

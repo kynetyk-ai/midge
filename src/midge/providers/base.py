@@ -14,6 +14,7 @@ So the contract is deliberately small:
     open()          a request body  ->  an async iterator of the vendor's chunks
     decode()        one vendor chunk -> a `Delta`
     is_retryable()  an exception    ->  worth another attempt?
+    retry_after()   an exception    ->  how long the server asked us to wait
 
 `Delta` is the normalization point. Everything above it speaks midge's own
 vocabulary; everything below is the vendor's.
@@ -103,6 +104,17 @@ class Provider(Protocol):
     def decode(self, chunk: Any) -> Delta: ...
 
     def is_retryable(self, exc: BaseException) -> bool: ...
+
+    def retry_after(self, exc: BaseException) -> float | None:
+        """Seconds the server asked us to wait, or None if it did not say.
+
+        Separate from `is_retryable` rather than folded into it: whether to try
+        again is a policy question with a boolean answer, and how long to wait
+        is a fact the response carries. The header names and their formats are
+        the vendor's, which is why the parsing is here and the ceiling that
+        caps the answer is in `client.py`.
+        """
+        ...
 
 
 # --- registry -------------------------------------------------------------

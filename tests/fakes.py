@@ -130,6 +130,11 @@ class FakeProvider:
         # The real classifier, so retry tests exercise the real policy.
         return _CLASSIFIER.is_retryable(exc)
 
+    def retry_after(self, exc: BaseException) -> float | None:
+        # Likewise the real header parsing, so a test can hand this provider an
+        # error carrying `Retry-After` and see the wait it produces.
+        return _CLASSIFIER.retry_after(exc)
+
 
 class GatedProvider(FakeProvider):
     """Yields its chunks, then blocks until released.
