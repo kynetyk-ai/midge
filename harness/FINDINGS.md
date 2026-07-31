@@ -6,7 +6,26 @@ each labelled by whose fault it is — **midge**, **the model**, or **neither**
 the point of the exercise; a claim gets checked against the source before it is
 written down here.
 
-No issues are filed from this branch.
+**Filed as issues #99–#109 on `main`.** The mapping:
+
+| finding | issue |
+|---|---|
+| F17 RPC never persists messages | [#99](../../issues/99) |
+| F1 over-long line kills the server | [#100](../../issues/100) |
+| F7 tool calls in one message race | [#101](../../issues/101) |
+| F13 + F14 hooks gate tools, not effects | [#102](../../issues/102) |
+| F15 "read-only" explorer can write | [#103](../../issues/103) |
+| F12 a tool's `KeyError` becomes "tool not found" | [#104](../../issues/104) |
+| F2 log file in a missing directory | [#105](../../issues/105) |
+| F3 non-string `id` silently dropped | [#106](../../issues/106) |
+| F4 + F11 exception reprs on the wire | [#107](../../issues/107) |
+| F8 `pi_bash_` spill prefix | [#108](../../issues/108) |
+| F16 sub-agents bound twice | [#109](../../issues/109) |
+
+F5, F6, F9 and F10 are not filed: two were my expectations being wrong, two were
+the model behaving badly while midge behaved correctly. F10 — that this model
+prefers `bash` over `edit` for mutations — is cited inside #102 as context,
+because it is what makes the denylist the main path rather than an edge case.
 
 ---
 
