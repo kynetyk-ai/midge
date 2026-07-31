@@ -130,7 +130,7 @@ echo '{"id":"1","type":"prompt","message":"say hi"}' | \
 poetry run python -m examples.rpc_agent
 ```
 
-Newline-delimited JSON. `get_commands` enumerates everything invocable — built-in commands and `SKILL.md` skills alike — each with a JSON Schema for its arguments, so a client can build a command palette without hardcoding the protocol. `reload` re-scans skills and extensions from disk, so a new `SKILL.md` or an edited tool takes effect without restarting. `open_session` attaches a running agent to another transcript, creating it if the path is free, which is what lets a client leave a conversation and come back to it. The wire format, and what a transport other than stdio would have to decide for itself, are documented at the top of [`src/midge/rpc.py`](./src/midge/rpc.py); [`notes/rpc.md`](./notes/rpc.md) is the port-era reading note rather than current documentation.
+Newline-delimited JSON. `get_commands` enumerates everything invocable — built-in commands and `SKILL.md` skills alike — each with a JSON Schema for its arguments, so a client can build a command palette without hardcoding the protocol. `reload` re-scans skills and extensions from disk, so a new `SKILL.md` or an edited tool takes effect without restarting. `open_session` attaches a running agent to another transcript, creating it if the path is free, which is what lets a client leave a conversation and come back to it. The wire format is documented at the top of [`src/midge/rpc/__init__.py`](./src/midge/rpc/__init__.py), and what a transport other than stdio would have to decide for itself at the top of [`src/midge/rpc/transport.py`](./src/midge/rpc/transport.py); [`notes/rpc.md`](./notes/rpc.md) is the port-era reading note rather than current documentation.
 
 **midge never listens on anything** — no socket, no port, no bind address; the only network traffic is outbound to the provider. Stdin and stdout are a capability handed to the process by whoever launched it, so access control comes from the OS and the container runtime rather than from code midge would have to get right. Bridging to a socket is left to whoever deploys it, because the right shape is the client's to decide — and because anything that can send a line can run `bash` with the process's privileges.
 
@@ -364,7 +364,7 @@ src/midge/
 ├── agent.py           # the loop: stream → dispatch tools → repeat
 ├── compaction.py      # post-turn summarize-and-replace
 ├── persistence.py     # JSONL session save / load / resume
-├── rpc.py             # JSON-on-stdio RPC server
+├── rpc/               # JSON-on-stdio front-end: wire / server / transport
 ├── extensions.py      # load_extensions(dirs) → (ToolRegistry, prompt_addition)
 ├── config.py          # .midge/config.toml → a Config the entrypoint passes inward
 ├── logs.py            # logging config; entrypoints only
@@ -399,7 +399,7 @@ If you want to understand how the harness works, the files in dependency order:
 5. `src/midge/tools/coding/` — four real tools.
 6. `src/midge/extensions.py` — the loader.
 7. `src/midge/hooks.py` — lifecycle interception.
-8. Anything else, in any order: `compaction.py`, `persistence.py`, `rpc.py`, `tui/app.py`.
+8. Anything else, in any order: `compaction.py`, `persistence.py`, `rpc/`, `tui/app.py`.
 
 ## License
 

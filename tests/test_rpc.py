@@ -5,7 +5,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-from midge import rpc
 from midge.agent import Agent
 from midge.client import Client
 from midge.config import ProviderConfig
@@ -17,6 +16,7 @@ from midge.profiles import Profile, ProfileSet
 from midge.profiles import validate as validate_profiles
 from midge.providers import ModelRegistry
 from midge.rpc import RpcServer, event_to_wire
+from midge.rpc import server as rpc_server
 from midge.skills import Skill, load_skills, skills_prompt
 from midge.subagents import bind_subagents
 from midge.tools import ToolRegistry, tool
@@ -451,7 +451,7 @@ GENERATED = "Extension guidance: prefer the notes tool."
 
 def _server_with_composed_prompt(agent: Agent) -> tuple[RpcServer, _Inbox, _Outbox, Any]:
     server = RpcServer(agent, base_prompt="You are a coding assistant.", extension_prompt=GENERATED)
-    agent.system_prompt = server._compose_prompt()
+    agent.system_prompt = server.controls.compose_prompt()
     inbox, outbox = _Inbox(), _Outbox()
     task = asyncio.create_task(server.serve(read_line=inbox.read_line, write=outbox.write))
     return server, inbox, outbox, task
@@ -1307,7 +1307,7 @@ async def test_listed_builtins_are_all_really_dispatchable() -> None:
     inbox.close()
     await task
 
-    source = Path(rpc.__file__).read_text(encoding="utf-8")
+    source = Path(rpc_server.__file__).read_text(encoding="utf-8")
     for c in commands:
         if c["source"] == "builtin":
             assert f'case "{c["name"]}"' in source, f"{c['name']} is listed but not dispatched"
@@ -1525,7 +1525,7 @@ def _server_with_sources(
         extension_sources=extension_sources,
         skill_sources=skill_sources,
     )
-    agent.system_prompt = server._compose_prompt()
+    agent.system_prompt = server.controls.compose_prompt()
     inbox, outbox = _Inbox(), _Outbox()
     task = asyncio.create_task(server.serve(read_line=inbox.read_line, write=outbox.write))
     return server, inbox, outbox, task
@@ -2523,7 +2523,7 @@ async def test_set_system_prompt_survives_a_resume(tmp_path: Path) -> None:
     server = RpcServer(
         agent, session=session, base_prompt="You are a coding assistant.", extension_prompt=GENERATED
     )
-    agent.system_prompt = server._compose_prompt()
+    agent.system_prompt = server.controls.compose_prompt()
     inbox, outbox = _Inbox(), _Outbox()
     task = asyncio.create_task(server.serve(read_line=inbox.read_line, write=outbox.write))
 

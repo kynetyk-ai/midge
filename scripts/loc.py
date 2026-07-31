@@ -4,9 +4,16 @@
     poetry run python scripts/loc.py
 
 The core is the top-level modules in `src/midge/` — the harness itself. It
-deliberately excludes `tools/` and `tui/`: built-in tools are a library that
-grows with the domain, and the TUI is a presentation layer. Neither is the
-thing the README claims you can read in a sitting.
+deliberately excludes `tools/`, `tui/` and `rpc/`: built-in tools are a library
+that grows with the domain, and the TUI and the RPC server are both front-ends
+onto the same operations. None is the thing the README claims you can read in a
+sitting.
+
+That exemption is only honest because the operations themselves are *not* in
+either front-end. `commands.py` holds what both call and is counted; `rpc/` is
+parse-and-format over it, the way `tui/` is render-and-dispatch over it. A
+handler that grows real policy has drifted back out of the budget's reach and
+belongs in `commands.py`.
 
 Prose is free. Blank lines, `#` comments and docstrings are all subtracted, so
 the number measures machinery. That is the point: an author who hits the cap
@@ -33,7 +40,7 @@ ROOT = Path(__file__).resolve().parent.parent
 CORE = ROOT / "src" / "midge"
 # Reported but not enforced, so code moving out of the core to duck the budget
 # is visible rather than silent.
-CONTEXT = (CORE / "providers", CORE / "tools", CORE / "tui", ROOT / "tests")
+CONTEXT = (CORE / "providers", CORE / "rpc", CORE / "tools", CORE / "tui", ROOT / "tests")
 
 
 def prose_lines(source: str) -> set[int]:

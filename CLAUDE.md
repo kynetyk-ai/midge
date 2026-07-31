@@ -50,7 +50,7 @@ profile (`use_profile`) is #67 and needs source-scoped hook activation (#60) fir
 - **Pydantic v2** for tool-arg schemas.
 - **Textual** for the TUI.
 - **Lint:** `ruff`. **Type-check:** `pyright`. **Test:** `pytest` + `pytest-asyncio`.
-- **Size budget:** the core harness (`src/midge/*.py`, excluding `tools/` and `tui/`) is capped at 5000 lines, counting neither blanks, comments, nor docstrings. Enforced by `scripts/loc.py` in CI and in `tests/test_loc_budget.py`. Prose is deliberately free — if a change breaches the cap, simplify the code or move what is not core into `tools/` or an extension. Never comply by deleting explanation.
+- **Size budget:** the core harness (`src/midge/*.py`, excluding `tools/`, `tui/` and `rpc/`) is capped at 5000 lines, counting neither blanks, comments, nor docstrings. Enforced by `scripts/loc.py` in CI and in `tests/test_loc_budget.py`. Prose is deliberately free — if a change breaches the cap, simplify the code or move what is not core into `tools/` or an extension. Never comply by deleting explanation. **`rpc/` and `tui/` are exempt because they are front-ends, not because they are large.** What both call is `commands.py`, which is counted — so a handler that grows real policy has escaped the budget and belongs there instead.
 
 ## Out of scope (do not propose without checking)
 
