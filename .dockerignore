@@ -1,0 +1,23 @@
+# Docker does not read .gitignore, so this has to repeat the parts that matter
+# and add the ones git tracks but an image should not carry.
+.git/
+.github/
+.venv/
+venv/
+.midge/
+.midge-*/
+.pytest_cache/
+.ruff_cache/
+.pyright/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+notes/
+docs/
+*.log
+
+# The credential reaches the container through --env-file at run time. Nothing
+# in src/ reads a .env, so copying one in would be inert as well as unsafe.
+.env

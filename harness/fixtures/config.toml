@@ -1,0 +1,26 @@
+# The container's `.midge/config.toml`. Copied to /work/.midge/config.toml by
+# the entrypoint, which is where `config_paths()` looks first.
+
+[extensions]
+# The harness drives extensions explicitly with --extension-dir per scenario,
+# so autoload stays off — otherwise every scenario would silently carry the
+# same set and none would prove which one did the work.
+enabled = false
+
+[compaction]
+# Low enough that a handful of turns crosses it, so compaction is reachable
+# without a long conversation.
+threshold = 8000
+keep_recent = 2000
+
+[subagents]
+# Small numbers make the limits observable: a caller asking for more than
+# max_timeout gets clamped, and concurrency is reachable with a few children.
+max_concurrent = 2
+timeout = 45.0
+max_timeout = 60.0
+
+[retry]
+max_attempts = 3
+base_delay = 0.5
+max_delay = 10.0
