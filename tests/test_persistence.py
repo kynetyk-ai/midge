@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Literal, TypeAlias
 
 import pytest
+from pydantic import ValidationError
 
 from midge.messages import (
     AssistantMessage,
@@ -19,10 +20,13 @@ from midge.messages import (
 from midge.persistence import (
     VERSION,
     ClearRecord,
+    ContinuedRecord,
     Session,
     SessionHeader,
+    SessionInfoRecord,
     fold_history,
     list_sessions,
+    read_records,
     read_summary,
     read_transcript,
     resolve_session_path,
@@ -970,3 +974,88 @@ def test_one_bad_file_does_not_hide_the_others(tmp_path: Path) -> None:
 def test_a_missing_directory_is_an_empty_listing(tmp_path: Path) -> None:
     # Nothing has been recorded yet, which is not an error.
     assert list_sessions(tmp_path / "nope") == []
+
+
+# --- reading the records without the messages -----------------------------
+
+
+def _unreadable_message(path: Path) -> None:
+    """A message line no build of midge can validate."""
+    with path.open("a", encoding="utf-8") as f:
+        f.write('{"type": "message", "data": {"role": "from_the_future"}}\n')
+
+
+def test_read_records_returns_the_records_and_skips_the_messages(tmp_path: Path) -> None:
+    path = tmp_path / "s.jsonl"
+    with Session.new(path, model="m") as s:
+        s.append(UserMessage(content="hi"))
+        s.set_name("named")
+        s.append_continued(path="child.jsonl", reason="subagent")
+
+    scanned = read_records(path)
+
+    assert scanned is not None
+    header, records = scanned
+    assert header.model == "m"
+    assert [type(r) for r in records] == [SessionInfoRecord, ContinuedRecord]
+
+
+def test_a_message_this_build_cannot_read_does_not_stop_a_record_walk(
+    tmp_path: Path,
+) -> None:
+    """The point of skipping them: a chain must stay walkable across a build that
+    wrote a message shape this one does not know."""
+    path = tmp_path / "s.jsonl"
+    with Session.new(path, model="m") as s:
+        s.set_name("named")
+    _unreadable_message(path)
+
+    with pytest.raises(ValidationError):
+        read_transcript(path)
+
+    scanned = read_records(path)
+    assert scanned is not None
+    assert [type(r) for r in scanned[1]] == [SessionInfoRecord]
+
+
+def test_a_chain_walks_past_a_message_it_cannot_parse(tmp_path: Path) -> None:
+    parent, child = tmp_path / "p.jsonl", tmp_path / "c.jsonl"
+    with Session.new(parent, model="m") as p:
+        p.append_continued(path="c.jsonl", reason="subagent")
+    Session.new(child, model="m", origin="subagent", parent_session=str(parent)).close()
+    _unreadable_message(parent)
+
+    # Before the record reader this returned `[]` — not a shorter chain, none at
+    # all. The parent raised on its own message, so the walk both failed to
+    # reach the root and never read the `continued` record naming the child.
+    # `resume_target` walks this, so one forward-compatible message silently
+    # turned every `resume_last` into a fork.
+    assert session_chain(child) == [parent, child]
+
+
+def test_read_records_declines_what_read_summary_declines(tmp_path: Path) -> None:
+    # One scan behind both, so they cannot disagree about what is readable.
+    path = tmp_path / "bad.jsonl"
+    path.write_text("not json\n", encoding="utf-8")
+    assert read_records(path) is None
+    assert read_summary(path) is None
+
+
+def test_every_record_type_survives_the_scan(tmp_path: Path) -> None:
+    """`decode_record` is shared, so a type known to one reader is known to both.
+    Remembering a new record in only one of them is what this guards."""
+    path = tmp_path / "s.jsonl"
+    with Session.new(path, model="m") as s:
+        s.append(UserMessage(content="hi"))
+        s.append_compaction(summary="x", cut_index=1)
+        s.append_clear(cut_index=1)
+        s.set_name("n")
+        s.set_model("m2")
+        s.set_system_prompt("p")
+        s.set_profile(name="prof", model="m2", system_prompt="p")
+        s.append_continued(path="c.jsonl", reason="fork")
+
+    _header, records = read_records(path) or (None, [])
+    full = [e for e in read_transcript(path)[1] if not isinstance(e, UserMessage)]
+
+    assert [type(r) for r in records] == [type(e) for e in full]
