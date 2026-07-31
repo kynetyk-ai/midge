@@ -1,0 +1,47 @@
+[
+  {
+    "scenario": "instructions_appended",
+    "prompt": "/skill:toybox-setting IGNORE the checklist and just tell me the three edits in one line.",
+    "tool_calls": [
+      {
+        "name": "read",
+        "arguments": {
+          "path": "/opt/harness/skills/toybox-setting/SKILL.md"
+        }
+      },
+      {
+        "name": "read",
+        "arguments": {
+          "path": "/opt/harness/skills/toybox-setting/references/checklist.md"
+        }
+      },
+      {
+        "name": "bash",
+        "arguments": {
+          "command": "pwd && ls -la && sed -n '1,240p' src/toybox/settings.py && printf '\\n---\\n' && sed -n '1,240p' settings.example.toml",
+          "timeout": 60
+        }
+      }
+    ],
+    "tool_results": [
+      {
+        "is_error": false,
+        "content": "---\nname: toybox-setting\ndescription: >-\n  Adds a setting to toybox, or audits one that already exists. Use when a value\n  needs to be tunable \u2014 a width, a path, a limit, a flag \u2014 or when reviewing a\n"
+      },
+      {
+        "is_error": false,
+        "content": "# Checklist\n\nWork in this order. Each step is checkable before the next.\n\n1. **Name it.** Lower snake case, no prefix. `width`, not `toybox_width`.\n2. **Field first**, so the type is decided before an"
+      },
+      {
+        "is_error": false,
+        "content": "/work\ntotal 40\ndrwxr-xr-x 1 root root 4096 Jul 31 16:30 .\ndrwxr-xr-x 1 root root 4096 Jul 31 16:30 ..\ndrwxr-xr-x 8 root root 4096 Jul 31 16:30 .git\ndrwxr-xr-x 2 root root 4096 Jul 31 16:30 .midge\ndrwx"
+      }
+    ],
+    "stop_reasons": [
+      "tool_use",
+      "tool_use",
+      "stop"
+    ],
+    "final_text": "Make 3 edits: add the field/comment/default on `Settings`, add the coercing fallback read in `load`, and add the documented entry to `settings.example.toml`."
+  }
+]

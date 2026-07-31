@@ -247,3 +247,63 @@ before matching was ever attempted.
 purpose". It could not, and neither can I: toybox's tests all pass, so there is
 no detectable defect. The fixture needs a bug that a test actually catches
 before that scenario means anything.
+
+---
+
+## Phase 2 — skills, against `gpt-5.4-mini`
+
+4 scenarios plus 3 deterministic probes, ~25 turns. **No midge defects.** The
+skill mechanism did what it claims, including the part that depends on the model
+cooperating.
+
+### F11 · An unknown skill's error carries a `KeyError` repr — **midge**, cosmetic
+
+```
+sent: {"type": "prompt", "message": "/skill:nosuch do a thing"}
+got:  {"success": false, "error": "\"No skill named 'nosuch'\""}
+```
+
+The message is wrapped in an extra pair of quotes because it is `str(e)` of a
+`KeyError`, and `str(KeyError("x"))` is `"'x'"`. Same family as F4: an exception
+type showing through where a written sentence was intended. The behaviour is
+right — the command is refused and **no run is started**.
+
+### Untested, and not reachable from the CLI
+
+The skills catalogue is only injected when `read` is in the registry — *"the
+catalogue tells the model to open a `SKILL.md`, so without a tool that can open
+one it is an instruction to do the impossible."* I could not exercise the
+negative case: `cli.py` always includes `BUILTIN_TOOL_DIRS`, so `read` is always
+present. It is reachable two ways, both later: an embedder passing a restricted
+registry, or a profile whose `tools` projection excludes `read`. Deferred to
+phase 5, where profiles arrive.
+
+### An observation about expansion, not a defect
+
+`skill_message` **inlines the skill body** into the user message. Given that, a
+model re-reading the `SKILL.md` it was just handed is redundant — and
+`gpt-5.4-mini` did exactly that in two of three explicit invocations, spending a
+turn to fetch text already in its context. It did *not* do so for
+`commit-message`, so the behaviour is inconsistent rather than systematic.
+Model-side waste; nothing for midge to fix.
+
+### Confirmed working
+
+- **The catalogue** is injected into the generated half of the system prompt,
+  with `<name>`, `<description>` and an **absolute** `<location>` per skill, and
+  the operator's base prompt kept separate from it.
+- **Discovery across two `--skill-dir` flags**, each skill reporting its own
+  `source_info.path`.
+- **`/skill:name` expansion** puts the body in front of the model, and trailing
+  text after the name arrives as instructions — asked to answer in one line
+  instead of doing the work, it did.
+- **An unknown `/skill:` name is refused before any run starts**, so a typo
+  costs nothing.
+- **Bundled references resolve.** The `commit-message` skill points at
+  `references/style.md` by *relative* path; `skill_message` states
+  *"References are relative to {base_dir}"*, and the model read the file at its
+  absolute path and applied the style.
+- **A skill chosen from the catalogue alone.** Given no `/skill:` prefix and
+  only the catalogue, the model found `toybox-setting` by description, read it
+  and its checklist, and then made all three edits the skill prescribes — which
+  is the whole mechanism working without being told.

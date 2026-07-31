@@ -195,12 +195,17 @@ def up(args: argparse.Namespace) -> int:
     return 0
 
 
-def up_quiet() -> None:
-    """Recreate the container for a scenario that mutates the workspace."""
+def up_quiet(*midge_args: str) -> None:
+    """Recreate the container, optionally with different `midge --rpc` args.
+
+    Scenarios that mutate the workspace use this to get a clean one; scenarios
+    that need different extensions or skills loaded use it to change what the
+    process was started with, since neither can be altered after startup.
+    """
     _docker("rm", "-f", CONTAINER, check=False)
     _docker(
         "run", "-d", "--name", CONTAINER,
-        "--env-file", str(REPO / ".env"), IMAGE,
+        "--env-file", str(REPO / ".env"), IMAGE, *midge_args,
     )
     _set_offset(1)
     time.sleep(1.5)
