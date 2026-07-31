@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import random
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -148,6 +149,31 @@ class Client:
         self._retry_base_delay = retry_base_delay
         self._retry_max_delay = retry_max_delay
 
+    async def _hold_off(self, provider: providers.Provider, model: str) -> None:
+        """Wait out a limit another request already discovered.
+
+        The provider says how long; the ceiling, the stagger and the log are
+        here, because they are the same mechanics whatever the vendor.
+        """
+        limiter = provider.limiter
+        if limiter is None:
+            return
+        delay = min(limiter.wait_for(model), self._retry_max_delay)
+        if delay <= 0:
+            return
+        # Everything parked behind one deadline would otherwise resume on the
+        # same instant and re-collide — the problem the jittered backoff exists
+        # to solve, reintroduced at the release. Spread on top of the deadline
+        # rather than inside it, so nobody wakes before the server said.
+        delay += random.uniform(0, self._retry_base_delay)
+        _logger.info(
+            "provider_cool_off provider=%s model=%s delay=%.2f",
+            provider.name,
+            model,
+            delay,
+        )
+        await asyncio.sleep(delay)
+
     async def stream(
         self,
         *,
@@ -263,7 +289,10 @@ class Client:
                     partial.usage = None
 
                     try:
+                        await self._hold_off(provider, model)
                         stream = await provider.open(body)
+                        if provider.limiter is not None:
+                            provider.limiter.observe(stream)
 
                         async for chunk in stream:
                             ev = provider.decode(chunk)
@@ -385,6 +414,14 @@ class Client:
                         partial.stop_reason = "aborted"
                         partial.error_message = "cancelled"
                         yield Error(message=partial)
+                        raise
+
+                    except Exception as e:
+                        # Here rather than in the retry path, so a rejection on
+                        # the *last* attempt still parks the other children —
+                        # this request is done, theirs are not.
+                        if provider.limiter is not None:
+                            provider.limiter.penalize(e)
                         raise
 
         except Exception as e:

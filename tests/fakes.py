@@ -21,7 +21,7 @@ from typing import Any
 
 from midge.client import Client
 from midge.messages import Message, StopReason, Usage
-from midge.providers import Capabilities, Delta, ToolCallFragment
+from midge.providers import Capabilities, Delta, RateLimiter, ToolCallFragment
 from midge.providers.openai_compat import OpenAIProvider, encode_body
 
 # --- Delta builders -------------------------------------------------------
@@ -78,6 +78,9 @@ class FakeProvider:
         capabilities: Capabilities | None = None,
     ) -> None:
         self.capabilities = capabilities or Capabilities()
+        # No limits by default, so the streaming tests never wait. A rate-limit
+        # test opts in by assigning the real `CoolOff`.
+        self.limiter: RateLimiter | None = None
         # Every body midge produced, in order. Tests assert on these.
         self.bodies: list[dict[str, Any]] = []
         # How many times a request was opened — what a retry test counts.

@@ -7,6 +7,7 @@ chat-completions wire format has to be caught.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from email.utils import format_datetime
 from types import SimpleNamespace
@@ -25,7 +26,12 @@ from midge.messages import (
     UserMessage,
 )
 from midge.providers import Capabilities
-from midge.providers.openai_compat import OpenAIProvider, encode_body, encode_messages
+from midge.providers.openai_compat import (
+    CoolOff,
+    OpenAIProvider,
+    encode_body,
+    encode_messages,
+)
 
 
 def _provider(**kw: Any) -> OpenAIProvider:
@@ -57,9 +63,14 @@ def _tcd(
 
 
 def _status_error(
-    status: int, headers: dict[str, str] | None = None
+    status: int, headers: dict[str, str] | None = None, model: str | None = None
 ) -> openai.APIStatusError:
-    request = httpx.Request("POST", "http://x")
+    # `model` rides in the request body because that is where it really is —
+    # the cool-off reads it back off the rejected request rather than being
+    # told, so nothing has to thread it through the retry loop.
+    request = httpx.Request(
+        "POST", "http://x", json={"model": model} if model else None
+    )
     response = httpx.Response(status_code=status, request=request, headers=headers)
     return openai.APIStatusError("boom", response=response, body=None)
 
@@ -308,6 +319,72 @@ def test_a_connection_error_carries_no_hint() -> None:
     # Nothing answered, so there is no response to read a header off.
     exc = openai.APIConnectionError(request=httpx.Request("POST", "http://x"))
     assert _provider().retry_after(exc) is None
+
+
+# --- the shared cool-off --------------------------------------------------
+
+
+def _limited(model: str, after: str = "20") -> openai.APIStatusError:
+    return _status_error(429, {"retry-after": after}, model=model)
+
+
+async def test_nothing_is_held_off_to_begin_with() -> None:
+    assert CoolOff().wait_for("gpt-4o") == 0
+
+
+async def test_a_rate_limit_parks_the_model_it_names() -> None:
+    cool = CoolOff()
+    cool.penalize(_limited("gpt-4o"))
+    assert cool.wait_for("gpt-4o") == pytest.approx(20, abs=0.5)
+
+
+async def test_one_model_being_limited_does_not_park_another() -> None:
+    # The whole reason the deadline is keyed by model: OpenAI counts per model,
+    # so parking gpt-4o-mini on a gpt-4o rejection is a self-inflicted outage.
+    cool = CoolOff()
+    cool.penalize(_limited("gpt-4o"))
+    assert cool.wait_for("gpt-4o-mini") == 0
+
+
+async def test_the_longest_deadline_wins() -> None:
+    # A later, shorter rejection must not release requests an earlier one parked.
+    cool = CoolOff()
+    cool.penalize(_limited("gpt-4o", after="60"))
+    cool.penalize(_limited("gpt-4o", after="5"))
+    assert cool.wait_for("gpt-4o") == pytest.approx(60, abs=0.5)
+
+
+async def test_the_deadline_runs_down() -> None:
+    cool = CoolOff()
+    cool.penalize(_limited("gpt-4o", after="0.2"))
+    first = cool.wait_for("gpt-4o")
+    await asyncio.sleep(0.05)
+    assert 0 < cool.wait_for("gpt-4o") < first
+
+
+async def test_a_rate_limit_naming_no_wait_parks_nothing() -> None:
+    # Without a `Retry-After` there is no evidence of how long, and inventing
+    # one would park every other request on a guess.
+    cool = CoolOff()
+    cool.penalize(_status_error(429, model="gpt-4o"))
+    assert cool.wait_for("gpt-4o") == 0
+
+
+async def test_a_server_fault_is_not_a_rate_limit() -> None:
+    cool = CoolOff()
+    cool.penalize(_status_error(503, {"retry-after": "20"}, model="gpt-4o"))
+    assert cool.wait_for("gpt-4o") == 0
+
+
+async def test_an_unreadable_request_body_parks_nothing() -> None:
+    # Nothing says which model was limited, so there is nothing safe to park.
+    cool = CoolOff()
+    cool.penalize(_limited(""))
+    assert cool.wait_for("gpt-4o") == 0
+
+
+def test_the_provider_carries_a_limiter() -> None:
+    assert isinstance(_provider().limiter, CoolOff)
 
 
 # --- construction ---------------------------------------------------------
