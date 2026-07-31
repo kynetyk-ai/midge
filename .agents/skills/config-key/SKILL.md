@@ -27,9 +27,9 @@ knob. Do not file a key to avoid explaining a constant.
 **Never a credential.** `api_key` in a config file gets committed. A provider
 names the *variable* holding its key (`api_key_env`), never the key.
 
-## The four edits
+## The three edits
 
-Doing three of the four leaves the key unreachable, so make all four together.
+Doing two of the three leaves the key unreachable, so make all three together.
 
 1. **The field**, on `Config` or the right nested dataclass (`RetryConfig`,
    `SessionConfig`, `SubagentConfig`, `LogConfig`), with its default.
@@ -42,9 +42,6 @@ Doing three of the four leaves the key unreachable, so make all four together.
 3. **The entry in `examples/config.toml`**, in the right section, with prose
    above it saying *why* rather than what. Uncomment it only if the value shown
    equals the default.
-
-4. **The test**, so the new setting is exercised by `tests/test_config.py` and
-   its shipped-example round trip stays honest.
 
 ## Why the third edit is not optional
 
