@@ -195,6 +195,19 @@ def up(args: argparse.Namespace) -> int:
     return 0
 
 
+def up_quiet() -> None:
+    """Recreate the container for a scenario that mutates the workspace."""
+    _docker("rm", "-f", CONTAINER, check=False)
+    _docker(
+        "run", "-d", "--name", CONTAINER,
+        "--env-file", str(REPO / ".env"), IMAGE,
+    )
+    _set_offset(1)
+    time.sleep(1.5)
+    if not _running():
+        raise HarnessError("container exited on restart")
+
+
 def down(_: argparse.Namespace) -> int:
     _docker("rm", "-f", CONTAINER, check=False)
     print(f"{CONTAINER} removed")

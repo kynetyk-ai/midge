@@ -143,3 +143,107 @@ with a parse error is noise."*
   first turn.
 - `_stdout_writer` correctly took its blocking fallback for a regular file:
   `rpc_writer mode=blocking reason=not_a_pipe`.
+
+---
+
+## Phase 1 — the four built-in tools, against `gpt-5.4-mini`
+
+16 scenarios, ~45 model turns. Every tool's happy path and most error branches
+behaved. One finding is the most serious thing the harness has produced.
+
+### F7 · Tool calls in one assistant message race each other — **midge**
+
+**Severity: high.** Reproducible, and the error the model receives actively
+misleads it.
+
+Asked to copy a file and then edit the copy, the model emitted both calls in a
+single assistant message. `agent.py:340-342` starts every call in a message as a
+task and gathers them:
+
+```python
+for _, tc in pending:
+    tool_tasks[tc.id] = asyncio.ensure_future(self._run_tool(tc))
+executed = await asyncio.gather(*(tool_tasks[tc.id] for _, tc in pending))
+```
+
+So they ran concurrently, and the edit lost. From `midge.log`, same millisecond:
+
+```
+16:23:59,817  tool_start   bash  cp …/SKILL.md notes.md
+16:23:59,817  tool_start   edit  notes.md
+16:23:59,817  tool_failed  edit  error=FileNotFoundError
+16:23:59,818  tool_ok      bash  ms=1
+```
+
+The `cp` finished 1 ms *after* the edit had already failed on the file the `cp`
+was creating.
+
+**Running independent calls concurrently is right** — three reads at once is the
+point of parallel tool calls, and most parallel calls are independent. What
+makes this a defect is not the concurrency but everything around it:
+
+- **Nothing states the guarantee.** No docstring, comment or protocol note says
+  calls in one message may run in any order, so a reader assumes the order the
+  model emitted them.
+- **The error is misleading.** The model is told `No such file: notes.md`. That
+  is false — the file was moments from existing. It cannot tell a race from a
+  genuine missing file, so it cannot recover correctly, and here it re-did the
+  work from scratch.
+- **A weak model emits dependent calls in one message.** This is not a
+  hypothetical; `gpt-5.4-mini` did it unprompted on the second attempt of a
+  four-call scenario.
+
+Worth considering: reads are safe to parallelise, mutations are not obviously
+so. Serialising the write-ish tools, or at least saying out loud that ordering
+is not guaranteed, would both close it.
+
+### F8 · The bash spill file is named `pi_bash_` — **midge**, cosmetic
+
+`bash.py:81` is `tempfile.mkstemp(prefix="pi_bash_", suffix=".log")`, so large
+output spills to `/tmp/pi_bash_ttdscny1.log` — and the model is *told* that path
+and may repeat it to a user. midge deliberately shares vocabulary with `pi-mono`
+for concepts, but this is a runtime artifact in a project called midge.
+
+### F9 · After a missing file, the model edited a different one — **the model**
+
+`edit src/toybox/nothing.py` correctly returned `FileNotFoundError`. The model
+then searched, picked `src/toybox/text.py`, and edited *that* — changing
+`truncate`'s ellipsis to `"y"` because the prompt had said "change 'x' to 'y'".
+
+midge did exactly the right thing at every step. It is recorded because it is
+the clearest argument the harness has produced for `examples/approval_extension`
+existing at all: nothing in the loop distinguishes "the edit the user asked for"
+from "an edit the model invented after being told no".
+
+### F10 · The model routes around `edit`, preferring bash heredocs — **the model**
+
+In the more complex scenarios `gpt-5.4-mini` consistently mutated files with
+`bash` + a Python heredoc rather than the `edit` tool — the same pattern seen in
+the real session that produced #97.
+
+That relocates where safety lives. If a weak model's mutations mostly flow
+through `bash`, then `edit`'s exactness buys less than expected, and the
+`tool_call` hook's `bash` denylist matters more.
+
+**#97 did not reproduce here.** On Python sources the model's `old_text` was
+exact every time. The near miss reported in #97 was against wrapped markdown
+with continuation indents, and the one markdown attempt failed via F7's race
+before matching was ever attempted.
+
+### Confirmed working
+
+- `read` — sane `offset`/`limit`, `FileNotFoundError` surfaced as a tool error
+  the model then reports honestly rather than inventing content.
+- `write` — both required args, `mkdir -p` through nested paths.
+- `edit` — exact matches, `first_changed_line` plus a unified diff.
+- `bash` — `[exit code: 4]` surfaced and read back correctly, the 60 s default
+  timeout firing with a clean `TimeoutError`, and the 2000-line cap spilling to
+  a temp file the model is told about.
+- The loop recovered from every tool error without a turn dying.
+
+### A weakness in the fixture, not in midge
+
+`combined.fix` asked the model to find the function the README calls "wrong on
+purpose". It could not, and neither can I: toybox's tests all pass, so there is
+no detectable defect. The fixture needs a bug that a test actually catches
+before that scenario means anything.
