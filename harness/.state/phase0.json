@@ -1,0 +1,849 @@
+[
+  {
+    "group": "reads",
+    "command": "get_state",
+    "params": {},
+    "expected": "model, session, message count",
+    "response": {
+      "type": "response",
+      "command": "get_state",
+      "success": true,
+      "id": "h95533",
+      "data": {
+        "model": "gpt-5.4-mini",
+        "streaming": false,
+        "session": "/run/midge/sessions/20260731-161214-4e32.jsonl",
+        "session_name": null,
+        "messages": 0
+      }
+    }
+  },
+  {
+    "group": "reads",
+    "command": "get_commands",
+    "params": {},
+    "expected": "10 builtins + any skills",
+    "response": {
+      "type": "response",
+      "command": "get_commands",
+      "success": true,
+      "id": "h95698",
+      "data": {
+        "commands": [
+          {
+            "name": "abort",
+            "source": "builtin",
+            "invoke": "command",
+            "description": "Stop the run in flight and discard anything queued",
+            "parameters": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": false
+            }
+          },
+          {
+            "name": "compact",
+            "source": "builtin",
+            "invoke": "command",
+            "description": "Summarize older turns to reclaim context",
+            "parameters": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": false
+            }
+          },
+          {
+            "name": "clear_context",
+            "source": "builtin",
+            "invoke": "command",
+            "description": "Forget the conversation; keep recording to the same log",
+            "parameters": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": false
+            }
+          },
+          {
+            "name": "new_session",
+            "source": "builtin",
+            "invoke": "command",
+            "description": "Close the current log and start a fresh one",
+            "parameters": {
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "description": "Path for the new session log",
+                  "title": "Path",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "title": "NewSessionParams",
+              "type": "object"
+            }
+          },
+          {
+            "name": "open_session",
+            "source": "builtin",
+            "invoke": "command",
+            "description": "Attach to an existing session log, restoring its conversation",
+            "parameters": {
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "description": "Session log to attach to; created if it does not exist",
+                  "title": "Path",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "title": "OpenSessionParams",
+              "type": "object"
+            }
+          },
+          {
+            "name": "set_model",
+            "source": "builtin",
+            "invoke": "command",
+            "description": "Switch the model used for subsequent turns",
+            "parameters": {
+              "additionalProperties": false,
+              "properties": {
+                "model": {
+                  "description": "Provider model id, e.g. gpt-4o",
+                  "title": "Model",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "model"
+              ],
+              "title": "SetModelParams",
+              "type": "object"
+            }
+          },
+          {
+            "name": "set_system_prompt",
+            "source": "builtin",
+            "invoke": "command",
+            "description": "Replace the agent's base system prompt",
+            "parameters": {
+              "additionalProperties": false,
+              "properties": {
+                "prompt": {
+                  "description": "Replaces the durable base prompt; the generated half is re-appended",
+                  "title": "Prompt",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "prompt"
+              ],
+              "title": "SetSystemPromptParams",
+              "type": "object"
+            }
+          },
+          {
+            "name": "reload",
+            "source": "builtin",
+            "invoke": "command",
+            "description": "Re-scan skills and extensions from disk",
+            "parameters": {
+              "additionalProperties": false,
+              "properties": {
+                "targets": {
+                  "anyOf": [
+                    {
+                      "items": {
+                        "enum": [
+                          "skills",
+                          "extensions"
+                        ],
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "description": "Which sources to re-scan; omit for all of them",
+                  "title": "Targets"
+                }
+              },
+              "title": "ReloadParams",
+              "type": "object"
+            }
+          },
+          {
+            "name": "set_session_name",
+            "source": "builtin",
+            "invoke": "command",
+            "description": "Give the current session a display name",
+            "parameters": {
+              "additionalProperties": false,
+              "properties": {
+                "name": {
+                  "description": "Display name for the current session",
+                  "title": "Name",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name"
+              ],
+              "title": "SessionNameParams",
+              "type": "object"
+            }
+          },
+          {
+            "name": "use_profile",
+            "source": "builtin",
+            "invoke": "command",
+            "description": "Retarget the agent to a named profile \u2014 prompt, model, tools and hooks at once",
+            "parameters": {
+              "additionalProperties": false,
+              "properties": {
+                "name": {
+                  "description": "Name of a discovered profile",
+                  "title": "Name",
+                  "type": "string",
+                  "enum": []
+                },
+                "transcript": {
+                  "default": "continue",
+                  "description": "continue: stay on this transcript. fork: open a new one, linked to it. resume_last: reopen this session's most recent transcript under the profile, falling back per `[profiles] resume_fallback`.",
+                  "enum": [
+                    "continue",
+                    "fork",
+                    "resume_last"
+                  ],
+                  "title": "Transcript",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name"
+              ],
+              "title": "UseProfileParams",
+              "type": "object"
+            }
+          }
+        ]
+      }
+    }
+  },
+  {
+    "group": "reads",
+    "command": "get_messages",
+    "params": {},
+    "expected": "empty history",
+    "response": {
+      "type": "response",
+      "command": "get_messages",
+      "success": true,
+      "id": "h95852",
+      "data": []
+    }
+  },
+  {
+    "group": "reads",
+    "command": "get_system_prompt",
+    "params": {},
+    "expected": "base + appended halves",
+    "response": {
+      "type": "response",
+      "command": "get_system_prompt",
+      "success": true,
+      "id": "h95986",
+      "data": {
+        "prompt": "You are a coding assistant working in a local repository. Use the available tools to inspect and modify files. Keep responses concise and prefer doing work over describing it.",
+        "base": "You are a coding assistant working in a local repository. Use the available tools to inspect and modify files. Keep responses concise and prefer doing work over describing it.",
+        "appended": ""
+      }
+    }
+  },
+  {
+    "group": "reads",
+    "command": "get_profiles",
+    "params": {},
+    "expected": "empty; none loaded",
+    "response": {
+      "type": "response",
+      "command": "get_profiles",
+      "success": true,
+      "id": "h96119",
+      "data": {
+        "active": null,
+        "profiles": []
+      }
+    }
+  },
+  {
+    "group": "reads",
+    "command": "get_last_assistant_text",
+    "params": {},
+    "expected": "nothing said yet",
+    "response": {
+      "type": "response",
+      "command": "get_last_assistant_text",
+      "success": true,
+      "id": "h96264",
+      "data": {
+        "text": null
+      }
+    }
+  },
+  {
+    "group": "reads",
+    "command": "list_sessions",
+    "params": {},
+    "expected": "the session this run created",
+    "response": {
+      "type": "response",
+      "command": "list_sessions",
+      "success": true,
+      "id": "h96408",
+      "data": {
+        "sessions": [
+          {
+            "path": "/run/midge/sessions/20260731-161214-4e32.jsonl",
+            "name": null,
+            "created_at": "2026-07-31T16:12:14.775044+00:00",
+            "model": "gpt-5.4-mini",
+            "messages": 0,
+            "modified": 1785514334.773554,
+            "current": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "group": "reads",
+    "command": "list_sessions",
+    "params": {
+      "roots_only": false
+    },
+    "expected": "same, plus any children",
+    "response": {
+      "type": "response",
+      "command": "list_sessions",
+      "success": true,
+      "id": "h96555",
+      "data": {
+        "sessions": [
+          {
+            "path": "/run/midge/sessions/20260731-161214-4e32.jsonl",
+            "name": null,
+            "created_at": "2026-07-31T16:12:14.775044+00:00",
+            "model": "gpt-5.4-mini",
+            "messages": 0,
+            "modified": 1785514334.773554,
+            "current": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "group": "writes",
+    "command": "set_model",
+    "params": {
+      "model": "gpt-4o-mini"
+    },
+    "expected": "accepted; registry is empty so permissive",
+    "response": {
+      "type": "response",
+      "command": "set_model",
+      "success": true,
+      "id": "h96698",
+      "data": {
+        "durable": true
+      }
+    }
+  },
+  {
+    "group": "writes",
+    "command": "set_model",
+    "params": {
+      "model": "gpt-5.4-mini"
+    },
+    "expected": "put it back",
+    "response": {
+      "type": "response",
+      "command": "set_model",
+      "success": true,
+      "id": "h96837",
+      "data": {
+        "durable": true
+      }
+    }
+  },
+  {
+    "group": "writes",
+    "command": "set_session_name",
+    "params": {
+      "name": "phase zero"
+    },
+    "expected": "named",
+    "response": {
+      "type": "response",
+      "command": "set_session_name",
+      "success": true,
+      "id": "h96977",
+      "data": {
+        "name": "phase zero"
+      }
+    }
+  },
+  {
+    "group": "writes",
+    "command": "set_system_prompt",
+    "params": {
+      "prompt": "You are terse."
+    },
+    "expected": "base replaced, durable",
+    "response": {
+      "type": "response",
+      "command": "set_system_prompt",
+      "success": true,
+      "id": "h97122",
+      "data": {
+        "durable": true
+      }
+    }
+  },
+  {
+    "group": "writes",
+    "command": "clear_context",
+    "params": {},
+    "expected": "0 messages cleared",
+    "response": {
+      "type": "response",
+      "command": "clear_context",
+      "success": true,
+      "id": "h97259",
+      "data": {
+        "cleared": 0,
+        "session": "/run/midge/sessions/20260731-161214-4e32.jsonl"
+      }
+    }
+  },
+  {
+    "group": "writes",
+    "command": "compact",
+    "params": {},
+    "expected": "nothing to compact; no provider call",
+    "response": {
+      "type": "response",
+      "command": "compact",
+      "success": true,
+      "id": "h97397",
+      "data": {
+        "summary": null,
+        "cut_index": null,
+        "message_count": 0
+      }
+    }
+  },
+  {
+    "group": "writes",
+    "command": "new_session",
+    "params": {
+      "path": "/run/midge/sessions/phase0-new.jsonl"
+    },
+    "expected": "created",
+    "response": {
+      "type": "response",
+      "command": "new_session",
+      "success": true,
+      "id": "h97523",
+      "data": {
+        "session": "/run/midge/sessions/phase0-new.jsonl"
+      }
+    }
+  },
+  {
+    "group": "writes",
+    "command": "open_session",
+    "params": {
+      "path": "/run/midge/sessions/phase0-new.jsonl"
+    },
+    "expected": "no-op, already open",
+    "response": {
+      "type": "response",
+      "command": "open_session",
+      "success": true,
+      "id": "h97674",
+      "data": {
+        "session": "/run/midge/sessions/phase0-new.jsonl",
+        "reopened": false,
+        "messages": 0
+      }
+    }
+  },
+  {
+    "group": "writes",
+    "command": "reload",
+    "params": {},
+    "expected": "refused: no sources wired",
+    "response": {
+      "type": "response",
+      "command": "reload",
+      "success": true,
+      "id": "h97818",
+      "data": {
+        "targets": [
+          "skills",
+          "extensions"
+        ],
+        "tools": 4,
+        "skills": 0,
+        "profiles": 0
+      }
+    }
+  },
+  {
+    "group": "writes",
+    "command": "abort",
+    "params": {},
+    "expected": "refused: nothing in flight",
+    "response": {
+      "type": "response",
+      "command": "abort",
+      "success": false,
+      "id": "h97964",
+      "error": "no prompt in flight"
+    }
+  },
+  {
+    "group": "writes",
+    "command": "use_profile",
+    "params": {
+      "name": "nope"
+    },
+    "expected": "refused: unknown profile",
+    "response": {
+      "type": "response",
+      "command": "use_profile",
+      "success": false,
+      "id": "h98119",
+      "error": "unknown profile 'nope'; available: none"
+    }
+  },
+  {
+    "group": "bad args",
+    "command": "set_model",
+    "params": {},
+    "expected": "refused: model required",
+    "response": {
+      "type": "response",
+      "command": "set_model",
+      "success": false,
+      "id": "h98274",
+      "error": "`model` is required and must be a non-empty string"
+    }
+  },
+  {
+    "group": "bad args",
+    "command": "set_model",
+    "params": {
+      "model": 42
+    },
+    "expected": "refused: must be a string",
+    "response": {
+      "type": "response",
+      "command": "set_model",
+      "success": false,
+      "id": "h98416",
+      "error": "`model` is required and must be a non-empty string"
+    }
+  },
+  {
+    "group": "bad args",
+    "command": "set_model",
+    "params": {
+      "model": ""
+    },
+    "expected": "refused: must be non-empty",
+    "response": {
+      "type": "response",
+      "command": "set_model",
+      "success": false,
+      "id": "h98547",
+      "error": "`model` is required and must be a non-empty string"
+    }
+  },
+  {
+    "group": "bad args",
+    "command": "new_session",
+    "params": {},
+    "expected": "refused: path required",
+    "response": {
+      "type": "response",
+      "command": "new_session",
+      "success": false,
+      "id": "h98687",
+      "error": "`path` is required and must be a non-empty string"
+    }
+  },
+  {
+    "group": "bad args",
+    "command": "set_session_name",
+    "params": {
+      "name": "   "
+    },
+    "expected": "refused: whitespace is not a name",
+    "response": {
+      "type": "response",
+      "command": "set_session_name",
+      "success": false,
+      "id": "h98821",
+      "error": "`name` is required and must be a non-empty string"
+    }
+  },
+  {
+    "group": "bad args",
+    "command": "use_profile",
+    "params": {
+      "name": "x",
+      "transcript": "sideways"
+    },
+    "expected": "refused: not a transcript mode",
+    "response": {
+      "type": "response",
+      "command": "use_profile",
+      "success": false,
+      "id": "h98960",
+      "error": "1 validation error for UseProfileParams\ntranscript\n  Input should be 'continue', 'fork' or 'resume_last' [type=literal_error, input_value='sideways', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/literal_error"
+    }
+  },
+  {
+    "group": "bad args",
+    "command": "use_profile",
+    "params": {
+      "name": "x",
+      "colour": "blue"
+    },
+    "expected": "refused: extra='forbid'",
+    "response": {
+      "type": "response",
+      "command": "use_profile",
+      "success": false,
+      "id": "h99108",
+      "error": "1 validation error for UseProfileParams\ncolour\n  Extra inputs are not permitted [type=extra_forbidden, input_value='blue', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden"
+    }
+  },
+  {
+    "group": "bad args",
+    "command": "reload",
+    "params": {
+      "targets": [
+        "everything"
+      ]
+    },
+    "expected": "refused: not a reload target",
+    "response": {
+      "type": "response",
+      "command": "reload",
+      "success": false,
+      "id": "h99253",
+      "error": "1 validation error for ReloadParams\ntargets.0\n  Input should be 'skills' or 'extensions' [type=literal_error, input_value='everything', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/literal_error"
+    }
+  },
+  {
+    "group": "bad args",
+    "command": "reload",
+    "params": {
+      "targets": "skills"
+    },
+    "expected": "refused: must be a list",
+    "response": {
+      "type": "response",
+      "command": "reload",
+      "success": false,
+      "id": "h99387",
+      "error": "1 validation error for ReloadParams\ntargets\n  Input should be a valid list [type=list_type, input_value='skills', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/list_type"
+    }
+  },
+  {
+    "group": "bad args",
+    "command": "list_sessions",
+    "params": {
+      "roots_only": "yes"
+    },
+    "expected": "refused: must be a boolean",
+    "response": {
+      "type": "response",
+      "command": "list_sessions",
+      "success": false,
+      "id": "h99532",
+      "error": "`roots_only` must be a boolean"
+    }
+  },
+  {
+    "group": "bad args",
+    "command": "steer",
+    "params": {},
+    "expected": "refused: message required",
+    "response": {
+      "type": "response",
+      "command": "steer",
+      "success": false,
+      "id": "h99695",
+      "error": "`message` is required and must be a non-empty string"
+    }
+  },
+  {
+    "group": "bad args",
+    "command": "follow_up",
+    "params": {
+      "message": ""
+    },
+    "expected": "refused: must be non-empty",
+    "response": {
+      "type": "response",
+      "command": "follow_up",
+      "success": false,
+      "id": "h99843",
+      "error": "`message` is required and must be a non-empty string"
+    }
+  },
+  {
+    "group": "bad args",
+    "command": "prompt",
+    "params": {
+      "message": null
+    },
+    "expected": "refused without starting a run",
+    "response": {
+      "type": "response",
+      "command": "prompt",
+      "success": false,
+      "id": "h99973",
+      "error": "`message` is required and must be a string"
+    }
+  },
+  {
+    "group": "bad args",
+    "command": "nonesuch",
+    "params": {},
+    "expected": "refused: unknown command",
+    "response": {
+      "type": "response",
+      "command": "nonesuch",
+      "success": false,
+      "id": "h135",
+      "error": "unknown command: 'nonesuch'"
+    }
+  },
+  {
+    "group": "raw",
+    "sent": "{not json",
+    "expected": "a parse error, and the loop survives",
+    "frames": [
+      {
+        "type": "response",
+        "command": "parse",
+        "success": false,
+        "error": "Expecting property name enclosed in double quotes: line 1 column 2 (char 1)"
+      }
+    ]
+  },
+  {
+    "group": "raw",
+    "sent": "[1, 2, 3]",
+    "expected": "an array is not a command object",
+    "frames": [
+      {
+        "type": "response",
+        "command": "parse",
+        "success": false,
+        "error": "command must be a JSON object"
+      }
+    ]
+  },
+  {
+    "group": "raw",
+    "sent": "\"just a string\"",
+    "expected": "nor is a bare string",
+    "frames": [
+      {
+        "type": "response",
+        "command": "parse",
+        "success": false,
+        "error": "command must be a JSON object"
+      }
+    ]
+  },
+  {
+    "group": "raw",
+    "sent": "null",
+    "expected": "nor is null",
+    "frames": [
+      {
+        "type": "response",
+        "command": "parse",
+        "success": false,
+        "error": "command must be a JSON object"
+      }
+    ]
+  },
+  {
+    "group": "raw",
+    "sent": "{}",
+    "expected": "an object with no type",
+    "frames": [
+      {
+        "type": "response",
+        "command": "unknown",
+        "success": false,
+        "error": "unknown command: None"
+      }
+    ]
+  },
+  {
+    "group": "raw",
+    "sent": "{\"type\": 7}",
+    "expected": "a type that is not a string",
+    "frames": [
+      {
+        "type": "response",
+        "command": "unknown",
+        "success": false,
+        "error": "unknown command: 7"
+      }
+    ]
+  },
+  {
+    "group": "raw",
+    "sent": "{\"id\": {\"a\": 1}, \"type\": \"get_state\"}",
+    "expected": "a non-scalar id",
+    "frames": [
+      {
+        "type": "response",
+        "command": "get_state",
+        "success": true,
+        "data": {
+          "model": "gpt-5.4-mini",
+          "streaming": false,
+          "session": "/run/midge/sessions/phase0-new.jsonl",
+          "session_name": null,
+          "messages": 0
+        }
+      }
+    ]
+  },
+  {
+    "group": "raw",
+    "sent": "   ",
+    "expected": "a blank line is not a command",
+    "frames": []
+  }
+]
