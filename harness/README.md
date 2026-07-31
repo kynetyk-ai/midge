@@ -22,6 +22,19 @@ python harness/midgectl.py up --extension-dir /opt/midge/examples/approval_exten
 python harness/midgectl.py up --skill-dir /opt/harness/skills
 ```
 
+## Driving the TUI by hand
+
+The RPC harness is blind to anything that only exists on a screen. For that:
+
+```bash
+python harness/midgectl.py tui        # prints a `docker run -it` line
+```
+
+It prints rather than runs, because Textual needs a TTY this process does not
+have. See [TUI-PROTOCOL.md](./TUI-PROTOCOL.md) for what to exercise — including
+the one place the two front-ends genuinely differ (#99: the TUI writes messages
+to the transcript, RPC does not).
+
 ## Why the FIFO
 
 `serve_stdio` shuts down on stdin EOF, and every `docker exec` is a separate

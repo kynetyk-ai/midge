@@ -29,7 +29,8 @@ COPY .agents /opt/agents
 COPY harness/fixtures /opt/harness
 
 COPY harness/entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod +x /usr/local/bin/entrypoint.sh
+COPY harness/tui-entrypoint.sh /usr/local/bin/tui-entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/tui-entrypoint.sh
 
 # There is no --model flag; the model comes from the environment or the config
 # file, and nothing reads a .env, so it is set here.

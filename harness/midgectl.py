@@ -213,6 +213,33 @@ def up_quiet(*midge_args: str) -> None:
         raise HarnessError("container exited on restart")
 
 
+def tui(args: argparse.Namespace) -> int:
+    """Print the `docker run` line for an interactive TUI session.
+
+    Not executed here: this process does not own a TTY, and Textual needs one.
+    Run the printed command in your own terminal.
+    """
+    # argparse leaves the `--` separator in REMAINDER; midge would reject it.
+    extra = args.midge_args[1:] if args.midge_args[:1] == ["--"] else args.midge_args
+    sessions = REPO / "harness" / ".state" / "tui-sessions"
+    sessions.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "docker", "run", "-it", "--rm",
+        "--name", "midge-tui",
+        "--env-file", str(REPO / ".env"),
+        "-e", f"MIDGE_HARNESS_CONFIG={args.config}",
+        # Sessions land on the host so they survive the container and can be
+        # read afterwards — which is the whole point of testing persistence.
+        "-v", f"{sessions}:/run/midge/sessions",
+        *[x for pair in (("-e", e) for e in args.env) for x in pair],
+        "--entrypoint", "/usr/local/bin/tui-entrypoint.sh",
+        IMAGE, *extra,
+    ]
+    print(" ".join(cmd))
+    print(f"\n# transcripts will appear in {sessions}", file=sys.stderr)
+    return 0
+
+
 def down(_: argparse.Namespace) -> int:
     _docker("rm", "-f", CONTAINER, check=False)
     print(f"{CONTAINER} removed")
@@ -236,11 +263,20 @@ def main(argv: list[str] | None = None) -> int:
     up_p = sub.add_parser("up", help="(re)create the container")
     up_p.add_argument("--build", action="store_true", help="rebuild the image first")
     up_p.add_argument("-e", "--env", action="append", default=[], metavar="K=V")
-    up_p.add_argument("midge_args", nargs="*", help="extra args passed to `midge --rpc`")
+    up_p.add_argument("midge_args", nargs=argparse.REMAINDER,
+                      help="extra args passed to `midge --rpc` (put them last)")
     up_p.set_defaults(fn=up)
 
     for name, fn in (("down", down), ("logs", logs)):
         sub.add_parser(name).set_defaults(fn=fn)
+
+    tui_p = sub.add_parser("tui", help="print the docker run line for an interactive TUI")
+    tui_p.add_argument("--config", default="config.toml",
+                       help="fixture config: config.toml or config-models.toml")
+    tui_p.add_argument("-e", "--env", action="append", default=[], metavar="K=V")
+    tui_p.add_argument("midge_args", nargs=argparse.REMAINDER,
+                       help="extra args passed to `midge` (put them last)")
+    tui_p.set_defaults(fn=tui)
 
     call_p = sub.add_parser("call", help="send one command, print its response")
     call_p.add_argument("command")
