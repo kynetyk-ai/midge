@@ -11,6 +11,7 @@ This is the part you have to do yourself.
 python3 harness/midgectl.py tui                       # print the command
 python3 harness/midgectl.py tui --config config-models.toml \
     -- --extension-dir /opt/midge/examples/approval_extension \
+       --extension-dir /opt/midge/examples/profile_extension \
        --skill-dir /opt/harness/skills                # with extras
 ```
 
@@ -41,9 +42,13 @@ call appear as its own card.
 
 ### 2. Slash commands, and the thing they must not do
 
+The names are the command table's, not friendlier aliases — `/set_model`, not
+`/model`. Anything that is not a name in that table is prose, so a mistyped
+command is silently sent to the agent rather than refused.
+
 ```
 /compact
-/model gpt-4o-mini          (needs config-models.toml)
+/set_model gpt-4o-mini          (needs config-models.toml)
 /set_session_name my test
 /skill:toybox-setting add a setting for how many notes to keep
 ```
@@ -101,10 +106,14 @@ mid-execution, then `Ctrl+C` and see what happens to the queue.
 So this is the direct comparison:
 
 ```bash
-# after quitting the TUI
+# after quitting the TUI, from the repo root
 ls harness/.state/tui-sessions/
 grep -c '"type": "message"' harness/.state/tui-sessions/*.jsonl
 ```
+
+A `0` against one file is not the bug — a container that started and took no
+turns leaves an empty transcript. Look at the file whose timestamp matches the
+session you actually drove.
 
 A TUI session should show a non-zero count. An RPC session of the same length
 shows `0`. If you want to see both at once, run the RPC harness against the same
