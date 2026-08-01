@@ -4,11 +4,11 @@ A disposable midge, driven over RPC from outside the container, so every
 extension mechanism can be exercised against a real model.
 
 ```bash
-python harness/midgectl.py up --build
-python harness/midgectl.py call get_state
-python harness/midgectl.py prompt "read README.md and say what toybox is"
-python harness/midgectl.py logs      # midge.log, stderr, docker logs
-python harness/midgectl.py down
+python3 harness/midgectl.py up --build
+python3 harness/midgectl.py call get_state
+python3 harness/midgectl.py prompt "read README.md and say what toybox is"
+python3 harness/midgectl.py logs      # midge.log, stderr, docker logs
+python3 harness/midgectl.py down
 ```
 
 `up` recreates the container, which is also how you reset: the workspace is
@@ -18,8 +18,8 @@ leaves nothing behind.
 Extra arguments after `up` reach `midge --rpc`:
 
 ```bash
-python harness/midgectl.py up --extension-dir /opt/midge/examples/approval_extension
-python harness/midgectl.py up --skill-dir /opt/harness/skills
+python3 harness/midgectl.py up --extension-dir /opt/midge/examples/approval_extension
+python3 harness/midgectl.py up --skill-dir /opt/harness/skills
 ```
 
 ## Driving the TUI by hand
@@ -27,7 +27,7 @@ python harness/midgectl.py up --skill-dir /opt/harness/skills
 The RPC harness is blind to anything that only exists on a screen. For that:
 
 ```bash
-python harness/midgectl.py tui        # prints a `docker run -it` line
+python3 harness/midgectl.py tui        # prints a `docker run -it` line
 ```
 
 It prints rather than runs, because Textual needs a TTY this process does not

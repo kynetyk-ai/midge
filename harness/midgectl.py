@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Drive a containerised midge over its JSON-on-stdio RPC.
 
-    python harness/midgectl.py up
-    python harness/midgectl.py call get_state
-    python harness/midgectl.py prompt "read README.md and say what toybox is"
-    python harness/midgectl.py raw '{not json'
-    python harness/midgectl.py down
+    python3 harness/midgectl.py up
+    python3 harness/midgectl.py call get_state
+    python3 harness/midgectl.py prompt "read README.md and say what toybox is"
+    python3 harness/midgectl.py raw '{not json'
+    python3 harness/midgectl.py down
 
 Why it works this way: `serve_stdio` shuts down on stdin EOF, and every
 `docker exec` is a separate process — so writing with `docker exec -i` would

@@ -5,7 +5,7 @@ Every probe here is answerable without a turn, so nothing reaches the provider.
 `compact` is included because an empty history returns at `cut_idx == 0`, before
 any provider call.
 
-    python harness/scenarios/phase0.py
+    python3 harness/scenarios/phase0.py
 
 Prints one line per probe and writes the full exchange to
 `harness/.state/phase0.json` for anything that needs a closer look.

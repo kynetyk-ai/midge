@@ -1,0 +1,1 @@
+{"type":"header","version":2,"created_at":"2026-08-01T09:34:58.904827+00:00","model":"gpt-5.4-mini","system_prompt":"You are a coding assistant working in a local repository. Use the available tools to inspect and modify files. Keep responses concise and prefer doing work over describing it.","origin":null,"parent_session":null,"parent_tool_call_id":null}

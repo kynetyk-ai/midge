@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Phase 3 — extensions and hooks, against a real model.
 
-    python harness/scenarios/phase3.py [substring-filter]
+    python3 harness/scenarios/phase3.py [substring-filter]
 
 Phase 1 found that `gpt-5.4-mini` routes mutations through `bash` rather than
 `edit`, which makes the `tool_call` denylist the load-bearing safety mechanism

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Phase 1 — the four built-in tools, driven by a real model.
 
-    python harness/scenarios/phase1.py [substring-filter]
+    python3 harness/scenarios/phase1.py [substring-filter]
 
 Each scenario is one prompt. The point is not whether the model succeeds — it is
 `gpt-5.4-mini` and often will not — but what midge does when it fails: whether a

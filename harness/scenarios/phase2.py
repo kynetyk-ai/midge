@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Phase 2 — skills, against a real model.
 
-    python harness/scenarios/phase2.py [substring-filter]
+    python3 harness/scenarios/phase2.py [substring-filter]
 
 A skill is only ever a catalogue entry plus a file on disk: midge tells the
 model the name, the description and an absolute path, and the model has to

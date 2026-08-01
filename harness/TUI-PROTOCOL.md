@@ -8,8 +8,8 @@ tells you what you are on.
 This is the part you have to do yourself.
 
 ```bash
-python harness/midgectl.py tui                       # print the command
-python harness/midgectl.py tui --config config-models.toml \
+python3 harness/midgectl.py tui                       # print the command
+python3 harness/midgectl.py tui --config config-models.toml \
     -- --extension-dir /opt/midge/examples/approval_extension \
        --skill-dir /opt/harness/skills                # with extras
 ```
