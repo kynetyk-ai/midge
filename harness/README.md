@@ -31,7 +31,8 @@ python harness/midgectl.py tui        # prints a `docker run -it` line
 ```
 
 It prints rather than runs, because Textual needs a TTY this process does not
-have. See [TUI-PROTOCOL.md](./TUI-PROTOCOL.md) for what to exercise — including
+have. See [TUI-PROTOCOL.md](./TUI-PROTOCOL.md) for what to exercise, and
+[TUI-WORKSHEET.md](./TUI-WORKSHEET.md) to write down what you saw — including
 the one place the two front-ends genuinely differ (#99: the TUI writes messages
 to the transcript, RPC does not).
 

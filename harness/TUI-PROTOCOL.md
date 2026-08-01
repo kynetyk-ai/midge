@@ -146,7 +146,12 @@ the display suggests a policy was defeated.
 
 ## Recording what you find
 
-Add to `harness/FINDINGS.md`, in the same shape as the rest: what you did, what
+**[TUI-WORKSHEET.md](./TUI-WORKSHEET.md) is this document with blanks in it** —
+one row per check, a general-comments block per section, and space at the end
+for the things that do not fit a row. Copy it if you want to keep more than one
+run.
+
+Anything worth keeping goes to `harness/FINDINGS.md`, in the same shape as the rest: what you did, what
 happened, and whether it is midge's fault or the model's. If it is worth an
 issue, the eleven already filed (#99–#109) are the format.
 
