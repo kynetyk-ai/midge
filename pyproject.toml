@@ -8,7 +8,7 @@ readme = "README.md"
 requires-python = ">=3.11,<4.0"
 dependencies = [
     "openai>=1.50.0,<2.0.0",
-    "pydantic>=2.13.4,<3.0",
+    "pydantic>=2.13.5,<3.0",
     "textual>=8.2.8,<9.0.0",
     "pyyaml (>=6.0.3,<7.0.0)",
     "tenacity (>=9.1.4,<10.0.0)",
@@ -24,8 +24,8 @@ packages = [{ include = "midge", from = "src" }]
 pytest = "^9.1"
 pytest-asyncio = "^1.4"
 ruff = "^0.16"
-pyright = "^1.1.411"
-types-pyyaml = "^6.0.12.20260724"
+pyright = "^1.1.414"
+types-pyyaml = "^6.0.12.20260906"
 
 [build-system]
 requires = ["poetry-core>=2.0.0"]
