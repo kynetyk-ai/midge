@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from midge import __version__
 from midge.agent import Agent
 from midge.client import Client
 from midge.config import ProviderConfig
@@ -15,7 +16,7 @@ from midge.persistence import Session, read_transcript, session_continuations
 from midge.profiles import Profile, ProfileSet
 from midge.profiles import validate as validate_profiles
 from midge.providers import ModelRegistry
-from midge.rpc import RpcServer, event_to_wire
+from midge.rpc import PROTOCOL_VERSION, RpcServer, event_to_wire
 from midge.rpc import server as rpc_server
 from midge.skills import Skill, load_skills, skills_prompt
 from midge.subagents import bind_subagents
@@ -41,8 +42,14 @@ class _Inbox:
 
 
 class _Outbox:
+    """Frames the server wrote. The `ready` greeting is kept apart in `.ready`
+    so the rest of the suite can index `.lines` by what its commands caused;
+    `test_ready_is_the_first_frame` checks the raw order."""
+
     def __init__(self) -> None:
         self.lines: list[dict[str, Any]] = []
+        self.ready: dict[str, Any] | None = None
+        self.raw: list[dict[str, Any]] = []
         self._buffer = b""
 
     async def write(self, data: bytes) -> None:
@@ -50,7 +57,12 @@ class _Outbox:
         while b"\n" in self._buffer:
             line, self._buffer = self._buffer.split(b"\n", 1)
             if line:
-                self.lines.append(json.loads(line.decode("utf-8")))
+                frame = json.loads(line.decode("utf-8"))
+                self.raw.append(frame)
+                if frame.get("type") == "ready" and self.ready is None:
+                    self.ready = frame
+                else:
+                    self.lines.append(frame)
 
 
 async def _wait_for(predicate, *, timeout: float = 2.0) -> None:
@@ -376,6 +388,8 @@ async def test_get_state_reports_model_and_counts() -> None:
         "session": None,
         "session_name": None,
         "messages": 2,
+        "protocol": PROTOCOL_VERSION,
+        "midge": __version__,
     }
     inbox.close()
     await task
@@ -2859,3 +2873,38 @@ async def test_an_unknown_skill_is_refused_without_stray_quotes() -> None:
     await task
 
     assert resp["error"] == "No skill named 'nope'"
+
+
+
+async def test_ready_is_the_first_frame() -> None:
+    _, inbox, outbox, task = _start_server(Agent(client=Client(), model="m"))
+    await inbox.feed_text('{"id": "s", "type": "get_state"}\n')
+    await _wait_for(lambda: bool(outbox.lines))
+    inbox.close()
+    await task
+
+    assert outbox.raw[0] == {"type": "ready", "protocol": PROTOCOL_VERSION, "midge": __version__}
+
+
+async def test_an_operation_that_fails_is_answered_and_the_loop_keeps_serving() -> None:
+    # Found writing the contract test: `compact` whose summary call failed
+    # raised out of `serve` and ended the process.
+    from midge.messages import AssistantMessage, TextContent
+
+    client = Client()
+    install(client, [[say(""), finish()]])  # an empty summary, which `summarize` refuses
+    agent = Agent(client=client, model="m")
+    for i in range(3):
+        agent.history.append(UserMessage(content=f"q{i}: " + "x" * 200))
+        agent.history.append(AssistantMessage(content=[TextContent(text="a" * 200)]))
+    server = RpcServer(agent, compaction_keep_recent=120)
+    inbox, outbox = _Inbox(), _Outbox()
+    task = asyncio.create_task(server.serve(read_line=inbox.read_line, write=outbox.write))
+
+    failed = await _command(inbox, outbox, {"id": "c", "type": "compact"})
+    state = await _command(inbox, outbox, {"id": "s", "type": "get_state"})
+    inbox.close()
+    await task
+
+    assert failed["success"] is False and "summarization" in failed["error"]
+    assert state["success"] is True

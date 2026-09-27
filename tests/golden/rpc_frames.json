@@ -1,0 +1,452 @@
+[
+  {
+    "command": "abort",
+    "data": [
+      "dropped"
+    ],
+    "keys": [
+      "command",
+      "data",
+      "id",
+      "success",
+      "type"
+    ],
+    "type": "response"
+  },
+  {
+    "command": "abort",
+    "keys": [
+      "command",
+      "error",
+      "id",
+      "success",
+      "type"
+    ],
+    "type": "response"
+  },
+  {
+    "command": "clear_context",
+    "data": [
+      "cleared",
+      "session"
+    ],
+    "keys": [
+      "command",
+      "data",
+      "id",
+      "success",
+      "type"
+    ],
+    "type": "response"
+  },
+  {
+    "command": "compact",
+    "data": [
+      "cut_index",
+      "message_count",
+      "summary"
+    ],
+    "keys": [
+      "command",
+      "data",
+      "id",
+      "success",
+      "type"
+    ],
+    "type": "response"
+  },
+  {
+    "command": "follow_up",
+    "data": [
+      "queue_id"
+    ],
+    "keys": [
+      "command",
+      "data",
+      "id",
+      "success",
+      "type"
+    ],
+    "type": "response"
+  },
+  {
+    "command": "get_commands",
+    "data": [
+      "commands"
+    ],
+    "keys": [
+      "command",
+      "data",
+      "id",
+      "success",
+      "type"
+    ],
+    "type": "response"
+  },
+  {
+    "command": "get_last_assistant_text",
+    "data": [
+      "text"
+    ],
+    "keys": [
+      "command",
+      "data",
+      "id",
+      "success",
+      "type"
+    ],
+    "type": "response"
+  },
+  {
+    "command": "get_messages",
+    "keys": [
+      "command",
+      "data",
+      "id",
+      "success",
+      "type"
+    ],
+    "type": "response"
+  },
+  {
+    "command": "get_profiles",
+    "data": [
+      "active",
+      "profiles"
+    ],
+    "keys": [
+      "command",
+      "data",
+      "id",
+      "success",
+      "type"
+    ],
+    "type": "response"
+  },
+  {
+    "command": "get_state",
+    "data": [
+      "messages",
+      "midge",
+      "model",
+      "protocol",
+      "session",
+      "session_name",
+      "streaming"
+    ],
+    "keys": [
+      "command",
+      "data",
+      "id",
+      "success",
+      "type"
+    ],
+    "type": "response"
+  },
+  {
+    "command": "get_system_prompt",
+    "data": [
+      "appended",
+      "base",
+      "prompt"
+    ],
+    "keys": [
+      "command",
+      "data",
+      "id",
+      "success",
+      "type"
+    ],
+    "type": "response"
+  },
+  {
+    "command": "list_sessions",
+    "data": [
+      "sessions"
+    ],
+    "keys": [
+      "command",
+      "data",
+      "id",
+      "success",
+      "type"
+    ],
+    "type": "response"
+  },
+  {
+    "command": "new_session",
+    "data": [
+      "session"
+    ],
+    "keys": [
+      "command",
+      "data",
+      "id",
+      "success",
+      "type"
+    ],
+    "type": "response"
+  },
+  {
+    "command": "nonesuch",
+    "keys": [
+      "command",
+      "error",
+      "id",
+      "success",
+      "type"
+    ],
+    "type": "response"
+  },
+  {
+    "command": "open_session",
+    "data": [
+      "messages",
+      "model",
+      "model_differs",
+      "name",
+      "recorded_model",
+      "reopened",
+      "session"
+    ],
+    "keys": [
+      "command",
+      "data",
+      "id",
+      "success",
+      "type"
+    ],
+    "type": "response"
+  },
+  {
+    "command": "parse",
+    "keys": [
+      "command",
+      "error",
+      "success",
+      "type"
+    ],
+    "type": "response"
+  },
+  {
+    "command": "prompt",
+    "data": [
+      "accepted"
+    ],
+    "keys": [
+      "command",
+      "data",
+      "id",
+      "success",
+      "type"
+    ],
+    "type": "response"
+  },
+  {
+    "command": "reload",
+    "data": [
+      "profiles",
+      "skills",
+      "targets",
+      "tools"
+    ],
+    "keys": [
+      "command",
+      "data",
+      "id",
+      "success",
+      "type"
+    ],
+    "type": "response"
+  },
+  {
+    "command": "set_model",
+    "data": [
+      "durable"
+    ],
+    "keys": [
+      "command",
+      "data",
+      "id",
+      "success",
+      "type"
+    ],
+    "type": "response"
+  },
+  {
+    "command": "set_session_name",
+    "data": [
+      "name"
+    ],
+    "keys": [
+      "command",
+      "data",
+      "id",
+      "success",
+      "type"
+    ],
+    "type": "response"
+  },
+  {
+    "command": "set_system_prompt",
+    "data": [
+      "durable"
+    ],
+    "keys": [
+      "command",
+      "data",
+      "id",
+      "success",
+      "type"
+    ],
+    "type": "response"
+  },
+  {
+    "command": "steer",
+    "data": [
+      "queue_id"
+    ],
+    "keys": [
+      "command",
+      "data",
+      "id",
+      "success",
+      "type"
+    ],
+    "type": "response"
+  },
+  {
+    "command": "use_profile",
+    "keys": [
+      "command",
+      "error",
+      "id",
+      "success",
+      "type"
+    ],
+    "type": "response"
+  },
+  {
+    "keys": [
+      "arguments",
+      "id",
+      "name",
+      "type"
+    ],
+    "type": "tool_call_end"
+  },
+  {
+    "keys": [
+      "content",
+      "is_error",
+      "tool_call_id",
+      "type"
+    ],
+    "type": "tool_result"
+  },
+  {
+    "keys": [
+      "content",
+      "queue_id",
+      "source",
+      "type"
+    ],
+    "type": "user_message"
+  },
+  {
+    "keys": [
+      "content",
+      "type"
+    ],
+    "type": "user_message"
+  },
+  {
+    "keys": [
+      "cut_index",
+      "message_count",
+      "type"
+    ],
+    "type": "compaction_end"
+  },
+  {
+    "keys": [
+      "delta",
+      "id",
+      "type"
+    ],
+    "type": "tool_call_delta"
+  },
+  {
+    "keys": [
+      "delta",
+      "type"
+    ],
+    "type": "assistant_text_delta"
+  },
+  {
+    "keys": [
+      "follow_up",
+      "steering",
+      "type"
+    ],
+    "type": "queue_update"
+  },
+  {
+    "keys": [
+      "id",
+      "name",
+      "type"
+    ],
+    "type": "tool_call_start"
+  },
+  {
+    "keys": [
+      "id",
+      "name",
+      "type"
+    ],
+    "type": "tool_execution_start"
+  },
+  {
+    "keys": [
+      "message",
+      "stop_reason",
+      "type"
+    ],
+    "type": "error"
+  },
+  {
+    "keys": [
+      "midge",
+      "protocol",
+      "type"
+    ],
+    "type": "ready"
+  },
+  {
+    "keys": [
+      "model",
+      "stop_reason",
+      "type"
+    ],
+    "type": "assistant_message_end"
+  },
+  {
+    "keys": [
+      "type"
+    ],
+    "type": "agent_end"
+  },
+  {
+    "keys": [
+      "type"
+    ],
+    "type": "agent_settled"
+  },
+  {
+    "keys": [
+      "type"
+    ],
+    "type": "compaction_start"
+  }
+]
