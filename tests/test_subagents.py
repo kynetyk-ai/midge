@@ -1009,3 +1009,27 @@ async def test_a_child_inherits_the_parent_active_source_set() -> None:
     parent.set_active_sources(set())
 
     assert await child.emit(ToolCallEvent(tool_call=call)) is None
+
+
+def test_a_sub_agent_is_read_only_only_if_its_allowlist_is() -> None:
+    # #101 and #103 together: an explorer allowed `bash` is serialized like
+    # `bash`, whatever its description claims.
+    @tool(read_only=True)
+    async def read(path: str) -> str:
+        return path
+
+    @tool
+    async def bash(command: str) -> str:
+        return command
+
+    reader = _explorer(tools=("read",))
+    assert reader.read_only is False, "unbound: nothing to derive from"
+
+    registry = ToolRegistry([read, bash, reader])
+    bind_subagents(registry, client=Client(), model="m")
+    assert reader.read_only is True
+
+    shell = _explorer(tools=("read", "bash"), name="shell")
+    registry.add(shell)
+    bind_subagents(registry, client=Client(), model="m")
+    assert shell.read_only is False

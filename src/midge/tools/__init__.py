@@ -41,11 +41,23 @@ class Tool:
         description: str,
         fn: ToolFn,
         params_model: type[BaseModel],
+        read_only: bool = False,
     ) -> None:
         self.name = name
         self.description = description
         self.fn = fn
         self.params_model = params_model
+        self._read_only = read_only
+
+    @property
+    def read_only(self) -> bool:
+        """Whether the tool only observes. The agent runs these concurrently
+        and everything else one at a time, in the order the model asked.
+
+        `False` is the default because it is the safe one: a tool nobody
+        classified is serialized, which costs time and never correctness.
+        """
+        return self._read_only
 
     def schema(self) -> dict[str, Any]:
         return {
@@ -75,6 +87,7 @@ def tool(
     *,
     name: str | None = None,
     description: str | None = None,
+    read_only: bool = False,
 ) -> Callable[[ToolFn], Tool]: ...
 def tool(
     fn: ToolFn | None = None,
@@ -82,6 +95,7 @@ def tool(
     *,
     name: str | None = None,
     description: str | None = None,
+    read_only: bool = False,
 ) -> Tool | Callable[[ToolFn], Tool]:
     def wrap(fn: ToolFn) -> Tool:
         if not inspect.iscoroutinefunction(fn):
@@ -96,6 +110,7 @@ def tool(
             description=tool_desc,
             fn=fn,
             params_model=params_model,
+            read_only=read_only,
         )
 
     if fn is None:

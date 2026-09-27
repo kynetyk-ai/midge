@@ -9,7 +9,7 @@ The budget covers `src/midge/*.py`, the harness itself. `providers/`, `tools/` a
 ## What's in the box
 
 - **Streaming agent loop** against any OpenAI-compatible endpoint (OpenAI, Azure, ollama, vLLM, LM Studio, llama.cpp's `server`, Together, Groq, Fireworks, OpenRouter, ...). The wire format lives behind a provider registry, so the streaming state machine and retry policy are written once and a second format is an adapter rather than a branch.
-- **`@tool` decorator** that turns an async Python function into an LLM-callable tool, with JSON Schema generated from its signature via Pydantic.
+- **`@tool` decorator** that turns an async Python function into an LLM-callable tool, with JSON Schema generated from its signature via Pydantic. When one message calls several tools, anything that changes state runs alone and in order; mark a tool `@tool(read_only=True)` to let it run alongside other reads.
 - **Filesystem extension loader** — drop a `.py` file with `@tool`-decorated functions and an optional `SYSTEM_PROMPT` constant into a directory, point `--extension-dir` at it, and the agent picks up the new tools.
 - **Agent Skills** ([`SKILL.md`](https://agentskills.io/specification)) — drop a directory of markdown instructions in and point `--skill-dir` at it. Names and descriptions go in the system prompt; the agent opens the full file with `read` only when a task matches. No Python, no prompt edits, and directories written for other harnesses load as-is.
 - **Sub-agents** — declare a nested agent in a `.py` file and it becomes a `spawn_<name>` tool the model can delegate to, with its own system prompt and a subset of the parent's tools. The parent gets the result; the child's own turns stay out of its context and go to a linked transcript.
