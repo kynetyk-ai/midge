@@ -162,6 +162,14 @@ class SubagentTool(Tool):
         self.spec = spec
         self.runtime: SubagentRuntime | None = None
 
+    @property
+    def read_only(self) -> bool:
+        """Derived, never declared: a child is read-only only if everything it
+        may call is. So an explorer allowed `bash` is serialized like `bash`,
+        whatever its description says — the allowlist is the fact (#103).
+        """
+        return self.runtime is not None and _reads_only(self.spec, self.runtime.registry)
+
     def rebound(self, runtime: SubagentRuntime) -> SubagentTool:
         """A copy bound to `runtime`.
 
@@ -350,6 +358,22 @@ def _cycles(agents: dict[str, SubagentTool]) -> list[list[str]]:
     for name in agents:
         walk(name, [])
     return found
+
+
+def _reads_only(spec: SubagentSpec, registry: ToolRegistry, seen: frozenset[str] = frozenset()) -> bool:
+    for t in registry:
+        if t.name not in spec.tools:
+            continue
+        if isinstance(t, SubagentTool):
+            # A cycle is denied at run time (see `_child_registry`), so a spawn
+            # tool already on the path contributes nothing here either.
+            if t.spec.name in seen or t.spec.name == spec.name:
+                continue
+            if not _reads_only(t.spec, registry, seen | {spec.name}):
+                return False
+        elif not t.read_only:
+            return False
+    return True
 
 
 def _child_registry(
