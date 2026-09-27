@@ -195,3 +195,54 @@ async def test_bash_tail_truncates_long_output() -> None:
     assert "truncated" in out
     assert "line3000" in out
     assert "line1\n" not in out
+
+
+# --- #97: a near miss says what to fix -------------------------------------
+
+
+async def _edit_error(tmp_path: Path, content: str, old: str) -> str:
+    f = tmp_path / "doc.md"
+    f.write_text(content)
+    with pytest.raises(ValueError) as info:
+        await edit.invoke({"path": str(f), "edits": [{"old_text": old, "new_text": "x"}]})
+    assert f.read_text() == content, "a near miss must never be applied"
+    return str(info.value)
+
+
+async def test_edit_names_a_whitespace_only_difference(tmp_path: Path) -> None:
+    # The first failure #97 recorded: a list item's continuation indent dropped.
+    content = "intro\n\n1. Add the field, with prose\n   above it saying *why*.\n2. Next\n"
+    msg = await _edit_error(tmp_path, content, "with prose\nabove it saying *why*.")
+    assert "not found" in msg
+    assert "whitespace" in msg
+    assert "lines 3-4" in msg
+    assert "   above it saying *why*." in msg
+
+
+async def test_edit_points_at_the_closest_region(tmp_path: Path) -> None:
+    # The second: one word corrupted mid-string.
+    content = "a\nround-trips to `Config()` with no\ndiagnostics. A key in the example\nz\n"
+    msg = await _edit_error(
+        tmp_path, content, "round-trips to `Config()` with no\nostics. A key in the example"
+    )
+    assert "closest match is lines 2-3" in msg
+    assert "first differing at line 3" in msg
+    assert "diagnostics. A key" in msg
+
+
+async def test_edit_finds_a_near_miss_inside_a_longer_line(tmp_path: Path) -> None:
+    content = "x = 1\nresult = compute(alpha, beta, gamma)  # the main call\ny = 2\n"
+    msg = await _edit_error(tmp_path, content, "result = compute(alpha, betta, gamma)")
+    assert "closest match is line 2" in msg
+
+
+async def test_edit_says_when_nothing_is_close(tmp_path: Path) -> None:
+    msg = await _edit_error(tmp_path, "alpha\nbeta\n", "something else entirely here")
+    assert "nothing in the file is close" in msg
+
+
+async def test_edit_ambiguity_says_where(tmp_path: Path) -> None:
+    f = tmp_path / "code.py"
+    f.write_text("foo\nbar\nfoo\n")
+    with pytest.raises(ValueError, match=r"multiple locations \(lines 1, 3\)"):
+        await edit.invoke({"path": str(f), "edits": [{"old_text": "foo", "new_text": "x"}]})

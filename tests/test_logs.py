@@ -90,6 +90,31 @@ def test_log_file_receives_records(tmp_path: Path) -> None:
     assert "INFO" in text
 
 
+def test_a_log_file_in_a_missing_directory_is_created(tmp_path: Path) -> None:
+    # #105: this crashed startup with a raw traceback.
+    path = tmp_path / "nope" / "deep" / "midge.log"
+    configure(log=LogConfig(level="INFO", file=path))
+
+    logging.getLogger("midge.agent").info("turn_start")
+    for h in logging.getLogger("midge").handlers:
+        h.flush()
+    assert "turn_start" in path.read_text(encoding="utf-8")
+
+
+def test_an_unusable_log_file_falls_back_and_says_so(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    blocker = tmp_path / "a-file"
+    blocker.write_text("")  # a file where a directory is needed
+    fallback = logging.NullHandler()
+
+    with caplog.at_level(logging.WARNING, logger="midge"):
+        configure(log=LogConfig(file=blocker / "midge.log"), fallback=fallback)
+
+    assert logging.getLogger("midge").handlers == [fallback]
+    assert any(r.getMessage().startswith("log_file_unusable") for r in caplog.records)
+
+
 def test_explicit_handler_wins_over_the_configured_file(tmp_path: Path) -> None:
     unused = tmp_path / "unused.log"
     handler = logging.NullHandler()
