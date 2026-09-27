@@ -323,3 +323,14 @@ async def test_grep_explains_a_bad_regex(tmp_path: Path) -> None:
 def test_the_lookup_tools_are_read_only() -> None:
     assert read.read_only and ls.read_only and grep.read_only
     assert not (write.read_only or edit.read_only or bash.read_only)
+
+
+def test_read_declares_it_can_open_a_skill_file() -> None:
+    assert read.reads_paths
+    assert not (ls.reads_paths or grep.reads_paths or bash.reads_paths)
+
+
+async def test_a_spill_file_says_midge(tmp_path: Path) -> None:
+    # #108: the model is shown this path, and it named the project midge was ported from.
+    out = await bash.invoke({"command": "seq 1 20000"})  # past the 50 KB spill threshold
+    assert "/midge_bash_" in out and "pi_bash_" not in out

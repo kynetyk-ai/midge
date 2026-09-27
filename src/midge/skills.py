@@ -28,11 +28,15 @@ import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 from xml.sax.saxutils import escape
 
 import yaml
 
 from midge.messages import UserMessage
+
+if TYPE_CHECKING:
+    from midge.tools import Tool
 
 _SKILL_FILE = "SKILL.md"
 _SKIP_DIRS = frozenset({"node_modules", "__pycache__"})
@@ -103,19 +107,31 @@ def load_skills(sources: Iterable[Path | str]) -> list[Skill]:
     return list(skills.values())
 
 
-def skills_prompt(skills: Iterable[Skill]) -> str:
-    """The `<available_skills>` catalogue, or `''` when nothing is invocable.
+def path_reader(tools: Iterable[Tool]) -> str | None:
+    """The name of a tool that can open a skill's file, or None.
 
-    Only ever append this when a read-capable tool is registered — advertising
-    skills the model has no way to open is worse than saying nothing.
+    The catalogue gives the model absolute paths and asks it to open one, so it
+    is only worth showing when some tool declares it can (`reads_paths`). This
+    used to be a check for a tool literally named `read`, which tied skills to
+    the coding tools: a domain that dropped them lost its catalogue silently.
+    """
+    return next((t.name for t in tools if t.reads_paths), None)
+
+
+def skills_prompt(skills: Iterable[Skill], *, reader: str | None) -> str:
+    """The `<available_skills>` catalogue, or `''` when there is nothing to show.
+
+    `''` too when `reader` is None — advertising skills the model has no way to
+    open is worse than saying nothing. They stay reachable through `/skill:`,
+    which the harness expands itself and which needs no tool at all.
     """
     visible = [s for s in skills if s.model_invocable]
-    if not visible:
+    if not visible or reader is None:
         return ""
 
     lines = [
         "The following skills provide specialized instructions for specific tasks.",
-        "Use the read tool to load a skill's file when the task matches its description.",
+        f"Use the {reader} tool to load a skill's file when the task matches its description.",
         "When a skill file references a relative path, resolve it against the skill's "
         "directory (the one containing SKILL.md) and use that absolute path in tool calls.",
         "",
@@ -301,6 +317,7 @@ __all__ = [
     "default_skill_dirs",
     "find_skill",
     "load_skills",
+    "path_reader",
     "skill_message",
     "skills_prompt",
 ]

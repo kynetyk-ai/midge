@@ -36,6 +36,9 @@ _VARS = (
     "MIDGE_LOG_FILE",
     "MIDGE_LOG_PAYLOAD_CHARS",
     "MIDGE_PROFILE",
+    "MIDGE_SYSTEM_PROMPT",
+    "MIDGE_BUILTIN_TOOLS",
+    "MIDGE_APPROVE_TOOLS",
     "OPENAI_BASE_URL",
 )
 
@@ -609,3 +612,55 @@ def test_an_unparseable_extension_flag_falls_back_to_off(tmp_path: Path) -> None
     config, events = _diagnose(tmp_path, '[extensions]\nenabled = "maybe"')
     assert events == ["config_value_invalid"]
     assert config.extensions.enabled is False
+
+
+
+# --- [agent] and [tools]: what makes midge something other than a coding agent
+
+
+def test_a_configured_system_prompt(tmp_path: Path) -> None:
+    config = _load(tmp_path, project='[agent]\nsystem_prompt = "You are a librarian."\n')
+    assert config.agent.system_prompt == "You are a librarian."
+
+
+def test_a_system_prompt_file_is_read_and_wins(tmp_path: Path) -> None:
+    prompt = tmp_path / "prompt.md"
+    prompt.write_text("You are a librarian.\n\nBe brief.\n")
+    config, events = _diagnose(
+        tmp_path, f'[agent]\nsystem_prompt = "inline"\nsystem_prompt_file = "{prompt}"\n'
+    )
+    assert config.agent.system_prompt == "You are a librarian.\n\nBe brief."
+    assert events == ["config_agent_prompt_both"]
+
+
+def test_an_unreadable_prompt_file_degrades_to_the_default(tmp_path: Path) -> None:
+    config, events = _diagnose(tmp_path, '[agent]\nsystem_prompt_file = "/no/such/prompt.md"\n')
+    assert config.agent.system_prompt is None
+    assert events == ["config_agent_prompt_file_unreadable"]
+
+
+@pytest.mark.parametrize(
+    ("body", "want"),
+    [
+        ("", True),
+        ("[tools]\nbuiltin = false\n", False),
+        ('[tools]\nbuiltin = ["read", "ls"]\n', ("read", "ls")),
+    ],
+)
+def test_builtin_tools(tmp_path: Path, body: str, want: object) -> None:
+    assert _load(tmp_path, project=body).tools.builtin == want
+
+
+def test_builtin_tools_from_the_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MIDGE_BUILTIN_TOOLS", "read, grep")
+    assert _load(tmp_path).tools.builtin == ("read", "grep")
+    monkeypatch.setenv("MIDGE_BUILTIN_TOOLS", "off")
+    assert _load(tmp_path).tools.builtin is False
+
+
+def test_a_bad_builtin_value_degrades_to_all(tmp_path: Path) -> None:
+    config, events = _diagnose(tmp_path, "[tools]\nbuiltin = 3\n")
+    assert config.tools.builtin is True
+    assert events == ["config_value_invalid"]

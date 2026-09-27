@@ -1347,7 +1347,7 @@ async def test_a_non_invocable_skill_is_listed_but_not_advertised(tmp_path: Path
     purpose."""
     _write_skill(tmp_path / "manual", "manual", extra="disable-model-invocation: true\n")
     skills = load_skills([tmp_path])
-    assert skills_prompt(skills) == ""
+    assert skills_prompt(skills, reader="read") == ""
 
     agent = Agent(client=Client(), model="m")
     _server, inbox, outbox, task = _server_with_skills(agent, skills)
@@ -1492,7 +1492,7 @@ _READ_EXT = '''
 from midge.tools import tool
 
 
-@tool
+@tool(reads_paths=True)
 async def read(path: str) -> str:
     """Read a file."""
     return path
@@ -1877,8 +1877,8 @@ async def test_a_broken_extension_is_skipped_and_the_rest_load(tmp_path: Path) -
 
 async def test_reloading_extensions_can_remove_the_skills_catalogue(tmp_path: Path) -> None:
     """The one place the targets are not independent. The catalogue tells the
-    model to open a `SKILL.md`, so it is gated on a `read` tool — and an
-    extensions reload can take that tool away without any skill changing."""
+    model to open a `SKILL.md`, so it is gated on a tool that reads paths — and
+    an extensions reload can take that tool away without any skill changing."""
     ext = tmp_path / "ext"
     reader = _write_ext(ext, "reader", _READ_EXT)
     skills_dir = tmp_path / "skills"
