@@ -31,6 +31,29 @@ from midge.tools import Tool, ToolRegistry
 _BUILTIN_TOOL_ROOT = Path(__file__).parent / "tools"
 BUILTIN_TOOL_DIRS: list[Path] = [_BUILTIN_TOOL_ROOT / "coding"]
 
+
+def builtin_sources(builtin: bool | tuple[str, ...]) -> list[Path]:
+    """The built-in directories to load for a `[tools] builtin` setting."""
+    return [] if builtin is False else list(BUILTIN_TOOL_DIRS)
+
+
+def keep_builtins(registry: ToolRegistry, builtin: bool | tuple[str, ...]) -> ToolRegistry:
+    """`registry` with only the named built-ins, when `builtin` names some.
+
+    A projection after loading rather than a narrower load, because the
+    built-ins share a directory. Extension tools always pass through — this
+    setting is about midge's defaults, not what a domain brought. A name that
+    is not a built-in is reported rather than fatal, the rule for config.
+    """
+    if isinstance(builtin, bool):
+        return registry
+    from midge.tools import coding
+
+    names = {t.name for t in vars(coding).values() if isinstance(t, Tool)}
+    for unknown in sorted(set(builtin) - names):
+        _logger.warning("tools_builtin_unknown name=%s known=%s", unknown, ",".join(sorted(names)))
+    return ToolRegistry([t for t in registry if t.name not in names or t.name in builtin])
+
 _logger = logging.getLogger(__name__)
 
 

@@ -413,3 +413,55 @@ def test_sub_agents_are_bound_once_in_either_mode(
         main(["--no-session", "--extension-dir", str(root), *(["--rpc"] if rpc_mode else [])])
 
     assert sum("subagents_bound" in r.getMessage() for r in caplog.records) == 1
+
+
+
+# --- M3: retargeting with config alone --------------------------------------
+
+
+def test_a_configured_prompt_is_the_identity_of_a_new_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_config(tmp_path, '[agent]\nsystem_prompt = "You are a librarian."\n')
+    agent = _start(tmp_path, monkeypatch, [])
+    assert agent.system_prompt is not None
+    assert agent.system_prompt.startswith("You are a librarian.")
+    assert BASE_SYSTEM_PROMPT not in agent.system_prompt
+
+
+def test_a_resumed_session_keeps_the_prompt_it_recorded(tmp_path: Path) -> None:
+    path = tmp_path / "s.jsonl"
+    with Session.new(path, model="m", system_prompt="recorded identity"):
+        pass
+    _model, durable = resume_identity(
+        Session.load(path), configured="m", default_prompt="configured identity"
+    )
+    assert durable == "recorded identity"
+    bare = tmp_path / "bare.jsonl"
+    with Session.new(bare, model="m"):
+        pass
+    _model, durable = resume_identity(
+        Session.load(bare), configured="m", default_prompt="configured identity"
+    )
+    assert durable == "configured identity"
+
+
+def test_no_builtins_leaves_only_what_extensions_bring(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _with_extension_dir(tmp_path, "ext")
+    _write_config(tmp_path, "[tools]\nbuiltin = false\n")
+    agent = _start(tmp_path, monkeypatch, ["--extension-dir", str(tmp_path / "ext")])
+    assert {t.name for t in agent.tools} == {"autoloaded_marker"}
+
+
+def test_named_builtins_keep_only_those(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    _with_extension_dir(tmp_path, "ext")
+    _write_config(tmp_path, '[tools]\nbuiltin = ["read", "nope"]\n')
+    monkeypatch.setattr(cli, "configure_logging", lambda *a, **kw: None)
+    with caplog.at_level(logging.WARNING, logger="midge"):
+        agent = _start(tmp_path, monkeypatch, ["--extension-dir", str(tmp_path / "ext")])
+    assert {t.name for t in agent.tools} == {"read", "autoloaded_marker"}
+    assert any("tools_builtin_unknown name=nope" in r.getMessage() for r in caplog.records)

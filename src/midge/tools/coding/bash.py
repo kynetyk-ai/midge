@@ -78,7 +78,7 @@ async def _terminate(proc: asyncio.subprocess.Process) -> None:
 def _format_output(output: str, returncode: int) -> str:
     spill_path: str | None = None
     if len(output.encode("utf-8")) > _MAX_BYTES:
-        fd, spill_path = tempfile.mkstemp(prefix="pi_bash_", suffix=".log")
+        fd, spill_path = tempfile.mkstemp(prefix="midge_bash_", suffix=".log")
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(output)
         # The model is told the path; the operator otherwise never learns a

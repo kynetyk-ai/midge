@@ -185,6 +185,25 @@ max_delay = 60.0
 # dir = ".agents/extensions"
 
 
+[agent]
+# The base system prompt for a new session — the agent's identity when no
+# profile is active. Unset, midge introduces itself as a coding assistant. A
+# resumed session keeps the prompt it recorded; a profile replaces both.
+# `system_prompt_file` is read instead when set, since a real prompt is
+# paragraphs. Env: MIDGE_SYSTEM_PROMPT
+# system_prompt = "You are a research assistant for a small biotech team."
+# system_prompt_file = ".midge/prompt.md"
+
+
+[tools]
+# Which built-in coding tools load: true (all of read, ls, grep, write, edit,
+# bash), false (none — a domain supplies its own through extensions), or a list
+# of names. Keep `read` if the domain uses skills: the skills catalogue is only
+# shown when some tool can open a file by path. Env: MIDGE_BUILTIN_TOOLS
+# (comma-separated).
+builtin = true
+
+
 [tui]
 # Ask before running any tool that is not read-only — `bash`, `write`, `edit`,
 # an extension's tool, a sub-agent that may call one. `y` allows once, `a`

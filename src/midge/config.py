@@ -124,6 +124,33 @@ class ExtensionConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class AgentConfig:
+    """What the agent is when no profile says otherwise.
+
+    `system_prompt` is the base prompt for a *new* session. A resumed one keeps
+    the prompt it recorded, and a profile replaces both — so this is the
+    domain's default identity, the thing that stops every agent without a
+    profile from introducing itself as a coding assistant. Already resolved:
+    `[agent] system_prompt_file`, when set, has been read into it.
+    """
+
+    system_prompt: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ToolsConfig:
+    """Which of midge's built-in coding tools load.
+
+    `True` loads all of them, `False` none, and a tuple only those named — a
+    notes domain might keep `read` for skills and drop `bash`. Extension tools
+    are unaffected either way. Names are checked against the built-ins where
+    they are loaded, not here, because only the loader knows what exists.
+    """
+
+    builtin: bool | tuple[str, ...] = True
+
+
+@dataclass(frozen=True, slots=True)
 class TuiConfig:
     """What only the interactive front-end does.
 
@@ -192,6 +219,8 @@ class Config:
     extensions: ExtensionConfig = ExtensionConfig()
     session: SessionConfig = SessionConfig()
     tui: TuiConfig = TuiConfig()
+    agent: AgentConfig = AgentConfig()
+    tools: ToolsConfig = ToolsConfig()
     subagents: SubagentConfig = SubagentConfig()
     # The model registry. Empty is permissive — any model string is accepted and
     # goes to the single provider above, which is every install that predates
@@ -250,6 +279,8 @@ class Config:
                 enabled=src.flag("session", "enabled", "MIDGE_SESSION", default=True),
                 dir=src.path("session", "dir", "MIDGE_SESSION_DIR"),
             ),
+            agent=AgentConfig(system_prompt=_system_prompt(src)),
+            tools=ToolsConfig(builtin=src.names("tools", "builtin", "MIDGE_BUILTIN_TOOLS")),
             tui=TuiConfig(
                 approve_tools=src.flag(
                     "tui", "approve_tools", "MIDGE_APPROVE_TOOLS", default=True
@@ -268,6 +299,28 @@ class Config:
                 Diagnostic("config_provider_singular_ignored", {"in_favour_of": "providers"})
             )
         return config, diagnostics
+
+
+def _system_prompt(src: _Source) -> str | None:
+    """`[agent] system_prompt`, or the contents of `system_prompt_file`.
+
+    A file because a real identity prompt is paragraphs, and TOML makes
+    multi-line strings easy to get subtly wrong. Both set is ambiguous: the
+    file wins, since it is the more deliberate of the two, and it is reported.
+    An unreadable file degrades to no prompt configured — the default identity
+    — with a diagnostic, never a failure to start.
+    """
+    inline = src.text("agent", "system_prompt", "MIDGE_SYSTEM_PROMPT")
+    path = src.path("agent", "system_prompt_file")
+    if path is None:
+        return inline
+    if inline is not None:
+        src.report("config_agent_prompt_both", {"using": "system_prompt_file"})
+    try:
+        return path.read_text(encoding="utf-8").strip() or None
+    except OSError as e:
+        src.report("config_agent_prompt_file_unreadable", {"path": str(path), "error": str(e)})
+        return None
 
 
 def config_paths(*, cwd: Path | None = None, home: Path | None = None) -> list[Path]:
@@ -434,6 +487,30 @@ class _Source:
         if lowered in _FALSE:
             return False
         return self._bad(section, key, raw, "boolean", default)
+
+    def names(
+        self, section: str | None, key: str, env: str | None = None, *, default: Any = True
+    ) -> bool | tuple[str, ...]:
+        """All, none, or a list: `true`, `false`, or `["read", "ls"]`.
+
+        From the environment the list is comma-separated, since a variable has
+        no arrays: `MIDGE_BUILTIN_TOOLS=read,ls`.
+        """
+        raw, _ = self._raw(section, key, env)
+        if raw is None:
+            return default
+        if isinstance(raw, bool):
+            return raw
+        if isinstance(raw, str):
+            lowered = raw.strip().lower()
+            if lowered in _TRUE:
+                return True
+            if lowered in _FALSE:
+                return False
+            return tuple(n.strip() for n in raw.split(",") if n.strip())
+        if isinstance(raw, list) and all(isinstance(n, str) for n in raw):
+            return tuple(raw)
+        return self._bad(section, key, raw, "boolean or list of names", default)
 
     def path(
         self, section: str | None, key: str, env: str | None = None, *, default: Any = None

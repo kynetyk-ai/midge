@@ -42,12 +42,18 @@ class Tool:
         fn: ToolFn,
         params_model: type[BaseModel],
         read_only: bool = False,
+        reads_paths: bool = False,
     ) -> None:
         self.name = name
         self.description = description
         self.fn = fn
         self.params_model = params_model
         self._read_only = read_only
+        # Takes an absolute file path and returns the file's text — the one
+        # thing the skills catalogue asks a model to do with a skill's path.
+        # Declared rather than inferred from a name, so a domain that drops
+        # the coding tools can still offer skills through a reader of its own.
+        self.reads_paths = reads_paths
 
     @property
     def read_only(self) -> bool:
@@ -88,6 +94,7 @@ def tool(
     name: str | None = None,
     description: str | None = None,
     read_only: bool = False,
+    reads_paths: bool = False,
 ) -> Callable[[ToolFn], Tool]: ...
 def tool(
     fn: ToolFn | None = None,
@@ -96,6 +103,7 @@ def tool(
     name: str | None = None,
     description: str | None = None,
     read_only: bool = False,
+    reads_paths: bool = False,
 ) -> Tool | Callable[[ToolFn], Tool]:
     def wrap(fn: ToolFn) -> Tool:
         if not inspect.iscoroutinefunction(fn):
@@ -111,6 +119,7 @@ def tool(
             fn=fn,
             params_model=params_model,
             read_only=read_only,
+            reads_paths=reads_paths,
         )
 
     if fn is None:

@@ -15,6 +15,7 @@ from midge.skills import (
     default_skill_dirs,
     find_skill,
     load_skills,
+    path_reader,
     skill_message,
     skills_prompt,
 )
@@ -281,13 +282,13 @@ def test_default_skill_dirs_are_absolute_and_project_first(
 
 
 def test_skills_prompt_empty_when_no_skills() -> None:
-    assert skills_prompt([]) == ""
+    assert skills_prompt([], reader="read") == ""
 
 
 def test_skills_prompt_lists_metadata(tmp_path: Path) -> None:
     write_skill(tmp_path / "deploy")
     skills = load_skills([tmp_path])
-    prompt = skills_prompt(skills)
+    prompt = skills_prompt(skills, reader="read")
 
     assert "<available_skills>" in prompt and "</available_skills>" in prompt
     assert "<name>deploy</name>" in prompt
@@ -298,7 +299,7 @@ def test_skills_prompt_lists_metadata(tmp_path: Path) -> None:
 
 def test_skills_prompt_escapes_xml(tmp_path: Path) -> None:
     write_skill(tmp_path / "deploy", frontmatter='name: deploy\ndescription: "A & B < C"')
-    prompt = skills_prompt(load_skills([tmp_path]))
+    prompt = skills_prompt(load_skills([tmp_path]), reader="read")
 
     assert "A &amp; B &lt; C" in prompt
     assert "A & B < C" not in prompt
@@ -315,7 +316,7 @@ def test_disable_model_invocation_hides_from_catalogue_but_stays_loaded(
 
     assert [s.name for s in skills] == ["manual"]
     assert skills[0].model_invocable is False
-    assert skills_prompt(skills) == ""
+    assert skills_prompt(skills, reader="read") == ""
     assert find_skill(skills, "manual") is not None
 
 
@@ -411,7 +412,7 @@ def test_cli_omits_the_catalogue_without_a_read_tool(
     write_skill(tmp_path / "packs" / "deploy")
     # Retargeting away from the coding pack is the case this gate exists for:
     # advertising skills the model cannot open is worse than saying nothing.
-    monkeypatch.setattr(cli, "BUILTIN_TOOL_DIRS", [])
+    monkeypatch.setenv("MIDGE_BUILTIN_TOOLS", "false")
 
     agent = _run_cli(["--skill-dir", str(tmp_path / "packs")], monkeypatch)
 
@@ -443,3 +444,57 @@ def test_skill_is_frozen(tmp_path: Path) -> None:
     with pytest.raises(AttributeError):
         skill.name = "other"  # type: ignore[misc]
     assert isinstance(skill, Skill)
+
+
+
+# --- M3: the catalogue follows a declared reader, not a name ----------------
+
+
+def test_the_catalogue_names_whichever_tool_reads_paths(tmp_path: Path) -> None:
+    from midge.tools import tool
+
+    @tool(reads_paths=True)
+    async def open_file(path: str) -> str:
+        """Open."""
+        return path
+
+    @tool
+    async def read(path: str) -> str:
+        """A tool that happens to be called read, and declares nothing."""
+        return path
+
+    write_skill(tmp_path / "deploy")
+    skills = load_skills([tmp_path])
+    assert path_reader([read]) is None
+    assert skills_prompt(skills, reader=path_reader([read])) == ""
+    prompt = skills_prompt(skills, reader=path_reader([read, open_file]))
+    assert "Use the open_file tool" in prompt
+
+
+def test_a_profile_without_a_reader_gets_no_catalogue_at_startup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The catalogue used to be composed before the profile projected the
+    # tools, so a profile that dropped `read` was still told to use it.
+    monkeypatch.chdir(tmp_path)
+    write_skill(tmp_path / "packs" / "deploy")
+    ext = tmp_path / "ext"
+    ext.mkdir()
+    (ext / "shell.py").write_text(
+        "from midge.profiles import Profile\n"
+        "SHELL = Profile(name='shell', description='d', prompt='Only a shell.', tools=('bash',))\n"
+    )
+    agent = _run_cli(
+        ["--skill-dir", str(tmp_path / "packs"), "--extension-dir", str(ext), "--profile", "shell"],
+        monkeypatch,
+    )
+    assert agent.system_prompt is not None
+    assert "available_skills" not in agent.system_prompt
+
+
+def test_a_skill_is_still_reachable_with_no_tools_at_all(tmp_path: Path) -> None:
+    # `/skill:` is expanded by the harness, so a domain with no reader — or no
+    # tools — can still use skills; it just is not offered a catalogue.
+    write_skill(tmp_path / "deploy")
+    message = skill_message(load_skills([tmp_path]), "deploy")
+    assert '<skill name="deploy"' in str(message.content)
