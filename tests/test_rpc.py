@@ -2783,3 +2783,79 @@ async def test_the_server_compacts_past_the_threshold(tmp_path: Path) -> None:
     assert isinstance(frame["cut_index"], int)
     assert frame["message_count"] == len(agent.history)
     assert "error" not in frame
+
+
+# --- M2: no malformed input ends the process --------------------------------
+
+
+async def test_an_over_long_line_is_refused_and_the_loop_keeps_serving() -> None:
+    # #100: the refusal is `serve`'s; `read_bounded_line` is what raises it.
+    from midge.rpc import LineTooLong
+
+    lines: list[bytes | BaseException] = [
+        LineTooLong(17 * 1024 * 1024, 16 * 1024 * 1024),
+        b'{"id": "s", "type": "get_state"}\n',
+        b"",
+    ]
+
+    async def read_line() -> bytes:
+        nxt = lines.pop(0)
+        if isinstance(nxt, BaseException):
+            raise nxt
+        return nxt
+
+    server = RpcServer(Agent(client=Client(), model="m"))
+    outbox = _Outbox()
+    await server.serve(read_line=read_line, write=outbox.write)
+
+    refused, state = outbox.lines
+    assert refused["command"] == "parse" and refused["success"] is False
+    assert "exceeds the 16 MiB limit" in refused["error"]
+    assert state["id"] == "s" and state["success"] is True
+
+
+async def test_a_non_string_id_is_refused_and_the_command_does_not_run() -> None:
+    # #106: the id was coerced to nothing and the command ran anyway.
+    agent = Agent(client=Client(), model="m")
+    agent.history = [UserMessage(content="keep me")]
+    _, inbox, outbox, task = _start_server(agent)
+
+    await inbox.feed_text('{"id": {"a": 1}, "type": "clear_context"}\n')
+    await _wait_for(lambda: bool(outbox.lines))
+    inbox.close()
+    await task
+
+    [resp] = outbox.lines
+    assert resp["success"] is False
+    assert resp["error"] == "`id` must be a string"
+    assert "id" not in resp
+    assert len(agent.history) == 1
+
+
+async def test_an_invalid_argument_is_one_readable_line() -> None:
+    # #107: pydantic's text named `UseProfileParams` over several lines.
+    _, inbox, outbox, task = _start_server(Agent(client=Client(), model="m"))
+    resp = await _command(
+        inbox, outbox, {"id": "u", "type": "use_profile", "name": "x", "transcript": "sideways"}
+    )
+    extra = await _command(
+        inbox, outbox, {"id": "r", "type": "reload", "targets": ["skills"], "colour": "blue"}
+    )
+    inbox.close()
+    await task
+
+    for r in (resp, extra):
+        assert r["success"] is False
+        assert "\n" not in r["error"]
+        assert "Params" not in r["error"] and "errors.pydantic.dev" not in r["error"]
+    assert resp["error"].startswith("`transcript`: ")
+    assert extra["error"] == "`colour`: Extra inputs are not permitted"
+
+
+async def test_an_unknown_skill_is_refused_without_stray_quotes() -> None:
+    _, inbox, outbox, task = _start_server(Agent(client=Client(), model="m"))
+    resp = await _command(inbox, outbox, {"id": "p", "type": "prompt", "message": "/skill:nope"})
+    inbox.close()
+    await task
+
+    assert resp["error"] == "No skill named 'nope'"

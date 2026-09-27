@@ -1,10 +1,12 @@
 name: CI
 
 on:
+  # `develop` too: feature PRs land there, and a release PR into `main` used to
+  # be the first time a milestone's changes ever ran in CI.
   push:
-    branches: [main]
+    branches: [main, develop]
   pull_request:
-    branches: [main]
+    branches: [main, develop]
   workflow_dispatch:
 
 permissions:

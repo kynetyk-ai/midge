@@ -223,3 +223,28 @@ def test_writer_uses_a_draining_transport_for_a_pipe() -> None:
         reader.close()
 
     asyncio.run(go())
+
+
+async def test_a_line_past_the_limit_is_consumed_whole_and_reading_resumes() -> None:
+    # #100: `readline` would clear its buffer and raise, and the rest of the
+    # line would come back on the next read as if it were a command.
+    reader = asyncio.StreamReader(limit=64)
+    reader.feed_data(b"x" * 500 + b"\n" + b'{"type": "get_state"}\n')
+    reader.feed_eof()
+
+    with pytest.raises(rpc.LineTooLong) as info:
+        await rpc.read_bounded_line(reader, limit=64)
+    assert info.value.size == 501
+
+    assert await rpc.read_bounded_line(reader) == b'{"type": "get_state"}\n'
+    assert await rpc.read_bounded_line(reader) == b""
+
+
+async def test_an_over_long_line_at_eof_is_still_refused() -> None:
+    reader = asyncio.StreamReader(limit=64)
+    reader.feed_data(b"y" * 300)
+    reader.feed_eof()
+
+    with pytest.raises(rpc.LineTooLong):
+        await rpc.read_bounded_line(reader, limit=64)
+    assert await rpc.read_bounded_line(reader) == b""

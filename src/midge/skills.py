@@ -137,6 +137,18 @@ def find_skill(skills: Iterable[Skill], name: str) -> Skill | None:
     return next((s for s in skills if s.name == name), None)
 
 
+class UnknownSkill(KeyError):
+    """No skill by that name.
+
+    A `KeyError`, so every existing `except KeyError` still catches it — but
+    with `KeyError`'s `__str__` replaced, which reprs its argument and so put
+    stray quotes around the sentence a client was shown (#107).
+    """
+
+    def __str__(self) -> str:
+        return str(self.args[0]) if self.args else ""
+
+
 def skill_message(
     skills: Iterable[Skill], name: str, instructions: str | None = None
 ) -> UserMessage:
@@ -148,7 +160,7 @@ def skill_message(
     """
     skill = find_skill(skills, name)
     if skill is None:
-        raise KeyError(f"No skill named {name!r}")
+        raise UnknownSkill(f"No skill named {name!r}")
 
     body = _split_frontmatter(skill.path.read_text(encoding="utf-8"))[1].strip()
     block = (
@@ -285,6 +297,7 @@ def _warn_about_name(path: Path, name: str) -> None:
 
 __all__ = [
     "Skill",
+    "UnknownSkill",
     "default_skill_dirs",
     "find_skill",
     "load_skills",

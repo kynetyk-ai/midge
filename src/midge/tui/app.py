@@ -600,8 +600,16 @@ class PiApp(App[None]):
             # keeps the work already done in the turn.
             steering = self.agent.steering
             assert steering is not None, "steering is created in __init__"
-            steering.steer(self.controls.expand(message.value))
             log = self.query_one("#log", VerticalScroll)
+            try:
+                expanded = self.controls.expand(message.value)
+            except (KeyError, OSError) as e:
+                # A mistyped `/skill:` mid-turn used to raise out of the
+                # handler; RPC refuses it, and so does this.
+                await log.mount(StatusLine(f"[not queued: {e}]"))
+                log.scroll_end(animate=False)
+                return
+            steering.steer(expanded)
             await log.mount(StatusLine(f"[queued: {message.value}]"))
             log.scroll_end(animate=False)
             return

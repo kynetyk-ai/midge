@@ -57,10 +57,12 @@ from midge.rpc.transport import (
     FLUSH_TIMEOUT,
     OUTBOX_FRAMES,
     READ_LIMIT,
+    LineTooLong,
     ReadLineFn,
     WriteFn,
     _stdout_writer,
     claim_stdout,
+    read_bounded_line,
     serve_stdio,
 )
 from midge.rpc.wire import event_to_wire
@@ -74,6 +76,7 @@ __all__ = [
     "SKILL_COMMAND_PREFIX",
     "TRANSCRIPT_OPTIONS",
     "BuiltinCommand",
+    "LineTooLong",
     "ReadLineFn",
     "RpcServer",
     "WriteFn",
@@ -82,5 +85,6 @@ __all__ = [
     "_stdout_writer",
     "claim_stdout",
     "event_to_wire",
+    "read_bounded_line",
     "serve_stdio",
 ]

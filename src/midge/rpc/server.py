@@ -15,6 +15,8 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any, Literal
 
+from pydantic import ValidationError
+
 from midge.agent import Agent, SteeringQueue
 from midge.client import Error
 from midge.commands import (
@@ -32,7 +34,13 @@ from midge.config import SubagentConfig
 from midge.messages import AssistantMessage, TextContent, UserMessage
 from midge.persistence import Session
 from midge.profiles import ProfileSet
-from midge.rpc.transport import FLUSH_TIMEOUT, OUTBOX_FRAMES, ReadLineFn, WriteFn
+from midge.rpc.transport import (
+    FLUSH_TIMEOUT,
+    OUTBOX_FRAMES,
+    LineTooLong,
+    ReadLineFn,
+    WriteFn,
+)
 from midge.rpc.wire import event_to_wire
 from midge.skills import Skill
 
@@ -48,6 +56,20 @@ __all__ = [
 ]
 
 _logger = logging.getLogger(__name__)
+
+
+def _summarize(exc: ValidationError) -> str:
+    """One line a client can show: which field, and what is wrong with it.
+
+    `str()` of a pydantic error is several lines naming the internal model
+    (`UseProfileParams`) and linking pydantic's docs — written for the author
+    of the model, not for whoever sent the command (#107).
+    """
+    parts = []
+    for err in exc.errors():
+        where = ".".join(str(p) for p in err["loc"])
+        parts.append(f"`{where}`: {err['msg']}" if where else err["msg"])
+    return "; ".join(parts)
 
 
 class RpcServer:
@@ -149,7 +171,12 @@ class RpcServer:
         pump = asyncio.ensure_future(self._pump())
         try:
             while True:
-                line = await read_line()
+                try:
+                    line = await read_line()
+                except LineTooLong as e:
+                    _logger.warning("rpc_line_too_long size=%d limit=%d", e.size, e.limit)
+                    await self._respond(None, "parse", success=False, error=str(e))
+                    continue
                 if not line:
                     break
                 # `strip`, not `rstrip("\r\n")`: a whitespace-only line is a
@@ -186,6 +213,17 @@ class RpcServer:
         cmd_id_raw = cmd.get("id")
         cmd_id = cmd_id_raw if isinstance(cmd_id_raw, str) else None
         cmd_type = cmd.get("type")
+        if "id" in cmd and cmd_id is None:
+            # Refused rather than run: a client that sent an id is waiting for
+            # a response carrying it, and would never learn this one's outcome
+            # (#106). Every other malformed field is refused the same way.
+            await self._respond(
+                None,
+                cmd_type if isinstance(cmd_type, str) else "unknown",
+                success=False,
+                error="`id` must be a string",
+            )
+            return
         _logger.info("rpc_command type=%s id=%s", cmd_type, cmd_id or "-")
         match cmd_type:
             case "prompt":
@@ -467,8 +505,8 @@ class RpcServer:
             params = UseProfileParams.model_validate(
                 {k: v for k, v in cmd.items() if k not in ("id", "type")}
             )
-        except ValueError as e:
-            await self._respond(cmd_id, "use_profile", success=False, error=str(e))
+        except ValidationError as e:
+            await self._respond(cmd_id, "use_profile", success=False, error=_summarize(e))
             return
         await self._call(
             cmd_id,
@@ -493,8 +531,8 @@ class RpcServer:
             params = ReloadParams.model_validate(
                 {k: v for k, v in cmd.items() if k not in ("id", "type")}
             )
-        except ValueError as e:
-            await self._respond(cmd_id, "reload", success=False, error=str(e))
+        except ValidationError as e:
+            await self._respond(cmd_id, "reload", success=False, error=_summarize(e))
             return
         try:
             data = await self.controls.reload(params.targets)
