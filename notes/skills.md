@@ -106,5 +106,6 @@ place for them, not the skill loader.
 pi gates the catalogue on a read-capable tool being registered, but in practice
 `read` is always there, so the check is near-vestigial. In midge it does real
 work: goal 3 is retargeting the harness to non-coding domains, and
-`examples/notes_agent.py` genuinely runs with no `read` tool. Without the gate
-that agent would be instructed to use a tool it does not have.
+the notes domain (`--profile notes`) genuinely runs with no `read` tool. Without
+the gate that agent would be instructed to use a tool it does not have. (Since
+M3 the gate is a tool declaring `reads_paths`, not a tool named `read`.)

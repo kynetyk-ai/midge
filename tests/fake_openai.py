@@ -18,7 +18,10 @@ from typing import Any
 
 
 class FakeOpenAI:
-    def __init__(self, replies: list[str]) -> None:
+    """`replies` are, in order, either text for the model to say or a tool call
+    to make: `{"tool": "add_note", "arguments": {"title": "x", ...}}`."""
+
+    def __init__(self, replies: list[str | dict[str, Any]]) -> None:
         self.replies = list(replies)
         self.bodies: list[dict[str, Any]] = []
         fake = self
@@ -27,11 +30,24 @@ class FakeOpenAI:
             def do_POST(self) -> None:
                 length = int(self.headers.get("Content-Length", 0))
                 fake.bodies.append(json.loads(self.rfile.read(length)))
-                text = fake.replies.pop(0) if fake.replies else "(no reply scripted)"
+                reply = fake.replies.pop(0) if fake.replies else "(no reply scripted)"
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream")
                 self.end_headers()
-                for delta, finish in (({"content": text}, None), ({}, "stop")):
+                if isinstance(reply, dict):
+                    call = {
+                        "index": 0,
+                        "id": f"call_{len(fake.bodies)}",
+                        "type": "function",
+                        "function": {
+                            "name": reply["tool"],
+                            "arguments": json.dumps(reply["arguments"]),
+                        },
+                    }
+                    steps = (({"tool_calls": [call]}, None), ({}, "tool_calls"))
+                else:
+                    steps = (({"content": reply}, None), ({}, "stop"))
+                for delta, finish in steps:
                     chunk = {
                         "id": "fake",
                         "object": "chat.completion.chunk",

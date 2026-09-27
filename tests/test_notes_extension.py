@@ -141,3 +141,17 @@ def test_extension_loads_through_load_extensions(
     expected = {"add_note", "search_notes", "read_note", "list_notes", "link_notes"}
     assert {t.name for t in registry} == expected
     assert "personal-notes" in prompt_addition
+
+
+def test_the_notes_profile_is_the_whole_domain() -> None:
+    from midge.hooks import Hooks
+    from midge.profiles import ProfileSet
+    from midge.profiles import validate as validate_profiles
+
+    profiles = ProfileSet()
+    registry, _ = load_extensions([_NOTES_FILE.parent], hooks=Hooks(), profiles=profiles)
+    assert validate_profiles(profiles, tools=registry, hook_names=set(), models=None) == []
+    notes = profiles.get("notes")
+    assert notes is not None
+    assert set(notes.tools) == {t.name for t in registry}
+    assert notes.prompt.startswith("You are a personal knowledge assistant")

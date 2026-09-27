@@ -19,7 +19,7 @@ The budget covers `src/midge/*.py`, the harness itself. `providers/`, `tools/` a
 - **JSONL session save/resume, on by default.** Every run records a transcript under `.midge/sessions/` unless you say otherwise. The format is append-only and documented: a rename or a context clear is a record appended and replayed on load, never a rewrite, so a crash can only ever damage the final line. A session spanning several files — a sub-agent writes its own — says so in both directions, so the whole run is walkable from any one of them. Anything that wants to view or watch a session reads the transcript directly.
 - **Context compaction** that summarizes old turns when a session gets long.
 - **Provider retry** with a cancellable, jittered backoff — rate limits, 5xx, and transport failures get a few attempts before the turn fails. When a 429 says `Retry-After`, that is honoured instead of the backoff, capped so a server asking for an hour cannot park a turn for one. A limit one request hits is shared with every other request on that provider, so concurrent sub-agents do not each spend a rejection learning the same thing. Retries stop once the response has started streaming, so nothing the model already emitted is replayed.
-- **Retargetable** — `examples/notes_agent.py` demonstrates a non-coding domain (personal-knowledge KB) running on the same harness with no core changes.
+- **Retargetable** — a non-coding domain is config, extensions and a profile, run through the same `midge` entrypoint. `midge --extension-dir examples/notes_extension --profile notes` is a personal-knowledge assistant with no coding tools and no core changes; [`docs/retargeting.md`](./docs/retargeting.md) builds one from an empty directory.
 
 ## Setup
 
@@ -156,15 +156,24 @@ Newline-delimited JSON. `get_commands` enumerates everything invocable — built
 ### Second domain (notes / personal knowledge)
 
 ```bash
-poetry run python -m examples.notes_agent
+midge --extension-dir examples/notes_extension --profile notes
 ```
 
-Same TUI, same agent, no coding tools — just `add_note`, `search_notes`, `read_note`, `list_notes`, `link_notes`. KB lives at `~/.midge-notes/kb.json` by default (override with `MIDGE_NOTES_KB`).
+The same `midge` — TUI, RPC, sessions, approval — but a different agent: the `notes` profile in
+`examples/notes_extension/notes.py` gives it a knowledge-assistant identity and only `add_note`,
+`search_notes`, `read_note`, `list_notes` and `link_notes`. No shell, no file editing. The KB lives
+at `~/.midge-notes/kb.json` by default (override with `MIDGE_NOTES_KB`). To make it the default for
+a project, put `[extensions] enabled = true` and `[profiles] default = "notes"` in its
+`.midge/config.toml`.
 
 ## Adapting to a new domain
 
-There are two levers, and they compose. **Extensions** add capabilities the agent
-did not have; **skills** teach it how to use the capabilities it already has.
+There are three levers, and they compose. **Extensions** add capabilities the agent
+did not have; **skills** teach it how to use the capabilities it already has; a **profile** says
+what the agent *is* — its identity and which tools it may use. Config covers the rest:
+`[agent] system_prompt` for a default identity, `[tools] builtin` for which coding tools load.
+[`docs/retargeting.md`](./docs/retargeting.md) walks through all of it, building a domain from an
+empty directory.
 
 ### Skills — markdown, no Python
 
@@ -364,7 +373,7 @@ for the design and what was deliberately rejected along with it.
 
 1. Write `.py` files with `@tool`-decorated async functions.
 2. Optionally add a module-level `SYSTEM_PROMPT` string to extend the agent's prompt.
-3. Drop the directory into `--extension-dir`, or copy `examples/notes_agent.py` and swap in your extension path + system prompt.
+3. Point `--extension-dir` at the directory, and declare a `Profile` in the same file for the domain's identity — see `examples/notes_extension/notes.py`.
 
 The harness deliberately separates from the "coding agent" identity. See `examples/notes_extension/` for a working example, and [`notes/extensions.md`](./notes/extensions.md) for design rationale.
 
@@ -395,7 +404,6 @@ src/midge/
 examples/
 ├── coding_agent.py    # one-shot CLI for the coding domain
 ├── rpc_client.py      # a minimal client for `midge --rpc` (stdlib only)
-├── notes_agent.py     # second-domain TUI demo
 ├── config.toml        # every config key, commented, with its default
 ├── approval_extension/ # tool-approval hook demo (a denylist: advisory, see #102)
 ├── allowlist_extension/ # a restriction that holds: named tools only, writes under cwd
