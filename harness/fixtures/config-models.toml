@@ -1,0 +1,33 @@
+# Same as config.toml, plus a `[models]` table.
+#
+# The drawer's model section and the palette's `set_model` entries only appear
+# once midge knows what the alternatives are — with an empty registry it cannot,
+# and deliberately offers nothing rather than a free-text prompt. This config is
+# how you make that half of the surface visible.
+
+[extensions]
+enabled = false
+
+[compaction]
+threshold = 8000
+keep_recent = 2000
+
+[subagents]
+max_concurrent = 2
+timeout = 45.0
+max_timeout = 60.0
+
+[retry]
+max_attempts = 3
+base_delay = 0.5
+max_delay = 10.0
+
+[providers.openai]
+kind = "openai"
+api_key_env = "OPENAI_API_KEY"
+
+[models."gpt-5.4-mini"]
+provider = "openai"
+
+[models."gpt-4o-mini"]
+provider = "openai"

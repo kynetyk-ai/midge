@@ -1,0 +1,11 @@
+# Every setting toybox understands, with its default shown.
+
+# How wide `text.wrap` breaks lines.
+# Env: TOYBOX_WIDTH
+width = 72
+
+# Where `tally` writes its cache. Omit to keep no cache.
+# cache_dir = ".toybox-cache"
+
+# Count words case-sensitively.
+case_sensitive = false

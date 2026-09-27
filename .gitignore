@@ -33,3 +33,6 @@ venv/
 # Agent runtime state (mirrors pi-mono's .pi/ convention)
 .midge/
 .midge-*/
+
+# Container harness: transcripts and read offsets from test runs
+harness/.state/
