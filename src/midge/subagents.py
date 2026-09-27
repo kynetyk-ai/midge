@@ -113,7 +113,7 @@ class SubagentRuntime:
     # and the session name a run identically.
     agent_id: str | None = None
     # Where a nested agent's events go: raw events plus an envelope, never
-    # wire-shaped. `event_to_wire` stays the one mapping layer, in `rpc.py`.
+    # wire-shaped. `event_to_wire` stays the one mapping layer, in `rpc/wire.py`.
     on_event: SubagentEvent | None = None
 
 
