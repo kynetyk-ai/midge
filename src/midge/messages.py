@@ -119,7 +119,11 @@ def repair_history(messages: list[Message]) -> list[Message]:
             # A failed turn produced either tool calls that never ran or no
             # content at all. Both are rejected on the next request, and the
             # rejection outlives the session because history is persisted.
-            if m.stop_reason in ("error", "aborted"):
+            # A *successful* turn can be empty too — a model that stops with
+            # nothing to say — and is refused just the same (#111). A text
+            # block that opened and never filled counts as nothing said.
+            said = any(isinstance(c, ToolCall) or c.text for c in m.content)
+            if m.stop_reason in ("error", "aborted") or not said:
                 continue
             issued.update(c.id for c in m.content if isinstance(c, ToolCall))
             out.append(m)

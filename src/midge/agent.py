@@ -7,8 +7,6 @@ from collections.abc import AsyncGenerator, AsyncIterator
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from pydantic import ValidationError
-
 from midge.client import (
     Client,
     Done,
@@ -42,7 +40,7 @@ from midge.messages import (
     ToolResultMessage,
     UserMessage,
 )
-from midge.tools import ToolRegistry
+from midge.tools import InvalidArguments, ToolNotFound, ToolRegistry
 
 INTERRUPTED_MESSAGE = "Interrupted by user before the tool finished."
 TRUNCATED_MESSAGE = (
@@ -468,10 +466,10 @@ class Agent:
                 content=[TextContent(text=text)],
                 is_error=False,
             )
-        except KeyError:
+        except ToolNotFound:
             _logger.warning("tool_not_found tool=%s id=%s", tc.name, tc.id)
             return _tool_error(tc, f"Tool {tc.name!r} not found")
-        except ValidationError as e:
+        except InvalidArguments as e:
             _logger.warning("tool_args_invalid tool=%s id=%s", tc.name, tc.id)
             return _tool_error(tc, f"Invalid arguments: {e}")
         except asyncio.CancelledError:

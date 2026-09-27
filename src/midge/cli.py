@@ -194,6 +194,9 @@ def main(argv: list[str] | None = None) -> None:
     configure_logging(
         None if args.rpc else tui_log_handler(config.log.file),
         log=config.log,
+        # Where records go if the configured file cannot be opened: stderr is
+        # fine beside the RPC protocol, and is the screen in the TUI.
+        fallback=None if args.rpc else tui_log_handler(),
     )
     emit_config_diagnostics(diagnostics)
 

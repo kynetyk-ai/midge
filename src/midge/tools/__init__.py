@@ -5,9 +5,28 @@ import typing
 from collections.abc import Awaitable, Callable, Iterator
 from typing import Any, overload
 
-from pydantic import BaseModel, ConfigDict, create_model
+from pydantic import BaseModel, ConfigDict, ValidationError, create_model
 
 ToolFn = Callable[..., Awaitable[Any]]
+
+
+class ToolNotFound(KeyError):
+    """The registry has no tool by that name.
+
+    Its own type because "not found" is the registry's answer, and a `KeyError`
+    raised *inside* a tool is the tool's — a missing note, a missing key. Both
+    were caught as `KeyError`, so a tool that failed was reported as a tool that
+    did not exist, and the model stopped calling it (#104).
+    """
+
+
+class InvalidArguments(ValueError):
+    """The model's arguments did not validate against the tool's schema.
+
+    Raised only around validation, for the same reason as `ToolNotFound`: a
+    pydantic `ValidationError` from a tool's own body is a failure of the tool,
+    not a mistake the model can fix by changing its arguments.
+    """
 
 
 class _ParamsBase(BaseModel):
@@ -35,13 +54,18 @@ class Tool:
             "parameters": self.params_model.model_json_schema(),
         }
 
+    def validate(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        try:
+            validated = self.params_model.model_validate(arguments)
+        except ValidationError as e:
+            raise InvalidArguments(str(e)) from e
+        return {f: getattr(validated, f) for f in self.params_model.model_fields}
+
     async def invoke(self, arguments: dict[str, Any], *, call_id: str | None = None) -> Any:
         # `call_id` is the provider's id for this tool call. The base tool has no
         # use for it; a subclass that produces its own artefacts uses it to tie
         # them back to the exact turn that asked for them.
-        validated = self.params_model.model_validate(arguments)
-        kwargs = {f: getattr(validated, f) for f in self.params_model.model_fields}
-        return await self.fn(**kwargs)
+        return await self.fn(**self.validate(arguments))
 
 
 @overload
@@ -141,5 +165,5 @@ class ToolRegistry:
     ) -> Any:
         t = self._tools.get(name)
         if t is None:
-            raise KeyError(f"Tool {name!r} not registered")
+            raise ToolNotFound(f"Tool {name!r} not registered")
         return await t.invoke(arguments, call_id=call_id)

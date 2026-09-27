@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 import pytest
 
@@ -144,6 +145,59 @@ async def test_tool_raising_exception_becomes_error_result() -> None:
     assert tool_result.is_error is True
     assert isinstance(tool_result.content[0], TextContent)
     assert "kaboom" in tool_result.content[0].text
+
+
+async def _result_text(fn_tool: Any, args: str) -> str:
+    client = Client()
+    install(
+        client,
+        [
+            [tcall(index=0, id="c1", name=fn_tool.name, args=args), finish("tool_use")],
+            [say("ok"), finish()],
+        ],
+    )
+    agent = Agent(client=client, model="m", tools=ToolRegistry([fn_tool]))
+    await agent.run("go")
+    result = agent.history[2]
+    assert isinstance(result, ToolResultMessage) and result.is_error
+    assert isinstance(result.content[0], TextContent)
+    return result.content[0].text
+
+
+async def test_a_keyerror_inside_a_tool_is_the_tools_own_error() -> None:
+    # #104: a missing note used to be reported as a missing *tool*, and the
+    # model stopped calling it.
+    @tool
+    async def read_note(title: str) -> str:
+        raise KeyError(f"No note titled {title!r}")
+
+    text = await _result_text(read_note, '{"title": "nope"}')
+    assert "not found" not in text
+    assert "No note titled 'nope'" in text
+
+
+async def test_a_validationerror_inside_a_tool_is_not_blamed_on_the_arguments() -> None:
+    from pydantic import BaseModel
+
+    class Row(BaseModel):
+        n: int
+
+    @tool
+    async def parse(raw: str) -> str:
+        return str(Row.model_validate({"n": raw}))
+
+    text = await _result_text(parse, '{"raw": "x"}')
+    assert not text.startswith("Invalid arguments")
+    assert text.startswith("Tool error: ValidationError")
+
+
+async def test_bad_arguments_are_still_reported_as_bad_arguments() -> None:
+    @tool
+    async def add(a: int) -> int:
+        return a
+
+    text = await _result_text(add, '{"a": "x"}')
+    assert text.startswith("Invalid arguments")
 
 
 async def test_unknown_tool_becomes_error_result() -> None:

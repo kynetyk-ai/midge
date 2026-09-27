@@ -3,9 +3,9 @@ from __future__ import annotations
 from typing import Annotated
 
 import pytest
-from pydantic import Field, ValidationError
+from pydantic import Field
 
-from midge.tools import Tool, ToolRegistry, tool
+from midge.tools import InvalidArguments, Tool, ToolRegistry, tool
 
 
 async def test_simple_tool_decoration() -> None:
@@ -51,10 +51,10 @@ async def test_tool_invocation_validates_args() -> None:
 
     assert await add.invoke({"a": 1, "b": 2}) == 3
 
-    with pytest.raises(ValidationError):
+    with pytest.raises(InvalidArguments):
         await add.invoke({"a": "not a number", "b": 2})
 
-    with pytest.raises(ValidationError):
+    with pytest.raises(InvalidArguments):
         await add.invoke({"a": 1})  # missing b
 
 
@@ -63,7 +63,7 @@ async def test_extra_args_rejected() -> None:
     async def noop(x: int) -> int:
         return x
 
-    with pytest.raises(ValidationError):
+    with pytest.raises(InvalidArguments):
         await noop.invoke({"x": 1, "extra": "nope"})
 
 

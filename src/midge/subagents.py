@@ -184,8 +184,7 @@ class SubagentTool(Tool):
                 f"{self.name} has no runtime; the entrypoint must call "
                 "midge.subagents.bind_subagents(registry, client=..., model=...)"
             )
-        validated = self.params_model.model_validate(arguments)
-        kwargs = {f: getattr(validated, f) for f in self.params_model.model_fields}
+        kwargs = self.validate(arguments)
         opening = await self.fn(**kwargs)
         # Opt-in: `timeout` reaches the schema only because the author put it
         # in the signature, so "the signature is the tool schema" holds.
