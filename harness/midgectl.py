@@ -240,6 +240,9 @@ def _tui_command(args: argparse.Namespace) -> list[str]:
     extra = args.midge_args[1:] if args.midge_args[:1] == ["--"] else args.midge_args
     return [
         "docker", "run", "-it", "--rm",
+        # Docker's default detach sequence is Ctrl+P, Ctrl+Q, so it swallows
+        # Ctrl+P — the TUI's command list — before midge ever sees it.
+        "--detach-keys", "ctrl-^",
         "--name", TUI_CONTAINER,
         "--env-file", str(REPO / ".env"),
         "-e", f"MIDGE_HARNESS_CONFIG={args.config}",
