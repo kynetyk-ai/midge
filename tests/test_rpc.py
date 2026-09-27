@@ -664,7 +664,6 @@ async def test_clear_context_clears_history_and_keeps_recording(tmp_path: Path) 
     task = asyncio.create_task(server.serve(read_line=inbox.read_line, write=outbox.write))
 
     await _run_to_completion(inbox, outbox, "before")
-    session.append_many(agent.history)
 
     resp = await _command(inbox, outbox, {"id": "c", "type": "clear_context"})
 
@@ -678,7 +677,6 @@ async def test_clear_context_clears_history_and_keeps_recording(tmp_path: Path) 
 
     outbox.lines.clear()
     await _run_to_completion(inbox, outbox, "after")
-    session.append_many(agent.history)
     inbox.close()
     await task
     session.close()
@@ -2690,3 +2688,98 @@ async def test_a_bad_roots_only_is_rejected(tmp_path: Path) -> None:
     assert "boolean" in resp["error"]
     inbox.close()
     await task
+
+
+# --- #99: a turn through the server reaches the transcript -----------------
+
+
+async def test_a_prompt_through_the_server_is_on_disk(tmp_path: Path) -> None:
+    # The test that was missing: the RPC suite asserted on wire frames and the
+    # persistence suite drove `Session` directly, so nothing checked that a turn
+    # run *by the server* was written anywhere.
+    path = tmp_path / "rpc.jsonl"
+    client = Client()
+    install(client, [[say("seven three four one"), finish()]])
+    agent = Agent(client=client, model="m")
+    session = Session.new(path, model="m")
+    server = RpcServer(agent, session=session)
+    inbox, outbox = _Inbox(), _Outbox()
+    task = asyncio.create_task(server.serve(read_line=inbox.read_line, write=outbox.write))
+
+    await _run_to_completion(inbox, outbox, "remember 7341")
+    await _wait_for(lambda: any(x.get("type") == "agent_settled" for x in outbox.lines))
+    inbox.close()
+    await task
+    session.close()
+
+    restored = Session.load(path).messages
+    assert [m.role for m in restored] == ["user", "assistant"]
+    assert restored[0].content == "remember 7341"
+
+
+async def test_an_aborted_prompt_is_on_disk_and_the_session_still_works(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "rpc.jsonl"
+    client = Client()
+    gate = asyncio.Event()
+    install_gated(client, [say("part")], gate)
+    agent = Agent(client=client, model="m")
+    session = Session.new(path, model="m")
+    server = RpcServer(agent, session=session)
+    inbox, outbox = _Inbox(), _Outbox()
+    task = asyncio.create_task(server.serve(read_line=inbox.read_line, write=outbox.write))
+
+    await inbox.feed_text('{"id": "r1", "type": "prompt", "message": "go"}\n')
+    await _wait_for(lambda: any(x.get("type") == "assistant_text_delta" for x in outbox.lines))
+    await _command(inbox, outbox, {"id": "a", "type": "abort"})
+    await _wait_for(lambda: any(x.get("type") == "agent_settled" for x in outbox.lines))
+
+    # The next turn is sent with the aborted one in history; the provider
+    # would refuse it if the partial turn had left anything unanswered.
+    install(client, [[say("fine"), finish()]])
+    outbox.lines.clear()
+    await _run_to_completion(inbox, outbox, "again")
+    inbox.close()
+    await task
+    session.close()
+
+    contents = [str(m.content) for m in Session.load(path).messages]
+    assert "go" in contents[0]
+    assert any("again" in c for c in contents)
+
+
+async def test_the_server_compacts_past_the_threshold(tmp_path: Path) -> None:
+    from midge.messages import AssistantMessage, TextContent
+
+    path = tmp_path / "rpc.jsonl"
+    client = Client()
+    install(client, [[say("hi"), finish()], [say("## Goal\nbe brief"), finish()]])
+    agent = Agent(client=client, model="m")
+    for i in range(3):
+        agent.history.append(UserMessage(content=f"q{i}: " + "x" * 200))
+        agent.history.append(AssistantMessage(content=[TextContent(text="a" * 200)]))
+    session = Session.new(path, model="m")
+    server = RpcServer(
+        agent, session=session, compaction_threshold=1, compaction_keep_recent=120
+    )
+    inbox, outbox = _Inbox(), _Outbox()
+    task = asyncio.create_task(server.serve(read_line=inbox.read_line, write=outbox.write))
+
+    await _run_to_completion(inbox, outbox)
+    await _wait_for(lambda: any(x.get("type") == "agent_settled" for x in outbox.lines))
+    inbox.close()
+    await task
+    session.close()
+
+    types = [x.get("type") for x in outbox.lines]
+    start, end, settled = (
+        types.index("compaction_start"),
+        types.index("compaction_end"),
+        types.index("agent_settled"),
+    )
+    assert types.index("agent_end") < start < end < settled
+    frame = outbox.lines[end]
+    assert isinstance(frame["cut_index"], int)
+    assert frame["message_count"] == len(agent.history)
+    assert "error" not in frame

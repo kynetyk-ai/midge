@@ -33,6 +33,7 @@ make the input box refuse ordinary English about paths.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from collections.abc import Callable
 from functools import partial
@@ -59,8 +60,13 @@ from midge.client import (
     ToolCallEnd,
     ToolCallStart,
 )
-from midge.commands import BUILTIN_COMMANDS, Controls, Refused
-from midge.compaction import compact, needs_compaction
+from midge.commands import (
+    BUILTIN_COMMANDS,
+    CompactionEnd,
+    CompactionStart,
+    Controls,
+    Refused,
+)
 from midge.messages import TextContent, ToolCall
 from midge.persistence import Session
 
@@ -301,6 +307,17 @@ def _model_options(controls: Controls) -> list[Option]:
     ]
 
 
+def _compaction_note(ev: CompactionEnd) -> str:
+    if ev.error is not None:
+        return f"[compaction failed: {ev.error}]"
+    if ev.cut_index is None:
+        return "[compaction: nothing to summarize yet]"
+    return (
+        f"[compacted: {ev.cut_index} messages summarized; "
+        f"history is now {ev.message_count} messages]"
+    )
+
+
 class PiApp(App[None]):
     CSS = """
     Screen { layout: vertical; }
@@ -317,19 +334,9 @@ class PiApp(App[None]):
         Binding("escape", "clear_input", "Clear input"),
     ]
 
-    def __init__(
-        self,
-        controls: Controls,
-        *,
-        compaction_threshold: int | None = None,
-    ) -> None:
+    def __init__(self, controls: Controls) -> None:
         super().__init__()
         self.controls = controls
-        # The threshold stays here rather than on `Controls`: automatic
-        # compaction is this interface deciding when to act, not an operation
-        # anyone invokes. `keep_recent` is shared, because it is the same
-        # summary either way.
-        self.compaction_threshold = compaction_threshold
         controls.runner = self
         # Steering has to be a real queue before a turn starts, or a message
         # typed mid-turn has nowhere to land.
@@ -533,51 +540,27 @@ class PiApp(App[None]):
         self._current_assistant = None
         self._tool_bubbles = {}
 
-        # `new_messages` never reaches us if the turn is cancelled, so persist
-        # the interrupted turn from the history tail instead.
-        mark = len(self.agent.history)
-
+        # Persisting the turn — including one interrupted or broken mid-render —
+        # and compacting after it are `Controls.run_turn`'s job, shared with RPC.
+        # What is left here is saying what happened.
+        compacting = False
         try:
-            async for ev in self.agent.stream(prompt):
-                self._handle_event(ev, log)
-                log.scroll_end(animate=False)
-                if isinstance(ev, AgentEnd) and self.session is not None:
-                    self.session.append_many(ev.new_messages)
+            async with contextlib.aclosing(self.controls.run_turn(prompt)) as events:
+                async for ev in events:
+                    if isinstance(ev, CompactionStart):
+                        compacting = True
+                        await log.mount(StatusLine("[compacting context...]"))
+                    elif isinstance(ev, CompactionEnd):
+                        compacting = False
+                        await log.mount(StatusLine(_compaction_note(ev)))
+                    else:
+                        self._handle_event(ev, log)
+                    log.scroll_end(animate=False)
         except asyncio.CancelledError:
-            if self.session is not None:
-                self.session.append_many(self.agent.history[mark:])
-            await log.mount(StatusLine("[interrupted]"))
+            note = "[compaction interrupted]" if compacting else "[interrupted]"
+            await log.mount(StatusLine(note))
             log.scroll_end(animate=False)
             raise
-
-        if self.compaction_threshold is not None and needs_compaction(
-            self.agent.history, threshold_tokens=self.compaction_threshold
-        ):
-            await log.mount(StatusLine("[compacting context...]"))
-            log.scroll_end(animate=False)
-            try:
-                result = await compact(
-                    self.agent.history,
-                    client=self.agent.client,
-                    model=self.agent.model,
-                    keep_recent_tokens=self.compaction_keep_recent,
-                    hooks=self.agent.hooks,
-                )
-            except Exception as e:
-                _logger.exception("compaction_failed")
-                await log.mount(StatusLine(f"[compaction failed: {e}]"))
-                return
-            if result is not None:
-                new_history, summary_text, cut_idx = result
-                self.agent.history = new_history
-                if self.session is not None:
-                    self.session.append_compaction(summary=summary_text, cut_index=cut_idx)
-                await log.mount(
-                    StatusLine(
-                        f"[compacted: {cut_idx} messages summarized; "
-                        f"history is now {len(new_history)} messages]"
-                    )
-                )
 
     def _handle_event(self, ev: StreamEvent | Any, log: VerticalScroll) -> None:
         if isinstance(ev, TextDelta):
@@ -655,5 +638,5 @@ def tui_log_handler(log_file: Path | None = None) -> logging.Handler | None:
     return None if log_file else TextualHandler()
 
 
-def run_tui(controls: Controls, *, compaction_threshold: int | None = None) -> None:
-    PiApp(controls, compaction_threshold=compaction_threshold).run()
+def run_tui(controls: Controls) -> None:
+    PiApp(controls).run()

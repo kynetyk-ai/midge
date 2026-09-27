@@ -414,3 +414,29 @@ async def test_escape_closes_the_drawer_before_it_clears_the_draft() -> None:
 
         assert app.query_one("#sidebar", Sidebar).has_class("hidden")
         assert app.query_one("#input", TextArea).text == "a draft"
+
+
+@pytest.mark.asyncio
+async def test_ctrl_c_mid_turn_keeps_the_turn_on_disk(tmp_path: Path) -> None:
+    path = tmp_path / "t.jsonl"
+    gate = asyncio.Event()
+    client = Client()
+    install_gated(client, [say("partial")], gate)
+    agent = Agent(client=client, model="m")
+    session = Session.new(path, model="m")
+    app = PiApp(Controls(agent, session=session))
+    async with app.run_test() as pilot:
+        app.query_one("#input", TextArea).text = "keep me"
+        await pilot.press("enter")
+        await _settle(pilot)
+        assert app.busy()
+
+        await pilot.press("ctrl+c")
+        await app.workers.wait_for_complete()
+        await _settle(pilot)
+
+        assert any("[interrupted]" in s for s in _status(app))
+    session.close()
+
+    restored = Session.load(path).messages
+    assert restored and restored[0].content == "keep me"

@@ -22,6 +22,7 @@ from midge.client import (
     ToolCallEnd,
     ToolCallStart,
 )
+from midge.commands import CompactionEnd, CompactionStart
 from midge.messages import TextContent, ToolCall
 
 
@@ -82,4 +83,15 @@ def event_to_wire(ev: Any) -> dict[str, Any] | None:
         }
     if isinstance(ev, AgentEnd):
         return {"type": "agent_end"}
+    if isinstance(ev, CompactionStart):
+        return {"type": "compaction_start"}
+    if isinstance(ev, CompactionEnd):
+        frame: dict[str, Any] = {
+            "type": "compaction_end",
+            "cut_index": ev.cut_index,
+            "message_count": ev.message_count,
+        }
+        if ev.error is not None:
+            frame["error"] = ev.error
+        return frame
     return None

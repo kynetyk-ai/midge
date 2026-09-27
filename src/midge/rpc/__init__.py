@@ -17,6 +17,13 @@ it can build the tree. `agent_id` is the id of the tool call that spawned the
 run, which is deliberately the same id the child's transcript records as
 `parent_tool_call_id` — one scheme, not two.
 
+A turn is written to the session transcript as it ends — or, if it is aborted
+or fails, as far as it got — so `open_session` and a restart resume it. When
+`[compaction] threshold` is set, a turn that crosses it is followed by
+`{"type": "compaction_start"}` and then `{"type": "compaction_end", "cut_index":
+int | null, "message_count": int}`, with an `error` key if the summary failed.
+Both arrive before `agent_settled`.
+
 Only the events that say what a delegation is *doing* are forwarded: tool
 executions, errors, and its end. Text and tool-argument deltas are not, because
 a child emits hundreds per turn and its prose is in its own transcript.
