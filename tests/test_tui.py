@@ -690,3 +690,32 @@ async def test_ctrl_c_while_asked_ends_the_turn_and_the_question() -> None:
         assert not isinstance(app.screen, ApprovalScreen)
         assert any("interrupted" in s for s in _status(app))
     assert ran == []
+
+
+@pytest.mark.asyncio
+async def test_a_startup_notice_is_on_screen() -> None:
+    app = PiApp(Controls(_build_agent([])), notices=["No API key for openai: set OPENAI_API_KEY"])
+    async with app.run_test() as pilot:
+        await _settle(pilot)
+        assert "[No API key for openai: set OPENAI_API_KEY]" in _status(app)
+
+
+@pytest.mark.asyncio
+async def test_token_counts_add_up_in_the_header() -> None:
+    from midge.messages import AssistantMessage, Usage
+    from tests.fakes import tokens
+
+    agent = _build_agent([[say("hi"), tokens(input=1200, output=30, cached=1000), finish()]])
+    # A resumed session brings its own spend with it.
+    agent.history = [
+        UserMessage(content="before"),
+        AssistantMessage(content=[TextContent(text="x")], usage=Usage(input=800, output=20)),
+    ]
+    app = PiApp(Controls(agent))
+    async with app.run_test() as pilot:
+        await _settle(pilot)
+        assert app.sub_title == "in 800 · out 20 · cached 0"
+        await _submit(app, pilot)
+        await app.workers.wait_for_complete()
+        await _settle(pilot)
+        assert app.sub_title == "in 2.0k · out 50 · cached 1.0k"

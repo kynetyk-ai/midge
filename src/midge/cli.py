@@ -1,8 +1,9 @@
 """`midge` CLI: launches the interactive TUI.
 
 Usage:
-    midge [--extension-dir DIR] [--skill-dir DIR] [--session PATH] \\
-       [--profile NAME] [--compaction-threshold N] [--compaction-keep-recent N]
+    midge [--extension-dir DIR] [--skill-dir DIR] [--profile NAME] [--rpc] \\
+       [--session PATH | --continue | --no-session] \\
+       [--compaction-threshold N] [--compaction-keep-recent N] [--version]
 
 Configuration is `.midge/config.toml`, overridden by environment variables,
 overridden by these flags — see `midge.config`. `OPENAI_API_KEY` is read from the
@@ -16,6 +17,7 @@ import asyncio
 import logging
 from pathlib import Path
 
+from midge import __version__
 from midge.agent import Agent
 from midge.client import Client
 from midge.commands import Controls
@@ -29,7 +31,7 @@ from midge.extensions import (
 from midge.hooks import Hooks, SessionEnd, SessionStart
 from midge.logs import configure as configure_logging
 from midge.logs import provider_host
-from midge.persistence import Session, resolve_session_path
+from midge.persistence import Session, list_sessions, resolve_session_path
 from midge.profiles import ProfileSet
 from midge.profiles import validate as validate_profiles
 from midge.providers import Capabilities, ModelRegistry
@@ -51,6 +53,7 @@ BASE_SYSTEM_PROMPT = (
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="midge")
+    parser.add_argument("--version", action="version", version=f"midge {__version__}")
     parser.add_argument(
         "--extension-dir",
         action="append",
@@ -105,6 +108,15 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="Do not write a transcript for this run.",
     )
     parser.add_argument(
+        "--continue",
+        dest="resume_latest",
+        action="store_true",
+        help=(
+            "Resume the most recently modified session in the session directory. "
+            "Starts a new one if there is none."
+        ),
+    )
+    parser.add_argument(
         "--compaction-threshold",
         type=int,
         default=None,
@@ -123,7 +135,13 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
             "(default 20000, or [compaction] keep_recent)."
         ),
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.resume_latest and (args.session is not None or args.no_session):
+        # Three ways to say which transcript; `--session` + `--no-session` is
+        # reported and resolved below, but `--continue` with either is simply
+        # two answers to one question.
+        parser.error("--continue cannot be combined with --session or --no-session")
+    return args
 
 
 def resume_identity(
@@ -251,6 +269,15 @@ def main(argv: list[str] | None = None) -> None:
         # singular `provider`.
         _logger.warning("session_flags_conflict ignoring=--session in_favour_of=--no-session")
     requested = None if args.no_session else args.session
+    if args.resume_latest:
+        latest = max(
+            list_sessions(config.session.dir), key=lambda s: s.modified, default=None
+        )
+        if latest is None:
+            _logger.warning("continue_nothing_to_resume dir=%s", config.session.dir or "-")
+        else:
+            requested = latest.path
+            _logger.info("continue_resuming session=%s", latest.path)
     session_file = resolve_session_path(
         requested,
         directory=config.session.dir,
@@ -374,6 +401,12 @@ def main(argv: list[str] | None = None) -> None:
         retry_max_delay=config.retry.max_delay,
         registry=model_registry,
     )
+    # A missing key is otherwise a 401 on the first prompt. Logged for RPC,
+    # and shown on screen in the TUI, where nobody is reading the log.
+    active = model_registry.provider_for(model) if model_registry else client.provider
+    notices = [n for n in (active.credential_problem(),) if n]
+    if notices:
+        _logger.warning("provider_credential_missing provider=%s", active.name)
     # Tools cannot reach the calling agent, so any sub-agent tool an extension
     # registered gets what it needs to run a child here. No-op without them.
     bind_subagents(
@@ -444,7 +477,7 @@ def main(argv: list[str] | None = None) -> None:
     # event instead.
     asyncio.run(hooks.emit(SessionStart(path=session_path)))
     try:
-        run_tui(controls, approve_tools=config.tui.approve_tools)
+        run_tui(controls, approve_tools=config.tui.approve_tools, notices=notices)
     finally:
         # `controls.session`, not the one opened at startup: `new_session` and a
         # profile fork replace it, and closing the original would leave the file

@@ -138,6 +138,12 @@ class FakeProvider:
         # error carrying `Retry-After` and see the wait it produces.
         return _CLASSIFIER.retry_after(exc)
 
+    def describe(self, exc: BaseException) -> str | None:
+        return _CLASSIFIER.describe(exc)
+
+    def credential_problem(self) -> str | None:
+        return None
+
 
 class GatedProvider(FakeProvider):
     """Yields its chunks, then blocks until released.

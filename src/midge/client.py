@@ -432,6 +432,6 @@ class Client:
             # traceback are gone and there is nowhere else to look.
             _logger.exception("provider_stream_failed model=%s", model)
             partial.stop_reason = "error"
-            partial.error_message = f"{type(e).__name__}: {e}"
+            partial.error_message = provider.describe(e) or f"{type(e).__name__}: {e}"
             yield Error(message=partial)
             return

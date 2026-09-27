@@ -431,3 +431,31 @@ def test_a_local_server_gets_a_placeholder(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     p = OpenAIProvider(name="openai-compatible", base_url="http://localhost:11434/v1")
     assert p._client.api_key == "not-needed"
+
+
+# --- first run: a missing or rejected key is a sentence ---------------------
+
+
+def test_no_key_for_openai_is_known_before_the_first_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    problem = OpenAIProvider(name="openai").credential_problem()
+    assert problem is not None and "OPENAI_API_KEY" in problem
+
+
+def test_a_key_or_a_local_server_is_not_a_problem(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    local = OpenAIProvider(name="openai-compatible", base_url="http://localhost:11434/v1")
+    assert local.credential_problem() is None
+    assert _provider().credential_problem() is None
+
+
+def test_a_401_is_described_and_other_errors_are_not() -> None:
+    request = httpx.Request("POST", "http://x")
+    unauthorized = openai.AuthenticationError(
+        "bad key", response=httpx.Response(401, request=request), body=None
+    )
+    said = _provider().describe(unauthorized)
+    assert said is not None and "rejected the API key" in said
+    assert _provider().describe(_status_error(500)) is None
