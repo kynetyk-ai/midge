@@ -294,8 +294,11 @@ def tui_keys(args: argparse.Namespace) -> int:
 
 
 def tui_type(args: argparse.Namespace) -> int:
-    # `-l` sends the text literally, so "Enter" in a prompt is five characters.
-    _tmux("send-keys", "-t", TMUX_SESSION, "-l", args.text)
+    # As a bracketed paste — one event, the way a terminal delivers pasted
+    # text. Sent as keystrokes instead, a long prompt was still being consumed
+    # when the following `tui-keys Enter` arrived, and was submitted cut short.
+    _tmux("set-buffer", "-b", "midgectl", args.text)
+    _tmux("paste-buffer", "-p", "-d", "-b", "midgectl", "-t", TMUX_SESSION)
     return 0
 
 
