@@ -23,7 +23,7 @@ from midge.tui.app import (
     StatusLine,
     UserBubble,
 )
-from tests.fakes import finish, install, install_gated, say
+from tests.fakes import finish, install, install_gated, say, whole_call
 
 
 def _build_agent(turns: list[list[Any]]) -> Agent:
@@ -83,13 +83,14 @@ async def test_escape_clears_input() -> None:
 
 
 @pytest.mark.asyncio
-async def test_alt_enter_inserts_newline_without_submitting() -> None:
+@pytest.mark.parametrize("key", ["ctrl+o", "alt+enter"])
+async def test_newline_keys_insert_without_submitting(key: str) -> None:
     agent = _build_agent([])
     app = PiApp(Controls(agent))
     async with app.run_test() as pilot:
         input_widget = app.query_one("#input")
         input_widget.text = "line one"  # type: ignore[attr-defined]
-        await pilot.press("alt+enter")
+        await pilot.press(key)
         await pilot.pause()
 
         # Newline got inserted; nothing was submitted
@@ -440,3 +441,105 @@ async def test_ctrl_c_mid_turn_keeps_the_turn_on_disk(tmp_path: Path) -> None:
 
     restored = Session.load(path).messages
     assert restored and restored[0].content == "keep me"
+
+
+@pytest.mark.asyncio
+async def test_square_brackets_render_literally_and_the_turn_survives() -> None:
+    # #110: `[` in a prompt, a tool argument, a result or a reply is text, not
+    # markup — an unbalanced one used to raise MarkupError and kill the turn.
+    from midge.tools import ToolRegistry, tool
+
+    @tool
+    async def echo(text: str) -> str:
+        """Echo."""
+        return f"[red]{text}"
+
+    client = Client()
+    install(
+        client,
+        [
+            [*whole_call("echo", '{"text": "[bold]x[/bold] and [unclosed"}'), finish("tool_use")],
+            [say("[OK] done [unclosed"), finish()],
+        ],
+    )
+    agent = Agent(client=client, model="m", tools=ToolRegistry([echo]))
+    app = PiApp(Controls(agent))
+    async with app.run_test() as pilot:
+        app.query_one("#input", TextArea).text = "say [dim]hi"
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await _settle(pilot)
+
+        texts = [str(w.visual) for w in app.query(Static)]
+        assert any("say [dim]hi" in t for t in texts)
+        assert any("[OK]" in t and "[red][bold]x[/bold] and [unclosed" in t for t in texts)
+        assert any("[OK] done [unclosed" in t for t in texts)
+        assert not any("turn failed" in t for t in _status(app))
+
+
+@pytest.mark.asyncio
+async def test_long_tool_arguments_are_truncated_in_the_log() -> None:
+    from midge.tools import ToolRegistry, tool
+
+    release = asyncio.Event()
+
+    @tool
+    async def write_it(content: str) -> str:
+        """Write."""
+        await release.wait()  # hold the bubble at "running...", arguments on show
+        return "ok"
+
+    client = Client()
+    body = "y" * 5000
+    install(
+        client,
+        [
+            [*whole_call("write_it", f'{{"content": "{body}"}}'), finish("tool_use")],
+            [say("done"), finish()],
+        ],
+    )
+    agent = Agent(client=client, model="m", tools=ToolRegistry([write_it]))
+    app = PiApp(Controls(agent))
+    async with app.run_test() as pilot:
+        app.query_one("#input", TextArea).text = "go"
+        await pilot.press("enter")
+        await _settle(pilot)
+        running = [str(w.visual) for w in app.query(Static) if "running" in str(w.visual)]
+        assert running and all(len(t) < 400 for t in running)
+        release.set()
+        await app.workers.wait_for_complete()
+
+
+@pytest.mark.asyncio
+async def test_ctrl_c_drops_the_queue_like_abort() -> None:
+    # #112: a message typed mid-turn and then abandoned with Ctrl+C used to
+    # ride along with the next prompt.
+    gate = asyncio.Event()
+    client = Client()
+    install_gated(client, [say("first")], gate)
+    agent = Agent(client=client, model="m")
+    app = PiApp(Controls(agent))
+    async with app.run_test() as pilot:
+        app.query_one("#input", TextArea).text = "start"
+        await pilot.press("enter")
+        await _settle(pilot)
+        app.query_one("#input", TextArea).text = "never mind this"
+        await pilot.press("enter")
+        await _settle(pilot)
+        assert agent.steering is not None and agent.steering.pending()
+
+        await pilot.press("ctrl+c")
+        await app.workers.wait_for_complete()
+        await _settle(pilot)
+
+        assert not agent.steering.pending()
+        assert any("interrupted; 1 queued message(s) dropped" in s for s in _status(app))
+
+
+@pytest.mark.asyncio
+async def test_ctrl_c_when_idle_says_nothing() -> None:
+    app = _app([])
+    async with app.run_test() as pilot:
+        await pilot.press("ctrl+c")
+        await _settle(pilot)
+        assert _status(app) == []

@@ -5,8 +5,10 @@ A minimum-viable shell:
 - User text becomes a UserBubble. Assistant text streams into a single
   AssistantBubble that grows in place. Tool calls/executions render as
   inline status cards.
-- Ctrl+J submits the input (most terminals send this for Ctrl+Enter).
-- Ctrl+C interrupts the current turn (cancels the run worker).
+- Enter submits; Ctrl+O inserts a newline (Alt+Enter too, where the terminal
+  sends it). Ctrl+J also submits (most terminals send it for Ctrl+Enter).
+- Ctrl+C interrupts the current turn and drops anything queued behind it —
+  the same as `/abort`.
 - Ctrl+D quits.
 - Esc clears the input draft.
 
@@ -74,15 +76,19 @@ _logger = logging.getLogger(__name__)
 
 
 class _SubmitTextArea(TextArea):
-    """TextArea where Enter submits and Alt+Enter inserts a newline.
+    """TextArea where Enter submits and Ctrl+O inserts a newline.
 
-    Ctrl+J is kept as a fallback for terminals that don't deliver a clean
-    Enter keysym.
+    Ctrl+O is the advertised key because every terminal sends it as its own
+    byte. Alt+Enter is kept, but only works where the terminal sends Option as
+    Meta — macOS Terminal and iTerm do not by default, and send a bare Enter
+    instead, which submitted a half-typed prompt (#113). Ctrl+J is kept as a
+    fallback for terminals that don't deliver a clean Enter keysym.
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("enter", "submit", "Submit", show=False, priority=True),
-        Binding("alt+enter", "newline", "Newline", show=True, priority=True),
+        Binding("ctrl+o", "newline", "Newline", show=True, priority=True),
+        Binding("alt+enter", "newline", "Newline", show=False, priority=True),
         Binding("ctrl+j", "submit", "Submit", show=False),
     ]
 
@@ -102,6 +108,12 @@ class _SubmitTextArea(TextArea):
         self.insert("\n")
 
 
+# Every bubble is `markup=False`, for the reason `StatusLine` gives: what lands
+# in one is someone else's text. A model's `[bold]` vanished, a tool's `[OK]`
+# tag never rendered, and an unbalanced `[` raised MarkupError and killed the
+# turn (#110).
+
+
 class UserBubble(Static):
     DEFAULT_CSS = """
     UserBubble {
@@ -111,6 +123,9 @@ class UserBubble(Static):
         border-left: thick $primary;
     }
     """
+
+    def __init__(self, content: str) -> None:
+        super().__init__(content, markup=False)
 
 
 class AssistantBubble(Static):
@@ -122,7 +137,7 @@ class AssistantBubble(Static):
     """
 
     def __init__(self) -> None:
-        super().__init__("")
+        super().__init__("", markup=False)
         self._text = ""
 
     def append(self, delta: str) -> None:
@@ -142,6 +157,14 @@ class ToolCallBubble(Static):
         border-left: thick $error;
     }
     """
+
+    def __init__(self, content: str) -> None:
+        super().__init__(content, markup=False)
+
+
+def _preview(text: str, limit: int = 200) -> str:
+    # A `write` carries the whole file as an argument; the log is not the place.
+    return text if len(text) <= limit else text[:limit] + "…"
 
 
 class StatusLine(Static):
@@ -345,6 +368,7 @@ class PiApp(App[None]):
         self._current_assistant: AssistantBubble | None = None
         self._tool_bubbles: dict[str, ToolCallBubble] = {}
         self._current_worker: Worker[None] | None = None
+        self._dropped_on_interrupt = 0
         self.title = f"midge · {controls.agent.model}"
 
     @property
@@ -557,8 +581,11 @@ class PiApp(App[None]):
                         self._handle_event(ev, log)
                     log.scroll_end(animate=False)
         except asyncio.CancelledError:
-            note = "[compaction interrupted]" if compacting else "[interrupted]"
-            await log.mount(StatusLine(note))
+            note = "compaction interrupted" if compacting else "interrupted"
+            dropped, self._dropped_on_interrupt = self._dropped_on_interrupt, 0
+            if dropped:
+                note += f"; {dropped} queued message(s) dropped"
+            await log.mount(StatusLine(f"[{note}]"))
             log.scroll_end(animate=False)
             raise
 
@@ -581,11 +608,12 @@ class PiApp(App[None]):
         elif isinstance(ev, ToolCallEnd):
             bubble = self._tool_bubbles.get(ev.tool_call.id)
             if bubble is not None:
-                bubble.update(f"⚙ {ev.tool_call.name}({ev.tool_call.arguments})")
+                bubble.update(f"⚙ {ev.tool_call.name}({_preview(str(ev.tool_call.arguments))})")
         elif isinstance(ev, ToolExecutionStart):
             bubble = self._tool_bubbles.get(ev.tool_call.id)
             if bubble is not None:
-                bubble.update(f"⚙ {ev.tool_call.name}({ev.tool_call.arguments}) — running...")
+                args = _preview(str(ev.tool_call.arguments))
+                bubble.update(f"⚙ {ev.tool_call.name}({args}) — running...")
         elif isinstance(ev, ToolExecutionEnd):
             bubble = self._tool_bubbles.get(ev.tool_call.id)
             if bubble is None:
@@ -593,7 +621,7 @@ class PiApp(App[None]):
             text = ""
             if ev.result.content and isinstance(ev.result.content[0], TextContent):
                 text = ev.result.content[0].text
-            preview = text if len(text) <= 200 else text[:200] + "…"
+            preview = _preview(text)
             tag = "ERR" if ev.result.is_error else "OK"
             if ev.result.is_error:
                 bubble.add_class("error")
@@ -614,9 +642,11 @@ class PiApp(App[None]):
         log.scroll_end(animate=False)
 
     def action_interrupt(self) -> None:
-        worker = self._current_worker
-        if worker is not None and worker.state == WorkerState.RUNNING:
-            worker.cancel()
+        # Through `Controls.abort`, like `/abort`, so the queue is cleared
+        # before the cancel. Cancelling the worker alone left a message typed
+        # mid-turn to ride along, unseen, with the next prompt (#112).
+        if self.busy():
+            self._dropped_on_interrupt = len(self.controls.abort())
 
     def action_clear_input(self) -> None:
         if not self.query_one("#sidebar", Sidebar).has_class("hidden"):

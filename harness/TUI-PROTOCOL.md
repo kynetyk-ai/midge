@@ -32,7 +32,7 @@ prompting for free text — so the drawer's model section and the palette's
 
 ### 1. The basics still work
 
-Type something. `Enter` submits, `Alt+Enter` inserts a newline, `Ctrl+C`
+Type something. `Enter` submits, `Ctrl+O` inserts a newline, `Ctrl+C`
 interrupts a running turn, `Ctrl+D` quits.
 
 > Ask it to read `src/toybox/text.py` and summarise `wrap`.
