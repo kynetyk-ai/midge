@@ -17,6 +17,7 @@ from typing import Any, Literal
 
 from pydantic import ValidationError
 
+from midge import __version__
 from midge.agent import Agent, SteeringQueue
 from midge.client import Error
 from midge.commands import (
@@ -56,6 +57,12 @@ __all__ = [
 ]
 
 _logger = logging.getLogger(__name__)
+
+# The wire contract's version, independent of midge's own. Adding a frame type,
+# a field or a command does not change it — clients ignore what they do not
+# know. Removing or renaming one, or changing what a field means, does.
+# `docs/rpc.md` is the contract; `tests/golden/rpc_frames.json` pins it.
+PROTOCOL_VERSION = 1
 
 
 def _summarize(exc: ValidationError) -> str:
@@ -170,6 +177,12 @@ class RpcServer:
         self._write = write
         pump = asyncio.ensure_future(self._pump())
         try:
+            # First, before any command is read: a client learns what it is
+            # talking to without having to ask, and can refuse a protocol it
+            # does not know before sending anything.
+            await self._emit(
+                {"type": "ready", "protocol": PROTOCOL_VERSION, "midge": __version__}
+            )
             while True:
                 try:
                     line = await read_line()
@@ -195,7 +208,21 @@ class RpcServer:
                         None, "parse", success=False, error="command must be a JSON object"
                     )
                     continue
-                await self._dispatch(cmd)
+                try:
+                    await self._dispatch(cmd)
+                except Exception as e:
+                    # An operation failing is an answer, not a reason to stop
+                    # serving. Handlers answer `Refused` themselves; this is for
+                    # what they did not expect — a `compact` whose summary call
+                    # failed used to end the process from here.
+                    _logger.exception("rpc_command_failed type=%s", cmd.get("type"))
+                    command = cmd.get("type")
+                    await self._respond(
+                        cmd.get("id") if isinstance(cmd.get("id"), str) else None,
+                        command if isinstance(command, str) else "unknown",
+                        success=False,
+                        error=f"{type(e).__name__}: {e}",
+                    )
         finally:
             run = self._current_run
             if run is not None and not run.done():
@@ -383,7 +410,11 @@ class RpcServer:
         )
 
     async def _handle_get_state(self, cmd_id: str | None) -> None:
-        await self._respond(cmd_id, "get_state", success=True, data=self.controls.state())
+        # The versions ride here too, for a client that attached late or did
+        # not keep the `ready` frame. Added here, not in `Controls.state()`,
+        # because a protocol version is the transport's fact, not the agent's.
+        data = {**self.controls.state(), "protocol": PROTOCOL_VERSION, "midge": __version__}
+        await self._respond(cmd_id, "get_state", success=True, data=data)
 
     async def _handle_get_last_assistant_text(self, cmd_id: str | None) -> None:
         text: str | None = None
