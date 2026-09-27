@@ -773,3 +773,17 @@ async def test_reassigning_provider_after_construction_still_takes_effect() -> N
     assert isinstance(done, Done)
     assert isinstance(done.message.content[0], TextContent)
     assert done.message.content[0].text == "swapped"
+
+
+async def test_a_rejected_key_reaches_the_consumer_as_a_sentence() -> None:
+    request = httpx.Request("POST", "http://x")
+    unauthorized = openai.AuthenticationError(
+        "Incorrect API key provided", response=httpx.Response(401, request=request), body=None
+    )
+    client = Client(retry_base_delay=0)
+    install_provider(client, [[unauthorized]])
+
+    last = (await _run(client))[-1]
+    assert isinstance(last, Error)
+    assert last.message.error_message is not None
+    assert "rejected the API key" in last.message.error_message

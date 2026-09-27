@@ -37,7 +37,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from functools import partial
 from pathlib import Path
 from typing import Any, ClassVar
@@ -71,7 +71,7 @@ from midge.commands import (
     Refused,
 )
 from midge.hooks import Hooks, ToolCallEvent, ToolCallResult
-from midge.messages import TextContent, ToolCall
+from midge.messages import AssistantMessage, TextContent, ToolCall, Usage
 from midge.persistence import Session
 
 _logger = logging.getLogger(__name__)
@@ -370,6 +370,10 @@ class ApprovalScreen(ModalScreen[str]):
         self.dismiss(answer)
 
 
+def _tokens(n: int) -> str:
+    return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
+
+
 def _compaction_note(ev: CompactionEnd) -> str:
     if ev.error is not None:
         return f"[compaction failed: {ev.error}]"
@@ -397,9 +401,23 @@ class PiApp(App[None]):
         Binding("escape", "clear_input", "Clear input"),
     ]
 
-    def __init__(self, controls: Controls, *, approve_tools: bool = False) -> None:
+    def __init__(
+        self,
+        controls: Controls,
+        *,
+        approve_tools: bool = False,
+        notices: Sequence[str] = (),
+    ) -> None:
         super().__init__()
         self.controls = controls
+        # Shown in the log on mount: things the operator must see before the
+        # first prompt, like a missing API key, which a log file would bury.
+        self._notices = list(notices)
+        # Tokens this session has cost, shown in the header. Seeded from the
+        # history a resumed session brings, then added to after every turn.
+        self._usage = Usage()
+        for m in controls.agent.history:
+            self._add_usage(m)
         controls.runner = self
         # Tools the person has said to stop asking about, for this process.
         self._always_allowed: set[str] = set()
@@ -471,6 +489,22 @@ class PiApp(App[None]):
                 screen.dismiss(None)
             raise
 
+    def _add_usage(self, m: Any) -> None:
+        if isinstance(m, AssistantMessage) and m.usage is not None:
+            u = self._usage
+            self._usage = Usage(
+                input=u.input + m.usage.input,
+                output=u.output + m.usage.output,
+                cached=u.cached + m.usage.cached,
+            )
+
+    def _show_usage(self) -> None:
+        u = self._usage
+        if u.input or u.output:
+            self.sub_title = (
+                f"in {_tokens(u.input)} · out {_tokens(u.output)} · cached {_tokens(u.cached)}"
+            )
+
     @property
     def agent(self) -> Agent:
         return self.controls.agent
@@ -526,9 +560,12 @@ class PiApp(App[None]):
 
     def on_mount(self) -> None:
         self.query_one("#input", _SubmitTextArea).focus()
+        log = self.query_one("#log", VerticalScroll)
+        for notice in self._notices:
+            log.mount(StatusLine(f"[{notice}]"))
         if self.agent.history:
-            log = self.query_one("#log", VerticalScroll)
             log.mount(StatusLine(f"[resumed: {len(self.agent.history)} prior messages]"))
+        self._show_usage()
 
     def _as_command(self, text: str) -> tuple[str, str] | None:
         """`(name, argument)` if this is a command, else None.
@@ -728,6 +765,9 @@ class PiApp(App[None]):
             bubble.update(f"⚙ {ev.tool_call.name} → [{tag}] {preview}")
         elif isinstance(ev, AgentEnd):
             self._current_assistant = None
+            for m in ev.new_messages:
+                self._add_usage(m)
+            self._show_usage()
 
     @on(Worker.StateChanged)
     def _on_worker_state(self, event: Worker.StateChanged) -> None:
@@ -768,5 +808,7 @@ def tui_log_handler(log_file: Path | None = None) -> logging.Handler | None:
     return None if log_file else TextualHandler()
 
 
-def run_tui(controls: Controls, *, approve_tools: bool = False) -> None:
-    PiApp(controls, approve_tools=approve_tools).run()
+def run_tui(
+    controls: Controls, *, approve_tools: bool = False, notices: Sequence[str] = ()
+) -> None:
+    PiApp(controls, approve_tools=approve_tools, notices=notices).run()

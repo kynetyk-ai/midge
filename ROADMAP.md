@@ -26,64 +26,47 @@ marked **proposed** have no issue yet and are filed when work on them starts. Si
 is an afternoon, **M** a few sessions, **L** needs a design pass first. Within a milestone, items
 are listed roughly in the order worth doing them.
 
-*Status as of 2026-09-26. This is a living document: update it in the PR that closes an item.*
+*Status as of 2026-09-27: M1 done; M2 next. This is a living document: update it in the PR that closes an item.*
 
 ---
 
-## M1 — Trustworthy daily driver
+## M1 — Trustworthy daily driver ✅
 
 **Goal:** midge can be relied on as a personal coding agent in the TUI.
 
-**Exit criteria**
+**Done**, in six PRs into `develop`, each merged only after a behavioral test in the container
+(`harness/`, brought in by #122) against a real model — RPC scripted under `harness/scenarios/`,
+the TUI driven through tmux. The exit criteria, as met:
 
-- No open issue kills a turn or corrupts a conversation.
-- Every safety claim in the docs, examples and tool descriptions is true as written.
-- A fresh install gets from nothing to a first answer, and each way that can fail (no key, bad key,
-  bad config) produces a sentence the user can act on.
-- Interrupting a turn, including during compaction, has a test.
+- **No open issue kills a turn or corrupts a conversation.** #99 was pulled in from M2 once it was
+  clear RPC is the primary mode: an unattended session that forgets everything on restart is the
+  worst case, not an embedding detail.
+- **Every safety claim is true as written.** The explorer is read-only because its allowlist is;
+  the docs say a hook gates tool calls, not effects.
+- **A fresh install fails in sentences.** A missing key is on screen before the first prompt; a
+  rejected one is a sentence, not a 401 repr; a bad log path is a warning.
+- **Interrupting a turn, including during compaction, has tests** — and writing them found a
+  cancel during compaction was being swallowed.
 
-### Turns that die, or conversations that break
-
-| Item | Issue | Size | Notes |
-|---|---|---|---|
-| Bubbles parse content as Textual markup | #110 | S | `markup=False` on the three bubble widgets, as `StatusLine` already has. Also truncate tool arguments the way results already are. |
-| An empty assistant turn poisons every later request | #111 | S | `repair_history` drops content-less assistant messages. The bad message is also persisted, so resume inherits it. |
-| Interrupt during compaction is silent and can un-compact | #114 | S | Widen the `try`. Keep the write order. |
-| Ctrl+C leaves the steering queue intact | #112 | S | Route through `Controls.abort()`. Whether the model is told it was interrupted is a separate question. |
-| Alt+Enter submits on macOS terminals | #113 | S | Add a binding that macOS terminals actually send. Stop advertising one they don't. |
-| Tests for interrupt persistence | **proposed** | S | None exist. #110 and #114 are both holes in this path. |
-
-### Errors a model or a person can act on
-
-| Item | Issue | Size | Notes |
-|---|---|---|---|
-| A tool's own `KeyError` reported as "tool not found" | #104 | S | A dedicated `ToolNotFound`. The shipped `notes_extension` trips it. |
-| `edit` near-miss gives nothing to recover from | #97 | S–M | Hints from `difflib`, never a fuzzy apply. Still unreproduced on markdown, where it was first seen. |
-| Log file in a missing directory crashes startup | #105 | S | A diagnostic, never an exception, per `config.py`'s contract. |
-| Missing or rejected API key | **proposed** | S | Today a missing key becomes `"not-needed"` and the first prompt gets the vendor's 401. Warn at startup when the provider needs a key and none is set. Render a 401 as a sentence. |
-
-### Safety claims that are true
-
-| Item | Issue | Size | Notes |
-|---|---|---|---|
-| The "read-only" explorer can write | #103 | S | Drop `bash`, or drop the claim, in all three places it is made. |
-| Hooks gate tools, not effects | #102 | S–M | Reword `rpc/__init__.py`: a denylist over `bash` strings is advisory, not a boundary. Add an allowlist example. |
-| Interactive approval for `bash`/`write`/`edit` | **proposed** | M | See *Decisions needed*. It would live in `tui/` plus a hook, outside the core budget. |
-
-### Tool semantics
-
-| Item | Issue | Size | Notes |
-|---|---|---|---|
-| Tool calls in one message run concurrently, with no stated order | #101 | S–M | Needs a decision first (see below), then either docs or a loop change. |
-
-### Daily-use polish
-
-| Item | Issue | Size | Notes |
-|---|---|---|---|
-| `midge --continue` resumes the most recent session | **proposed** | S | Resume exists (`--session PATH`, the switch-to panel) but needs a path. |
-| Token usage in the status bar | **proposed** | S | Usage is captured (#34) and logged, never shown. Counts only; see *Not MVP* for pricing. |
-| `midge --version` | **proposed** | S | `midge.__version__` exists, but no flag reads it. |
-| README flag list matches `cli.py` | **proposed** | S | Missing `--skill-dir`, `--profile`, `--rpc` and `--no-session`. |
+| Item | Issue | PR |
+|---|---|---|
+| RPC never wrote the conversation to its transcript | #99 | #123 |
+| One turn runner for both front-ends; RPC auto-compacts too | — | #123 |
+| Interrupt during compaction; a swallowed cancel inside it | #114 | #123 |
+| Interrupt-persistence tests | — | #123 |
+| Bubbles parsed content as markup, killing the turn | #110 | #123, #124 |
+| Ctrl+C kept the steering queue | #112 | #124 |
+| Alt+Enter submitted on macOS — Ctrl+O is the newline key | #113 | #124 |
+| An empty assistant turn poisoned every later request | #111 | #125 |
+| A tool's own `KeyError` reported as "tool not found" | #104 | #125 |
+| `edit` near misses say what to fix | #97 | #125 |
+| A log file in a missing directory crashed startup | #105 | #125 |
+| Tool calls in one message raced — mutating tools now run alone, in order | #101 | #126 |
+| The "read-only" explorer could write — `ls` and `grep` added | #103 | #127 |
+| Hook docs overclaimed; `allowlist_extension` added | #102 | #127 |
+| TUI approval prompt, on by default, never in RPC | — | #127 |
+| Missing or rejected API key as a sentence | — | this PR |
+| `--continue`, `--version`, token counts in the header, README flags | — | this PR |
 
 ---
 
@@ -102,14 +85,13 @@ are listed roughly in the order worth doing them.
 
 | Item | Issue | Size | Notes |
 |---|---|---|---|
-| RPC never writes messages to the transcript | #99 | S–M | **Do this first. It may be worth pulling into M1**, because it silently hollows out `--session`, `open_session` and `resume_last`. Persist in `Controls` (`commands.py`) so the TUI and RPC write turns the same way, instead of patching RPC to match. |
 | An over-long line kills the server | #100 | S–M | Refuse it with a frame, drain to the newline, keep serving. |
 | A non-string `id` is dropped and the command runs | #106 | S | Refuse the command. |
 | Exception reprs on the wire | #107 | S | Summarise pydantic errors. Rephrase at the raise site. |
 | Sub-agents bound twice at startup | #109 | S | Remove the `cli.py` call. |
 | Protocol version and handshake | **proposed** | S | Nothing under `rpc/` carries a version today. |
 | `docs/rpc.md` reference plus golden-frame test | **proposed** | M | Events and response shapes currently exist only as code and a module docstring. |
-| Subprocess end-to-end test | **proposed** | M | All 120-odd RPC tests run in-process. This is the test that would have caught #99. |
+| Subprocess end-to-end test | **proposed** | M | All the RPC unit tests run in-process. #99 was caught by the container harness, not the suite; this puts the same check in CI. |
 | A minimal Python client example | **proposed** | S | `examples/rpc_agent.py` is a server launcher, not a client. |
 | Stale `src/midge/rpc.py` references | **proposed** | S | In `examples/rpc_agent.py` and `notes/rpc.md`; it has been a package for a while. |
 
@@ -155,27 +137,28 @@ are listed roughly in the order worth doing them.
 
 These shape items above. None of them is settled by writing them down here.
 
-- **#101: what does a message with several tool calls promise?** The options are to document that
-  they run concurrently, run mutating tools one at a time while reads stay parallel, or run
-  everything one at a time. The middle option is the useful one, but it means the loop has to know
-  which tools mutate, which is new information for `@tool` to carry.
-- **Approval: on by default in the TUI?** Today a TUI session runs `bash` with no prompt, and
-  `examples/approval_extension` is a denylist rather than a confirmation. A y/n prompt on by default
-  is the conventional choice for a daily driver. The cost is one more thing a hacker has to turn off.
 - **#115: one surface for switching, or two?**
 - **A second wire format (e.g. Anthropic).** Currently under *Not MVP*: the provider registry makes
-  it an adapter rather than a branch, but CLAUDE.md asks for a real reason, not symmetry. It moves
-  into M1 if you decide daily-driver means your preferred model.
+  it an adapter rather than a branch, but CLAUDE.md asks for a real reason, not symmetry.
+
+Decided during M1, recorded so they are not reopened by accident:
+
+- **midge is RPC-first.** The TUI is the human-facing mode; the unattended one is primary. Anything
+  that needs a person in the loop lives in `tui/` and never blocks RPC.
+- **#101:** anything not read-only runs alone and in order; reads run together. `@tool(read_only=True)`
+  declares it; a sub-agent derives it from its allowlist.
+- **Approval** is TUI-only and on by default (`[tui] approve_tools`). RPC never asks — the boundary
+  there is the container.
 
 ## Not MVP
 
 - Everything in CLAUDE.md's out-of-scope list: OAuth, a pi-tui port, pi-mom/pods/web-ui,
   WASM/native deps, LangChain/LiteLLM.
-- Cost and price tables. Token counts are M1; prices churn like model lists, and midge ships no
+- Cost and price tables. Token counts shipped in M1; prices churn like model lists, and midge ships no
   model list for the same reason.
 - A socket transport. midge never listens; bridging is the deployer's choice.
-- Merging the Docker test harness. It stays on its branch by design. It is how the findings were
-  found, not part of midge.
+- Shipping the container harness as part of midge. It is in the repo (`harness/`, #122) as the
+  merge gate for behaviour a unit test cannot see, not as something a user installs.
 
 ## Already done
 

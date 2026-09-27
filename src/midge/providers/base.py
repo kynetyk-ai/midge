@@ -15,6 +15,8 @@ So the contract is deliberately small:
     decode()        one vendor chunk -> a `Delta`
     is_retryable()  an exception    ->  worth another attempt?
     retry_after()   an exception    ->  how long the server asked us to wait
+    describe()      an exception    ->  a sentence a person can act on, or None
+    credential_problem()            ->  why the first request will be refused
     limiter         this vendor's rate limits, or None if it has none
 
 `Delta` is the normalization point. Everything above it speaks midge's own
@@ -157,6 +159,24 @@ class Provider(Protocol):
         is a fact the response carries. The header names and their formats are
         the vendor's, which is why the parsing is here and the ceiling that
         caps the answer is in `client.py`.
+        """
+        ...
+
+    def describe(self, exc: BaseException) -> str | None:
+        """What went wrong, said so a person can fix it — or None to fall back
+        to the exception's own text.
+
+        Here rather than in `client.py` because only the vendor knows that its
+        401 means "the key", and which variable the key comes from.
+        """
+        ...
+
+    def credential_problem(self) -> str | None:
+        """Why the first request will be refused, if that is knowable now.
+
+        Checked at startup so a missing key is a sentence before the first
+        prompt rather than a 401 after it. `None` when nothing is wrong, or
+        when there is no way to tell — a local server needs no key at all.
         """
         ...
 

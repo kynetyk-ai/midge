@@ -349,3 +349,40 @@ def test_a_configured_directory_that_is_missing_is_a_warning_not_a_crash(
     _write_config(tmp_path, "[extensions]\nenabled = true\n")
 
     assert _start(tmp_path, monkeypatch, []) is not None
+
+
+def test_version_prints_and_exits(capsys: pytest.CaptureFixture[str]) -> None:
+    from midge import __version__
+
+    with pytest.raises(SystemExit) as done:
+        _parse_args(["--version"])
+    assert done.value.code == 0
+    assert capsys.readouterr().out.strip() == f"midge {__version__}"
+
+
+@pytest.mark.parametrize("other", [["--session", "x.jsonl"], ["--no-session"]])
+def test_continue_is_one_answer_to_which_transcript(other: list[str]) -> None:
+    with pytest.raises(SystemExit):
+        _parse_args(["--continue", *other])
+
+
+def test_continue_resumes_the_most_recently_modified_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    older, newer = tmp_path / "a.jsonl", tmp_path / "b.jsonl"
+    with Session.new(newer, model="m"):
+        pass
+    with Session.new(older, model="m"):
+        pass
+    # Created second, but touched last: modification is what "latest" means.
+    os.utime(older, (1, 1))
+    opened: list[Path] = []
+    monkeypatch.setattr(cli, "run_tui", lambda controls, **kw: opened.append(controls.session.path))
+    monkeypatch.setenv("MIDGE_SESSION_DIR", str(tmp_path))
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+    main(["--continue"])
+
+    assert opened == [newer]
