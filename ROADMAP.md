@@ -26,7 +26,7 @@ marked **proposed** have no issue yet and are filed when work on them starts. Si
 is an afternoon, **M** a few sessions, **L** needs a design pass first. Within a milestone, items
 are listed roughly in the order worth doing them.
 
-*Status as of 2026-09-27: M1 and M2 done; M3 next. This is a living document: update it in the PR that closes an item.*
+*Status as of 2026-09-27: M1, M2 and M3 done; the release milestone is what remains. This is a living document: update it in the PR that closes an item.*
 
 ---
 
@@ -105,26 +105,33 @@ model and, where it applied, shown failing against `develop` first. The exit cri
 
 ---
 
-## M3 — Retargetable base
+## M3 — Retargetable base ✅
 
 **Goal:** changing domain means changing extensions, config and a profile, and nothing else.
 
-**Exit criteria**
+**Done**, in three PRs into `develop`, each behaviorally tested in the container and shown failing
+on `develop` where it applied. The exit criteria, as met:
 
-- The notes domain runs as `midge --extension-dir examples/notes_extension --profile notes`, not
-  as a separate wiring script.
-- A domain can run without the coding tools and still use skills.
-- `docs/retargeting.md` walks a new domain from empty directory to running agent.
+- **The notes domain runs as `midge --extension-dir examples/notes_extension --profile notes`.**
+  `examples/notes_agent.py` — a hand-copied wiring script that had drifted until it no longer ran —
+  is gone. In the container the notes agent added and listed notes, asked approval only for the
+  mutating tool, and had no shell to run.
+- **A domain runs without the coding tools and still uses skills.** `[tools] builtin = false`
+  loads none; skills stay reachable through `/skill:`, and the catalogue appears whenever any tool
+  declares it can open a file by path.
+- **`docs/retargeting.md` walks a new domain from an empty directory**, and a test builds that
+  domain from the guide's own code blocks, so it cannot drift.
 
-| Item | Issue | Size | Notes |
-|---|---|---|---|
-| The base system prompt is hardcoded | **proposed** | S | `BASE_SYSTEM_PROMPT` in `cli.py:45` says "coding assistant". Make it a `Config` field. A profile can already replace it, but only once a profile is chosen. |
-| Built-in coding tools always load | **proposed** | S | `cli.py:223` prepends `BUILTIN_TOOL_DIRS` unconditionally. Add a config switch. |
-| Skills gated on a tool literally named `read` | **proposed** | S–M | `cli.py:231` and `commands.py:272`. A domain without `read` silently loses its skills. Gate on something a domain can declare. |
-| `notes_agent.py` through the real entrypoint | **proposed** | S | Depends on the three items above. Today it re-implements the wiring and gets no profiles, RPC or skills. |
-| `docs/retargeting.md` | **proposed** | M | The material is in the README. It needs a walkthrough, written last, against the result. |
-| `pi_bash_` spill-file prefix | #108 | S | The model sees this name, so it leaks the old identity. |
-| Palette vs drawer | #115 | — | A design question for the TUI, not a blocker. |
+| Item | Issue | PR |
+|---|---|---|
+| The base system prompt was hardcoded — `[agent] system_prompt` | — | #135 |
+| The coding tools always loaded — `[tools] builtin` | — | #135 |
+| Skills gated on a tool named `read` — `@tool(reads_paths=True)` | — | #135 |
+| A profile without a reader was shown the catalogue at startup | — | #135 |
+| `pi_bash_` spill-file prefix | #108 | #135 |
+| The notes domain through the real entrypoint; `notes_agent.py` removed | — | #136 |
+| `docs/retargeting.md`, tested against its own examples | — | #136 |
+| Palette vs drawer: verbs in Ctrl+P, everything switchable in the drawer | #115 | this PR |
 
 ---
 
@@ -145,9 +152,10 @@ model and, where it applied, shown failing against `develop` first. The exit cri
 
 These shape items above. None of them is settled by writing them down here.
 
-- **#115: one surface for switching, or two?**
 - **A second wire format (e.g. Anthropic).** Currently under *Not MVP*: the provider registry makes
   it an adapter rather than a branch, but CLAUDE.md asks for a real reason, not symmetry.
+- **Settings for extensions.** An extension has no `Config` of its own, so the notes example reads
+  `MIDGE_NOTES_KB` from the environment. Worth solving once a domain needs more than a path.
 
 Decided during M1, recorded so they are not reopened by accident:
 
@@ -157,6 +165,9 @@ Decided during M1, recorded so they are not reopened by accident:
   declares it; a sub-agent derives it from its allowlist.
 - **Approval** is TUI-only and on by default (`[tui] approve_tools`). RPC never asks — the boundary
   there is the container.
+- **#115:** Ctrl+P lists verbs; the drawer (Ctrl+B) is the one place to switch session, profile or
+  model. A section with nothing to pick says why rather than vanishing.
+- **The skills catalogue** is shown when a tool declares `reads_paths`, and names that tool.
 
 ## Not MVP
 

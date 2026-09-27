@@ -1,8 +1,15 @@
-"""Personal-notes knowledge-base extension.
+"""Personal-notes knowledge-base extension — midge as something other than a coding agent.
 
-A Phase 5 demo extension: shows how a user-authored extension pack retargets the
-harness without any change to core code. Storage is a single JSON file
-(default `~/.midge-notes/kb.json`; override via `MIDGE_NOTES_KB`).
+    midge --extension-dir examples/notes_extension --profile notes
+
+This one file is the whole domain: the tools, a line of guidance appended to
+the prompt, and the `notes` profile that makes the agent *be* a notes assistant
+— its identity, and only these five tools. No wiring script, no core change.
+`docs/retargeting.md` walks through building one like it.
+
+Storage is a single JSON file (default `~/.midge-notes/kb.json`; override via
+`MIDGE_NOTES_KB`). An extension has no `Config` of its own yet, so this is the
+one place a setting comes from the environment — see the retargeting guide.
 
 Tools:
     add_note(title, content, tags=None) — create a new note.
@@ -21,8 +28,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from midge.profiles import Profile
 from midge.tools import tool
 
+# Appended to whatever the agent is — the `notes` profile below, or a coding
+# agent that also has these tools loaded. It describes the tools; the identity
+# is the profile's.
 SYSTEM_PROMPT = """You also have access to a personal-notes knowledge base. Use the notes tools to help the user capture, find, and connect their notes.
 
 Conventions:
@@ -156,3 +167,22 @@ async def link_notes(from_title: str, to_title: str) -> str:
     kb["links"].append(link)
     _save(kb)
     return f"Linked: {from_title!r} → {to_title!r}"
+
+
+NOTES = Profile(
+    name="notes",
+    description="A personal knowledge assistant over the notes knowledge base.",
+    # Only this domain's tools: no shell, no file editing. The profile is an
+    # allowlist, so the coding built-ins are gone even when they are loaded.
+    tools=("add_note", "search_notes", "read_note", "list_notes", "link_notes"),
+    # A decision for every hook source is required; this extension registers
+    # none. Load one alongside (e.g. an approval hook) and add it here.
+    hooks={},
+    prompt=(
+        "You are a personal knowledge assistant. Help the user capture, find, "
+        "and connect their notes. Prefer searching existing notes before "
+        "answering from general knowledge — the user's own writing is more "
+        "trustworthy than your training data for their work. When you learn "
+        "something new from the user, suggest saving it as a note."
+    ),
+)

@@ -55,7 +55,7 @@ from midge.agent import Agent, AgentEnd, AgentEvent
 from midge.compaction import compact, needs_compaction
 from midge.config import SubagentConfig
 from midge.config import emit as emit_diagnostics
-from midge.extensions import load_extensions
+from midge.extensions import keep_builtins, load_extensions
 from midge.messages import UserMessage
 from midge.persistence import (
     ProfileRecord,
@@ -66,7 +66,7 @@ from midge.persistence import (
 )
 from midge.profiles import Profile, ProfileSet
 from midge.profiles import validate as validate_profiles
-from midge.skills import Skill, load_skills, skill_message, skills_prompt
+from midge.skills import Skill, load_skills, path_reader, skill_message, skills_prompt
 from midge.subagents import bind_subagents
 from midge.tools import ToolRegistry
 
@@ -237,6 +237,7 @@ class Controls:
         skill_sources: Sequence[Path] | None = None,
         session_dir: Path | None = None,
         runner: Runner | None = None,
+        builtin_tools: bool | tuple[str, ...] = True,
         on_subagent_event: Any = None,
     ) -> None:
         self.agent = agent
@@ -270,6 +271,9 @@ class Controls:
         # profile switch all re-bind.
         self.subagents = subagents
         self.extension_sources = extension_sources
+        # `[tools] builtin` as a list is a projection after loading, so a
+        # reload — which re-runs the load — has to repeat it.
+        self.builtin_tools = builtin_tools
         self.skill_sources = skill_sources
         # Where to look when asked what sessions exist. `None` means the
         # default, resolved at call time rather than here — `Path.cwd()` frozen
@@ -296,7 +300,7 @@ class Controls:
         extensions reload can add or remove `read`, which makes this the one
         point where reloading extensions changes the skills half of the prompt.
         """
-        catalogue = skills_prompt(self.skills) if "read" in self.agent.tools else ""
+        catalogue = skills_prompt(self.skills, reader=path_reader(self.agent.tools))
         return "\n\n".join(p for p in (self.extension_prompt, catalogue) if p)
 
     def compose_prompt(self) -> str:
@@ -976,6 +980,7 @@ class Controls:
         registry, self.extension_prompt = load_extensions(
             self.extension_sources, hooks=hooks, profiles=profiles
         )
+        registry = keep_builtins(registry, self.builtin_tools)
         # After the load, so it validates against the tools and hooks that now
         # exist rather than the ones that just went away.
         emit_diagnostics(

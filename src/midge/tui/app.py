@@ -21,11 +21,13 @@ server drives, and both surfaces enumerate the same `BUILTIN_COMMANDS`. That is
 what keeps them from drifting: a command added to that table appears in the
 palette without this file being edited.
 
-Two ways to reach it, one table behind both. **Ctrl+P** opens Textual's command
-palette, which offers the commands that need no argument and the two whose valid
-values are knowable — `set_model` and `use_profile` come with enums, so they
-become sub-entries rather than a prompt for free text. **A leading slash** in the
-input box does the same and can carry an argument.
+Verbs and nouns get different surfaces (#115). **Ctrl+P** opens the command
+list: things you *do* — compact, clear, reload, abort, a skill. **Ctrl+B** opens
+the drawer: what the agent *is* — its session, profile and model — with the
+current one marked, and the alternatives to switch to. A switch appears in the
+drawer only; offering it in both read as two different commands. **A leading
+slash** in the input box reaches any command, and is the way to pass one an
+argument (`/set_model gpt-4o`, `/new_session path`).
 
 A slash only intercepts when the word after it is a command anyone could invoke.
 `/etc/hosts is missing` is a sentence, and treating it as a failed command would
@@ -196,36 +198,19 @@ class MidgeCommands(Provider):
         return app
 
     def _entries(self) -> list[tuple[str, str, str | None]]:
-        """(display, description, argument) for everything the palette offers.
+        """(display, description, argument) for everything the list offers.
 
-        Read off the schema rather than a list kept here, so a command becomes
-        palette-invocable the moment its arguments are knowable — and cannot be
-        offered before that. Three cases:
-
-        - **No required argument** — one entry that fires it. `compact`.
-        - **One required argument with an enum** — one entry per value, because
-          a palette is a list you filter, so `set_model gpt-4o` is a thing to
-          find rather than a prompt for free text.
-        - **Anything else** — omitted. A path or a prompt has to be typed, and
-          the slash form is where you can type it.
-
-        The third case is why this is derived: `set_model` has an enum only once
-        a `[models]` table exists. With an empty registry it is *not* knowable,
-        and an entry firing it with no value would set the model to "".
+        Read off the schema rather than a list kept here: a built-in that needs
+        no argument is a thing you do, so it is offered; one that needs an
+        argument is either a switch — which the drawer offers, with the current
+        choice marked — or free text like a path, which has to be typed after a
+        slash. Skills are verbs too.
         """
         app = self._app
         out: list[tuple[str, str, str | None]] = []
         for command in BUILTIN_COMMANDS:
-            schema = app.controls.builtin_schema(command)
-            properties = schema.get("properties", {})
-            required = list(schema.get("required", ()))
-            if not required:
+            if not app.controls.builtin_schema(command).get("required"):
                 out.append((command.name, command.description, None))
-                continue
-            if len(required) == 1 and (values := properties[required[0]].get("enum")):
-                out.extend(
-                    (f"{command.name} {v}", command.description, v) for v in values
-                )
         for skill in app.controls.skills:
             out.append((f"skill:{skill.name}", skill.description, None))
         return out
@@ -262,10 +247,10 @@ class Sidebar(VerticalScroll):
     docked, it shows what you are on. Before this the only visible state was the
     model in the title bar.
 
-    A section with nothing to offer is omitted rather than shown empty — the
-    same rule the palette follows, and the reason the model section disappears
-    without a `[models]` table: with an empty registry midge cannot know what
-    the alternatives are.
+    Every section is always shown. One with nothing to offer says why in a
+    line, rather than vanishing: without a `[models]` table midge cannot know
+    what the alternatives to the current model are, and a missing section read
+    as "the model cannot be switched here" (#115) rather than "none are listed".
     """
 
     DEFAULT_CSS = """
@@ -273,6 +258,7 @@ class Sidebar(VerticalScroll):
     Sidebar.hidden { display: none; }
     Sidebar > .section { color: $text-muted; text-style: bold; padding: 1 0 0 0; }
     Sidebar > OptionList { border: none; background: transparent; height: auto; }
+    Sidebar > .hint { color: $text-muted; padding: 0 0 0 2; }
     """
 
     def rebuild(self, controls: Controls) -> None:
@@ -282,19 +268,24 @@ class Sidebar(VerticalScroll):
         processes, and a profile switch changes two sections at once.
         """
         self.remove_children()
-        sections = 0
-        for title, options in (
-            ("sessions", _session_options(controls)),
-            ("profiles", _profile_options(controls)),
-            ("model", _model_options(controls)),
+        for title, options, empty in (
+            ("sessions", _session_options(controls), "none saved yet"),
+            (
+                "profiles",
+                _profile_options(controls),
+                "none — declare a Profile in an extension",
+            ),
+            (
+                "model",
+                _model_options(controls),
+                f"{controls.agent.model} — list models under [models] in config to switch here",
+            ),
         ):
-            if not options:
-                continue
-            sections += 1
             self.mount(Static(title, classes="section"))
-            self.mount(OptionList(*options))
-        if not sections:
-            self.mount(Static("nothing to switch to", classes="section"))
+            if options:
+                self.mount(OptionList(*options))
+            else:
+                self.mount(Static(empty, classes="hint", markup=False))
 
 
 # NUL, because the argument half is a filesystem path and everything printable
@@ -396,6 +387,10 @@ class PiApp(App[None]):
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("ctrl+c", "interrupt", "Interrupt", priority=True),
+        # Declared here so Textual does not add its own, labelled "palette": to
+        # someone using midge it is the list of commands, and the drawer
+        # (Ctrl+B) is where switching happens.
+        Binding("ctrl+p", "command_palette", "Commands", show=False, priority=True),
         Binding("ctrl+d", "quit", "Quit", priority=True),
         Binding("ctrl+b", "toggle_sidebar", "Switch to…", priority=True),
         Binding("escape", "clear_input", "Clear input"),

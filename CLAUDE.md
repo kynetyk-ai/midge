@@ -49,6 +49,8 @@ A **profile** is what the agent *is* — a named bundle of system prompt, model,
 active hooks, declared as a `Profile` instance in an extension `.py` file and discovered by
 `load_extensions`. It deliberately does not converge with `SubagentSpec` despite the overlapping
 fields: a sub-agent is a tool the agent uses, a profile is a reconfiguration an operator applies.
+It is the unit of retargeting: a domain is an extension, a profile and a little config
+(`docs/retargeting.md`).
 See [ADR 0001](docs/adr/0001-session-profiles.md). Discovery, validation and *applying* a profile
 (`Controls.use_profile`, #67, on top of source-scoped hook activation, #60) all exist.
 
@@ -169,7 +171,7 @@ src/midge/logs.py     # logging configuration (entrypoints only)
 src/midge/hooks.py    # lifecycle events + handler registry
 src/midge/commands.py # Controls + BUILTIN_COMMANDS — what both front-ends call
 src/midge/rpc/        # JSON-on-stdio front-end: wire / server / transport
-src/midge/tui/        # Textual front-end: palette, slash commands, steering, panel
+src/midge/tui/        # Textual front-end: commands (verbs), drawer (nouns), slash commands, steering
 tests/              # pytest tests
 examples/           # entrypoints, and example extensions/profiles/skills
 docs/               # rpc.md (the wire contract, pinned by tests/test_rpc_contract.py), adr/

@@ -24,8 +24,9 @@ from midge.commands import Controls
 from midge.config import Config
 from midge.config import emit as emit_config_diagnostics
 from midge.extensions import (
-    BUILTIN_TOOL_DIRS,
+    builtin_sources,
     default_extension_dir,
+    keep_builtins,
     load_extensions,
 )
 from midge.hooks import Hooks, SessionEnd, SessionStart
@@ -36,7 +37,7 @@ from midge.profiles import ProfileSet
 from midge.profiles import validate as validate_profiles
 from midge.providers import Capabilities, ModelRegistry
 from midge.rpc import RpcServer, serve_stdio
-from midge.skills import default_skill_dirs, load_skills, skills_prompt
+from midge.skills import default_skill_dirs, load_skills, path_reader, skills_prompt
 from midge.subagents import validate as validate_subagents
 from midge.tools import ToolRegistry
 from midge.tui import run_tui, tui_log_handler
@@ -149,6 +150,7 @@ def resume_identity(
     configured: str,
     configured_explicitly: bool = False,
     registry: ModelRegistry | None = None,
+    default_prompt: str = BASE_SYSTEM_PROMPT,
 ) -> tuple[str, str]:
     """The model and base prompt to resume a session with.
 
@@ -176,7 +178,7 @@ def resume_identity(
     block. Both warn, so a disagreement is visible and the config can be
     reconsidered.
     """
-    durable = session.system_prompt or BASE_SYSTEM_PROMPT
+    durable = session.system_prompt or default_prompt
     recorded = session.model
     if configured_explicitly:
         if recorded != configured:
@@ -240,19 +242,23 @@ def main(argv: list[str] | None = None) -> None:
         if config.extensions.enabled
         else []
     )
-    extension_sources = [*BUILTIN_TOOL_DIRS, *configured, *args.extension_dir]
+    extension_sources = [*builtin_sources(config.tools.builtin), *configured, *args.extension_dir]
     # Explicit paths outrank the defaults: naming a directory on the command
     # line is a deliberate override. Note this is the opposite nesting from the
     # extension sources above, where the built-ins must not be shadowed.
     skill_sources = [*args.skill_dir, *default_skill_dirs()]
     profiles = ProfileSet()
     registry, prompt_addition = load_extensions(extension_sources, hooks=hooks, profiles=profiles)
+    registry = keep_builtins(registry, config.tools.builtin)
     skills = load_skills(skill_sources)
-    catalogue = skills_prompt(skills) if "read" in registry else ""
 
     session: Session | None = None
     model = config.model
-    durable = BASE_SYSTEM_PROMPT
+    # The domain's identity for a new session. `[agent] system_prompt` is what
+    # makes midge not a coding assistant without a profile; the constant is
+    # only what it says when nobody configured anything.
+    default_prompt = config.agent.system_prompt or BASE_SYSTEM_PROMPT
+    durable = default_prompt
 
     # Before the session opens, because resuming one consults it: a recorded
     # model that is no longer registered degrades to the configured one rather
@@ -293,6 +299,7 @@ def main(argv: list[str] | None = None) -> None:
             configured=config.model,
             configured_explicitly=bool(config.model_source),
             registry=model_registry,
+            default_prompt=default_prompt,
         )
 
     # After every source is loaded, because a profile may name a tool declared
@@ -356,6 +363,10 @@ def main(argv: list[str] | None = None) -> None:
     # fact about this machine right now, so it is recomposed on every start
     # rather than restored — otherwise a skill added after the session began is
     # invisible, and its absolute paths could point at another machine entirely.
+    # After the profile has projected the tools: a profile without a reader
+    # must not be shown a catalogue it cannot open. `Controls.generated_prompt`
+    # applies the same rule after a switch.
+    catalogue = skills_prompt(skills, reader=path_reader(registry))
     full_prompt = "\n\n".join(p for p in (durable, prompt_addition, catalogue) if p)
 
     _logger.info(
@@ -441,6 +452,7 @@ def main(argv: list[str] | None = None) -> None:
         # The same lists the loaders above were given, so `reload` repeats that
         # call rather than rebuilding it.
         extension_sources=extension_sources,
+        builtin_tools=config.tools.builtin,
         skill_sources=skill_sources,
     )
 
