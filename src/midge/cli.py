@@ -37,7 +37,6 @@ from midge.profiles import validate as validate_profiles
 from midge.providers import Capabilities, ModelRegistry
 from midge.rpc import RpcServer, serve_stdio
 from midge.skills import default_skill_dirs, load_skills, skills_prompt
-from midge.subagents import bind_subagents
 from midge.subagents import validate as validate_subagents
 from midge.tools import ToolRegistry
 from midge.tui import run_tui, tui_log_handler
@@ -407,16 +406,6 @@ def main(argv: list[str] | None = None) -> None:
     notices = [n for n in (active.credential_problem(),) if n]
     if notices:
         _logger.warning("provider_credential_missing provider=%s", active.name)
-    # Tools cannot reach the calling agent, so any sub-agent tool an extension
-    # registered gets what it needs to run a child here. No-op without them.
-    bind_subagents(
-        registry,
-        client=client,
-        model=model,
-        hooks=hooks,
-        session=session,
-        subagents=config.subagents,
-    )
     agent = Agent(
         client=client,
         model=model,
@@ -476,6 +465,11 @@ def main(argv: list[str] | None = None) -> None:
     # A handler that needs the running app's loop should use a turn-scoped
     # event instead.
     asyncio.run(hooks.emit(SessionStart(path=session_path)))
+    # Tools cannot reach the calling agent, so a sub-agent tool gets what it
+    # needs to run a child here. Once per front-end, through `Controls`: RPC
+    # binds in `RpcServer.__init__`, where it also wires the event envelope, and
+    # binding here as well bound RPC's sub-agents twice (#109).
+    controls.bind_subagents(agent.tools)
     try:
         run_tui(controls, approve_tools=config.tui.approve_tools, notices=notices)
     finally:
