@@ -15,6 +15,9 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any, Literal
 
+from pydantic import ValidationError
+
+from midge import __version__
 from midge.agent import Agent, SteeringQueue
 from midge.client import Error
 from midge.commands import (
@@ -32,7 +35,13 @@ from midge.config import SubagentConfig
 from midge.messages import AssistantMessage, TextContent, UserMessage
 from midge.persistence import Session
 from midge.profiles import ProfileSet
-from midge.rpc.transport import FLUSH_TIMEOUT, OUTBOX_FRAMES, ReadLineFn, WriteFn
+from midge.rpc.transport import (
+    FLUSH_TIMEOUT,
+    OUTBOX_FRAMES,
+    LineTooLong,
+    ReadLineFn,
+    WriteFn,
+)
 from midge.rpc.wire import event_to_wire
 from midge.skills import Skill
 
@@ -48,6 +57,26 @@ __all__ = [
 ]
 
 _logger = logging.getLogger(__name__)
+
+# The wire contract's version, independent of midge's own. Adding a frame type,
+# a field or a command does not change it — clients ignore what they do not
+# know. Removing or renaming one, or changing what a field means, does.
+# `docs/rpc.md` is the contract; `tests/golden/rpc_frames.json` pins it.
+PROTOCOL_VERSION = 1
+
+
+def _summarize(exc: ValidationError) -> str:
+    """One line a client can show: which field, and what is wrong with it.
+
+    `str()` of a pydantic error is several lines naming the internal model
+    (`UseProfileParams`) and linking pydantic's docs — written for the author
+    of the model, not for whoever sent the command (#107).
+    """
+    parts = []
+    for err in exc.errors():
+        where = ".".join(str(p) for p in err["loc"])
+        parts.append(f"`{where}`: {err['msg']}" if where else err["msg"])
+    return "; ".join(parts)
 
 
 class RpcServer:
@@ -148,8 +177,19 @@ class RpcServer:
         self._write = write
         pump = asyncio.ensure_future(self._pump())
         try:
+            # First, before any command is read: a client learns what it is
+            # talking to without having to ask, and can refuse a protocol it
+            # does not know before sending anything.
+            await self._emit(
+                {"type": "ready", "protocol": PROTOCOL_VERSION, "midge": __version__}
+            )
             while True:
-                line = await read_line()
+                try:
+                    line = await read_line()
+                except LineTooLong as e:
+                    _logger.warning("rpc_line_too_long size=%d limit=%d", e.size, e.limit)
+                    await self._respond(None, "parse", success=False, error=str(e))
+                    continue
                 if not line:
                     break
                 # `strip`, not `rstrip("\r\n")`: a whitespace-only line is a
@@ -168,7 +208,21 @@ class RpcServer:
                         None, "parse", success=False, error="command must be a JSON object"
                     )
                     continue
-                await self._dispatch(cmd)
+                try:
+                    await self._dispatch(cmd)
+                except Exception as e:
+                    # An operation failing is an answer, not a reason to stop
+                    # serving. Handlers answer `Refused` themselves; this is for
+                    # what they did not expect — a `compact` whose summary call
+                    # failed used to end the process from here.
+                    _logger.exception("rpc_command_failed type=%s", cmd.get("type"))
+                    command = cmd.get("type")
+                    await self._respond(
+                        cmd.get("id") if isinstance(cmd.get("id"), str) else None,
+                        command if isinstance(command, str) else "unknown",
+                        success=False,
+                        error=f"{type(e).__name__}: {e}",
+                    )
         finally:
             run = self._current_run
             if run is not None and not run.done():
@@ -186,6 +240,17 @@ class RpcServer:
         cmd_id_raw = cmd.get("id")
         cmd_id = cmd_id_raw if isinstance(cmd_id_raw, str) else None
         cmd_type = cmd.get("type")
+        if "id" in cmd and cmd_id is None:
+            # Refused rather than run: a client that sent an id is waiting for
+            # a response carrying it, and would never learn this one's outcome
+            # (#106). Every other malformed field is refused the same way.
+            await self._respond(
+                None,
+                cmd_type if isinstance(cmd_type, str) else "unknown",
+                success=False,
+                error="`id` must be a string",
+            )
+            return
         _logger.info("rpc_command type=%s id=%s", cmd_type, cmd_id or "-")
         match cmd_type:
             case "prompt":
@@ -345,7 +410,11 @@ class RpcServer:
         )
 
     async def _handle_get_state(self, cmd_id: str | None) -> None:
-        await self._respond(cmd_id, "get_state", success=True, data=self.controls.state())
+        # The versions ride here too, for a client that attached late or did
+        # not keep the `ready` frame. Added here, not in `Controls.state()`,
+        # because a protocol version is the transport's fact, not the agent's.
+        data = {**self.controls.state(), "protocol": PROTOCOL_VERSION, "midge": __version__}
+        await self._respond(cmd_id, "get_state", success=True, data=data)
 
     async def _handle_get_last_assistant_text(self, cmd_id: str | None) -> None:
         text: str | None = None
@@ -467,8 +536,8 @@ class RpcServer:
             params = UseProfileParams.model_validate(
                 {k: v for k, v in cmd.items() if k not in ("id", "type")}
             )
-        except ValueError as e:
-            await self._respond(cmd_id, "use_profile", success=False, error=str(e))
+        except ValidationError as e:
+            await self._respond(cmd_id, "use_profile", success=False, error=_summarize(e))
             return
         await self._call(
             cmd_id,
@@ -493,8 +562,8 @@ class RpcServer:
             params = ReloadParams.model_validate(
                 {k: v for k, v in cmd.items() if k not in ("id", "type")}
             )
-        except ValueError as e:
-            await self._respond(cmd_id, "reload", success=False, error=str(e))
+        except ValidationError as e:
+            await self._respond(cmd_id, "reload", success=False, error=_summarize(e))
             return
         try:
             data = await self.controls.reload(params.targets)

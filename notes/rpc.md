@@ -1,5 +1,10 @@
 # RPC mode (JSON-over-stdio) — patterns to borrow from `pi-mono`
 
+> **Historical (#76).** This is the port-era reading note. The protocol as it is now is
+> [`docs/rpc.md`](../docs/rpc.md), pinned by `tests/test_rpc_contract.py`; the code is the
+> `src/midge/rpc/` package (`wire`, `server`, `transport`). `examples/rpc_agent.py`, mentioned
+> below, was replaced by `examples/rpc_client.py` and `midge --rpc`.
+
 Source:
 - `pi-mono/packages/coding-agent/src/cli/args.ts:74–78` — `--mode rpc` flag
 - `pi-mono/packages/coding-agent/src/modes/rpc/rpc-mode.ts` — entrypoint and dispatch
@@ -244,7 +249,7 @@ has a text-expansion path where that makes sense; midge does not.
 
 ## What Phase 2 implements
 
-- `src/midge/rpc.py`:
+- `src/midge/rpc.py` (now the `src/midge/rpc/` package):
   - `RpcServer.serve(read_line=, write=)` — the transport-agnostic loop; the injected callables are what make it testable without pipes.
   - `serve_stdio(server)` — binds that loop to this process's stdin/stdout.
   - One handler per inbound command type, dispatched by a `match` on `type`. (This note originally said "use a dispatch dict, not isinstance chains". A `match` statement reads better than either and is what shipped.)

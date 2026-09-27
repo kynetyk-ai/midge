@@ -26,7 +26,7 @@ marked **proposed** have no issue yet and are filed when work on them starts. Si
 is an afternoon, **M** a few sessions, **L** needs a design pass first. Within a milestone, items
 are listed roughly in the order worth doing them.
 
-*Status as of 2026-09-27: M1 done; M2 next. This is a living document: update it in the PR that closes an item.*
+*Status as of 2026-09-27: M1 and M2 done; M3 next. This is a living document: update it in the PR that closes an item.*
 
 ---
 
@@ -70,30 +70,38 @@ the TUI driven through tmux. The exit criteria, as met:
 
 ---
 
-## M2 — Embeddable via RPC
+## M2 — Embeddable via RPC ✅
 
 **Goal:** another program can depend on `midge --rpc` the way it depends on a library.
 
-**Exit criteria**
+**Done**, in three PRs into `develop`, each behaviorally tested in the container against a real
+model and, where it applied, shown failing against `develop` first. The exit criteria, as met:
 
-- A client can learn which protocol version it is talking to.
-- Every command, response and event frame is documented in one place, and a test fails when one
-  changes.
-- A subprocess test spawns `midge --rpc`, runs a turn, kills the process, starts another, reopens
-  the session and finds the history intact.
-- No malformed input ends the process.
+- **A client learns the protocol version without asking.** The server's first frame is
+  `{"type": "ready", "protocol": 1, "midge": …}`; `get_state` carries both.
+- **Every command, response and event is documented in one place** — [`docs/rpc.md`](docs/rpc.md),
+  with a compatibility policy — **and a test fails when one changes.** `tests/test_rpc_contract.py`
+  pins 39 frame shapes in a golden file and fails if the reference stops naming a frame or command
+  the source has. A real-model session in the container produced no shape outside it.
+- **A subprocess test** (`tests/test_rpc_subprocess.py`) spawns `python -m midge --rpc` against a
+  stdlib fake OpenAI server, runs a turn, ends the process, starts another on the same session, and
+  checks the model was sent the first turn.
+- **No malformed input ends the process** — an over-long line, a bad `id`, not-JSON — and, found
+  while writing the contract test, **no failing operation does either**.
 
-| Item | Issue | Size | Notes |
-|---|---|---|---|
-| An over-long line kills the server | #100 | S–M | Refuse it with a frame, drain to the newline, keep serving. |
-| A non-string `id` is dropped and the command runs | #106 | S | Refuse the command. |
-| Exception reprs on the wire | #107 | S | Summarise pydantic errors. Rephrase at the raise site. |
-| Sub-agents bound twice at startup | #109 | S | Remove the `cli.py` call. |
-| Protocol version and handshake | **proposed** | S | Nothing under `rpc/` carries a version today. |
-| `docs/rpc.md` reference plus golden-frame test | **proposed** | M | Events and response shapes currently exist only as code and a module docstring. |
-| Subprocess end-to-end test | **proposed** | M | All the RPC unit tests run in-process. #99 was caught by the container harness, not the suite; this puts the same check in CI. |
-| A minimal Python client example | **proposed** | S | `examples/rpc_agent.py` is a server launcher, not a client. |
-| Stale `src/midge/rpc.py` references | **proposed** | S | In `examples/rpc_agent.py` and `notes/rpc.md`; it has been a package for a while. |
+| Item | Issue | PR |
+|---|---|---|
+| An over-long line killed the server | #100 | #131 |
+| A non-string `id` was dropped and the command ran | #106 | #131 |
+| Exception reprs on the wire | #107 | #131 |
+| Sub-agents bound twice | #109 | #131 |
+| CI on `develop`; `python -m midge` | — | #131 |
+| Protocol version and `ready` | — | #132 |
+| `docs/rpc.md` plus golden-frame test | — | #132 |
+| An operation's unexpected exception ended the process | — | #132 |
+| Subprocess end-to-end test | — | this PR |
+| `examples/rpc_client.py` replaces `examples/rpc_agent.py` | — | this PR |
+| Stale `src/midge/rpc.py` references | — | this PR |
 
 ---
 

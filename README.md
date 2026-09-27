@@ -136,11 +136,18 @@ Only entrypoints construct a `Config`; library modules take parameters. There is
 ### RPC (JSON-on-stdio)
 
 ```bash
-echo '{"id":"1","type":"prompt","message":"say hi"}' | \
-poetry run python -m examples.rpc_agent
+midge --rpc                                   # the server: JSON lines on stdin/stdout
+python examples/rpc_client.py "say hi"        # a stdlib-only client that spawns it
 ```
 
-Newline-delimited JSON. `get_commands` enumerates everything invocable — built-in commands and `SKILL.md` skills alike — each with a JSON Schema for its arguments, so a client can build a command palette without hardcoding the protocol. `reload` re-scans skills and extensions from disk, so a new `SKILL.md` or an edited tool takes effect without restarting. `open_session` attaches a running agent to another transcript, creating it if the path is free, which is what lets a client leave a conversation and come back to it, and `list_sessions` says which transcripts exist so a client can offer the choice — sub-agent runs and profile excursions excluded, since reopening one would resume the middle of a tool call. The wire format is documented at the top of [`src/midge/rpc/__init__.py`](./src/midge/rpc/__init__.py), and what a transport other than stdio would have to decide for itself at the top of [`src/midge/rpc/transport.py`](./src/midge/rpc/transport.py); [`notes/rpc.md`](./notes/rpc.md) is the port-era reading note rather than current documentation.
+**The protocol is documented in [`docs/rpc.md`](./docs/rpc.md)** — every command, response and
+event, what order they come in, and the compatibility policy. The server's first frame is
+`{"type": "ready", "protocol": 1, …}`, so a client can check the version before sending anything,
+and `tests/test_rpc_contract.py` fails if a frame's shape changes without the reference and the
+golden file following. [`examples/rpc_client.py`](./examples/rpc_client.py) is the shape to copy
+when embedding midge: spawn, read `ready`, prompt, render until `agent_settled`, close stdin.
+
+Newline-delimited JSON. `get_commands` enumerates everything invocable — built-in commands and `SKILL.md` skills alike — each with a JSON Schema for its arguments, so a client can build a command palette without hardcoding the protocol. `reload` re-scans skills and extensions from disk, so a new `SKILL.md` or an edited tool takes effect without restarting. `open_session` attaches a running agent to another transcript, creating it if the path is free, which is what lets a client leave a conversation and come back to it, and `list_sessions` says which transcripts exist so a client can offer the choice — sub-agent runs and profile excursions excluded, since reopening one would resume the middle of a tool call. What a transport other than stdio would have to decide for itself is recorded at the top of [`src/midge/rpc/transport.py`](./src/midge/rpc/transport.py); [`notes/rpc.md`](./notes/rpc.md) is the port-era reading note rather than current documentation.
 
 **midge never listens on anything** — no socket, no port, no bind address; the only network traffic is outbound to the provider. Stdin and stdout are a capability handed to the process by whoever launched it, so access control comes from the OS and the container runtime rather than from code midge would have to get right. Bridging to a socket is left to whoever deploys it, because the right shape is the client's to decide — and because anything that can send a line can run `bash` with the process's privileges.
 
@@ -387,7 +394,7 @@ src/midge/
 └── cli.py             # `midge` entrypoint
 examples/
 ├── coding_agent.py    # one-shot CLI for the coding domain
-├── rpc_agent.py       # RPC server for external clients
+├── rpc_client.py      # a minimal client for `midge --rpc` (stdlib only)
 ├── notes_agent.py     # second-domain TUI demo
 ├── config.toml        # every config key, commented, with its default
 ├── approval_extension/ # tool-approval hook demo (a denylist: advisory, see #102)

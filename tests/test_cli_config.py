@@ -386,3 +386,30 @@ def test_continue_resumes_the_most_recently_modified_session(
     main(["--continue"])
 
     assert opened == [newer]
+
+
+@pytest.mark.parametrize("rpc_mode", [True, False])
+def test_sub_agents_are_bound_once_in_either_mode(
+    rpc_mode: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # #109: RPC bound twice — once in cli.py, again in RpcServer.__init__.
+    root = Path(__file__).resolve().parent.parent / "examples" / "subagent_extension"
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+    async def no_serve(server: object) -> None:
+        return None
+
+    monkeypatch.setattr(cli, "serve_stdio", no_serve)
+    monkeypatch.setattr(cli, "run_tui", lambda controls, **kw: None)
+    # `main` configures logging for the run; caplog listens on the root logger.
+    monkeypatch.setattr(cli, "configure_logging", lambda *a, **kw: None)
+
+    with caplog.at_level(logging.INFO, logger="midge"):
+        main(["--no-session", "--extension-dir", str(root), *(["--rpc"] if rpc_mode else [])])
+
+    assert sum("subagents_bound" in r.getMessage() for r in caplog.records) == 1
