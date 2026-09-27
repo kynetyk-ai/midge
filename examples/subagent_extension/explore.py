@@ -5,7 +5,9 @@
 
 `@subagent` returns a `Tool`, so the ordinary extension loader finds this file
 and the model sees a `spawn_explore` tool alongside `read`, `bash`, and the
-rest. No separate agent directory, no new flag.
+rest. The explorer itself gets only `read`, `ls` and `grep`, all read-only — so
+its `spawn_explore` is read-only too, and runs alongside other reads. No
+separate agent directory, no new flag.
 
 The point of declaring the inputs here rather than accepting a free-form task
 string is that the model's choices are bounded: it supplies a question and
@@ -42,7 +44,10 @@ EXPLORE_PROMPT = (
         "change anything."
     ),
     prompt=EXPLORE_PROMPT,
-    tools=("read", "bash"),
+    # The claim above is only as true as this line. It used to include `bash`,
+    # which can write anything — so "read-only" in three places was a promise
+    # the allowlist did not keep (#103). `ls` and `grep` exist to make it keep it.
+    tools=("read", "ls", "grep"),
     # The budget for an ordinary search. A caller can ask for more, up to
     # `[subagents] max_timeout`, because `timeout` is in the signature below.
     timeout=180,

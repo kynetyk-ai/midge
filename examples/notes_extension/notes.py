@@ -86,7 +86,7 @@ async def add_note(
     return f"Saved note {title!r} (slug: {slug})"
 
 
-@tool
+@tool(read_only=True)
 async def search_notes(query: str, limit: int = 10) -> str:
     """Find notes whose title, body, or tags contain `query` (case-insensitive)."""
     kb = _load()
@@ -105,7 +105,7 @@ async def search_notes(query: str, limit: int = 10) -> str:
     return "\n".join(out)
 
 
-@tool
+@tool(read_only=True)
 async def read_note(title: str) -> str:
     """Return the full body of a note, looked up by title."""
     kb = _load()
@@ -126,7 +126,7 @@ async def read_note(title: str) -> str:
     return "\n".join(parts)
 
 
-@tool
+@tool(read_only=True)
 async def list_notes(tag: str | None = None) -> str:
     """List all notes, optionally filtered to those bearing `tag`."""
     kb = _load()

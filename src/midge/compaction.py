@@ -207,7 +207,11 @@ async def summarize(
     ):
         if isinstance(ev, TextDelta):
             text_parts.append(ev.delta)
-        elif isinstance(ev, Error):
+        # An aborted stream re-raises `CancelledError` once this event has been
+        # consumed. Raising here instead would replace the cancellation with a
+        # failure, and an interrupt during compaction would be reported as a
+        # broken summary while the turn carried on.
+        elif isinstance(ev, Error) and ev.message.stop_reason != "aborted":
             raise RuntimeError(
                 f"summarization failed: {ev.message.error_message or 'unknown error'}"
             )

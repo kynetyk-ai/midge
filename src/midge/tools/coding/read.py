@@ -7,7 +7,7 @@ _MAX_LINES = 2000
 _MAX_BYTES = 50_000
 
 
-@tool
+@tool(read_only=True)
 async def read(path: str, offset: int = 1, limit: int | None = None) -> str:
     """Read a UTF-8 text file. Returns up to 2000 lines or 50KB, head-truncated.
 

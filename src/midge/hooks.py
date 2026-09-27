@@ -382,6 +382,23 @@ class Hooks:
         self._handlers.clear()
         self._cleanups.clear()
 
+    async def unload_extensions(self) -> None:
+        """What `reload` needs: every extension's registrations gone, cleanups
+        run — and whatever the entrypoint registered itself left in place.
+
+        The distinction is `source`, which the extension loader stamps and the
+        entrypoint does not. It matters because the TUI's approval prompt is an
+        entrypoint handler, and a reload that wiped it would silently turn off
+        the one safeguard a person relies on.
+        """
+        for fn in list(self._cleanups):
+            await self._call(_Registration(fn, None))
+        self._cleanups.clear()
+        self._observers = [r for r in self._observers if r.source is None]
+        self._handlers = {
+            t: [r for r in regs if r.source is None] for t, regs in self._handlers.items()
+        }
+
     async def emit(self, event: HookEvent) -> Any | None:
         # Filtering here rather than at registration is what makes activation a
         # toggle: nothing is unregistered, so switching a source back on costs a

@@ -5,8 +5,10 @@ A minimum-viable shell:
 - User text becomes a UserBubble. Assistant text streams into a single
   AssistantBubble that grows in place. Tool calls/executions render as
   inline status cards.
-- Ctrl+J submits the input (most terminals send this for Ctrl+Enter).
-- Ctrl+C interrupts the current turn (cancels the run worker).
+- Enter submits; Ctrl+O inserts a newline (Alt+Enter too, where the terminal
+  sends it). Ctrl+J also submits (most terminals send it for Ctrl+Enter).
+- Ctrl+C interrupts the current turn and drops anything queued behind it —
+  the same as `/abort`.
 - Ctrl+D quits.
 - Esc clears the input draft.
 
@@ -33,8 +35,9 @@ make the input box refuse ordinary English about paths.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from functools import partial
 from pathlib import Path
 from typing import Any, ClassVar
@@ -43,9 +46,10 @@ from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
 from textual.command import DiscoveryHit, Hit, Hits, Provider
-from textual.containers import VerticalScroll
+from textual.containers import Vertical, VerticalScroll
 from textual.logging import TextualHandler
 from textual.message import Message
+from textual.screen import ModalScreen
 from textual.widgets import Footer, Header, OptionList, Static, TextArea
 from textual.widgets.option_list import Option
 from textual.worker import Worker, WorkerState
@@ -59,24 +63,34 @@ from midge.client import (
     ToolCallEnd,
     ToolCallStart,
 )
-from midge.commands import BUILTIN_COMMANDS, Controls, Refused
-from midge.compaction import compact, needs_compaction
-from midge.messages import TextContent, ToolCall
+from midge.commands import (
+    BUILTIN_COMMANDS,
+    CompactionEnd,
+    CompactionStart,
+    Controls,
+    Refused,
+)
+from midge.hooks import Hooks, ToolCallEvent, ToolCallResult
+from midge.messages import AssistantMessage, TextContent, ToolCall, Usage
 from midge.persistence import Session
 
 _logger = logging.getLogger(__name__)
 
 
 class _SubmitTextArea(TextArea):
-    """TextArea where Enter submits and Alt+Enter inserts a newline.
+    """TextArea where Enter submits and Ctrl+O inserts a newline.
 
-    Ctrl+J is kept as a fallback for terminals that don't deliver a clean
-    Enter keysym.
+    Ctrl+O is the advertised key because every terminal sends it as its own
+    byte. Alt+Enter is kept, but only works where the terminal sends Option as
+    Meta — macOS Terminal and iTerm do not by default, and send a bare Enter
+    instead, which submitted a half-typed prompt (#113). Ctrl+J is kept as a
+    fallback for terminals that don't deliver a clean Enter keysym.
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("enter", "submit", "Submit", show=False, priority=True),
-        Binding("alt+enter", "newline", "Newline", show=True, priority=True),
+        Binding("ctrl+o", "newline", "Newline", show=True, priority=True),
+        Binding("alt+enter", "newline", "Newline", show=False, priority=True),
         Binding("ctrl+j", "submit", "Submit", show=False),
     ]
 
@@ -96,6 +110,12 @@ class _SubmitTextArea(TextArea):
         self.insert("\n")
 
 
+# Every bubble is `markup=False`, for the reason `StatusLine` gives: what lands
+# in one is someone else's text. A model's `[bold]` vanished, a tool's `[OK]`
+# tag never rendered, and an unbalanced `[` raised MarkupError and killed the
+# turn (#110).
+
+
 class UserBubble(Static):
     DEFAULT_CSS = """
     UserBubble {
@@ -105,6 +125,9 @@ class UserBubble(Static):
         border-left: thick $primary;
     }
     """
+
+    def __init__(self, content: str) -> None:
+        super().__init__(content, markup=False)
 
 
 class AssistantBubble(Static):
@@ -116,7 +139,7 @@ class AssistantBubble(Static):
     """
 
     def __init__(self) -> None:
-        super().__init__("")
+        super().__init__("", markup=False)
         self._text = ""
 
     def append(self, delta: str) -> None:
@@ -136,6 +159,14 @@ class ToolCallBubble(Static):
         border-left: thick $error;
     }
     """
+
+    def __init__(self, content: str) -> None:
+        super().__init__(content, markup=False)
+
+
+def _preview(text: str, limit: int = 200) -> str:
+    # A `write` carries the whole file as an argument; the log is not the place.
+    return text if len(text) <= limit else text[:limit] + "…"
 
 
 class StatusLine(Static):
@@ -301,6 +332,59 @@ def _model_options(controls: Controls) -> list[Option]:
     ]
 
 
+class ApprovalScreen(ModalScreen[str]):
+    """Asks whether one tool call may run. Dismisses with `once`, `always` or
+    `deny`; Escape is a deny, so the way out of a prompt is never a yes."""
+
+    DEFAULT_CSS = """
+    ApprovalScreen { align: center middle; }
+    ApprovalScreen > Vertical {
+        width: 80%; height: auto; max-height: 80%;
+        padding: 1 2; background: $panel; border: thick $warning;
+    }
+    ApprovalScreen .choices { margin-top: 1; color: $text-muted; }
+    """
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("y", "choose('once')", "Allow once"),
+        Binding("a", "choose('always')", "Allow this tool for the session"),
+        Binding("n", "choose('deny')", "Deny"),
+        Binding("escape", "choose('deny')", "Deny", show=False),
+    ]
+
+    def __init__(self, call: ToolCall) -> None:
+        super().__init__()
+        self.call = call
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Static(f"Allow {self.call.name}?", markup=False)
+            yield Static(_preview(str(self.call.arguments), 1500), markup=False)
+            yield Static(
+                "[y] allow once   [a] always allow this tool   [n] deny",
+                markup=False,
+                classes="choices",
+            )
+
+    def action_choose(self, answer: str) -> None:
+        self.dismiss(answer)
+
+
+def _tokens(n: int) -> str:
+    return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
+
+
+def _compaction_note(ev: CompactionEnd) -> str:
+    if ev.error is not None:
+        return f"[compaction failed: {ev.error}]"
+    if ev.cut_index is None:
+        return "[compaction: nothing to summarize yet]"
+    return (
+        f"[compacted: {ev.cut_index} messages summarized; "
+        f"history is now {ev.message_count} messages]"
+    )
+
+
 class PiApp(App[None]):
     CSS = """
     Screen { layout: vertical; }
@@ -321,16 +405,25 @@ class PiApp(App[None]):
         self,
         controls: Controls,
         *,
-        compaction_threshold: int | None = None,
+        approve_tools: bool = False,
+        notices: Sequence[str] = (),
     ) -> None:
         super().__init__()
         self.controls = controls
-        # The threshold stays here rather than on `Controls`: automatic
-        # compaction is this interface deciding when to act, not an operation
-        # anyone invokes. `keep_recent` is shared, because it is the same
-        # summary either way.
-        self.compaction_threshold = compaction_threshold
+        # Shown in the log on mount: things the operator must see before the
+        # first prompt, like a missing API key, which a log file would bury.
+        self._notices = list(notices)
+        # Tokens this session has cost, shown in the header. Seeded from the
+        # history a resumed session brings, then added to after every turn.
+        self._usage = Usage()
+        for m in controls.agent.history:
+            self._add_usage(m)
         controls.runner = self
+        # Tools the person has said to stop asking about, for this process.
+        self._always_allowed: set[str] = set()
+        self._approval_lock = asyncio.Lock()
+        if approve_tools:
+            self._register_approval()
         # Steering has to be a real queue before a turn starts, or a message
         # typed mid-turn has nowhere to land.
         if controls.agent.steering is None:
@@ -338,7 +431,79 @@ class PiApp(App[None]):
         self._current_assistant: AssistantBubble | None = None
         self._tool_bubbles: dict[str, ToolCallBubble] = {}
         self._current_worker: Worker[None] | None = None
+        self._dropped_on_interrupt = 0
         self.title = f"midge · {controls.agent.model}"
+
+    def _register_approval(self) -> None:
+        """Ask before any tool that is not read-only runs.
+
+        A `tool_call` handler, registered here by the front-end rather than by
+        an extension, for three reasons. It has no `source`, so a profile
+        cannot switch it off and `reload` does not remove it. It sees every
+        call a sub-agent makes too, because a child's hooks reach this same
+        registry. And it exists only in the TUI: RPC never registers it,
+        because nobody is there to answer.
+
+        It is registered after the extensions loaded at startup, so it runs
+        after their handlers — an extension that blocks a call does so before
+        anyone is asked. (After a `reload`, re-imported extensions register
+        behind it and are asked second; a block still blocks.)
+        """
+        if self.controls.agent.hooks is None:
+            self.controls.agent.hooks = Hooks()
+        self.controls.agent.hooks.on("tool_call", self._approve)
+
+    async def _approve(self, event: ToolCallEvent, ctx: Any) -> ToolCallResult | None:
+        call = event.tool_call
+        tool = self.controls.discovered_tools.get(call.name) or self.agent.tools.get(call.name)
+        if tool is not None and tool.read_only:
+            return None
+        # Decisions for one message are gathered concurrently, so two prompts
+        # could otherwise be pushed at once; one at a time, in call order.
+        async with self._approval_lock:
+            if call.name in self._always_allowed:
+                return None
+            answer = await self._ask(call)
+        if answer == "always":
+            self._always_allowed.add(call.name)
+        if answer in ("once", "always"):
+            return None
+        _logger.info("tool_denied_by_user tool=%s id=%s", call.name, call.id)
+        return ToolCallResult(block=True, reason="Denied by the user.")
+
+    async def _ask(self, call: ToolCall) -> str:
+        answered: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+        screen = ApprovalScreen(call)
+
+        def settle(answer: str | None) -> None:
+            if not answered.done():
+                answered.set_result(answer or "deny")
+
+        await self.push_screen(screen, callback=settle)
+        try:
+            return await answered
+        except asyncio.CancelledError:
+            # Ctrl+C while the question is open: the turn is gone, so the
+            # question goes with it rather than waiting on a dead worker.
+            if screen.is_active:
+                screen.dismiss(None)
+            raise
+
+    def _add_usage(self, m: Any) -> None:
+        if isinstance(m, AssistantMessage) and m.usage is not None:
+            u = self._usage
+            self._usage = Usage(
+                input=u.input + m.usage.input,
+                output=u.output + m.usage.output,
+                cached=u.cached + m.usage.cached,
+            )
+
+    def _show_usage(self) -> None:
+        u = self._usage
+        if u.input or u.output:
+            self.sub_title = (
+                f"in {_tokens(u.input)} · out {_tokens(u.output)} · cached {_tokens(u.cached)}"
+            )
 
     @property
     def agent(self) -> Agent:
@@ -395,9 +560,12 @@ class PiApp(App[None]):
 
     def on_mount(self) -> None:
         self.query_one("#input", _SubmitTextArea).focus()
+        log = self.query_one("#log", VerticalScroll)
+        for notice in self._notices:
+            log.mount(StatusLine(f"[{notice}]"))
         if self.agent.history:
-            log = self.query_one("#log", VerticalScroll)
             log.mount(StatusLine(f"[resumed: {len(self.agent.history)} prior messages]"))
+        self._show_usage()
 
     def _as_command(self, text: str) -> tuple[str, str] | None:
         """`(name, argument)` if this is a command, else None.
@@ -533,51 +701,30 @@ class PiApp(App[None]):
         self._current_assistant = None
         self._tool_bubbles = {}
 
-        # `new_messages` never reaches us if the turn is cancelled, so persist
-        # the interrupted turn from the history tail instead.
-        mark = len(self.agent.history)
-
+        # Persisting the turn — including one interrupted or broken mid-render —
+        # and compacting after it are `Controls.run_turn`'s job, shared with RPC.
+        # What is left here is saying what happened.
+        compacting = False
         try:
-            async for ev in self.agent.stream(prompt):
-                self._handle_event(ev, log)
-                log.scroll_end(animate=False)
-                if isinstance(ev, AgentEnd) and self.session is not None:
-                    self.session.append_many(ev.new_messages)
+            async with contextlib.aclosing(self.controls.run_turn(prompt)) as events:
+                async for ev in events:
+                    if isinstance(ev, CompactionStart):
+                        compacting = True
+                        await log.mount(StatusLine("[compacting context...]"))
+                    elif isinstance(ev, CompactionEnd):
+                        compacting = False
+                        await log.mount(StatusLine(_compaction_note(ev)))
+                    else:
+                        self._handle_event(ev, log)
+                    log.scroll_end(animate=False)
         except asyncio.CancelledError:
-            if self.session is not None:
-                self.session.append_many(self.agent.history[mark:])
-            await log.mount(StatusLine("[interrupted]"))
+            note = "compaction interrupted" if compacting else "interrupted"
+            dropped, self._dropped_on_interrupt = self._dropped_on_interrupt, 0
+            if dropped:
+                note += f"; {dropped} queued message(s) dropped"
+            await log.mount(StatusLine(f"[{note}]"))
             log.scroll_end(animate=False)
             raise
-
-        if self.compaction_threshold is not None and needs_compaction(
-            self.agent.history, threshold_tokens=self.compaction_threshold
-        ):
-            await log.mount(StatusLine("[compacting context...]"))
-            log.scroll_end(animate=False)
-            try:
-                result = await compact(
-                    self.agent.history,
-                    client=self.agent.client,
-                    model=self.agent.model,
-                    keep_recent_tokens=self.compaction_keep_recent,
-                    hooks=self.agent.hooks,
-                )
-            except Exception as e:
-                _logger.exception("compaction_failed")
-                await log.mount(StatusLine(f"[compaction failed: {e}]"))
-                return
-            if result is not None:
-                new_history, summary_text, cut_idx = result
-                self.agent.history = new_history
-                if self.session is not None:
-                    self.session.append_compaction(summary=summary_text, cut_index=cut_idx)
-                await log.mount(
-                    StatusLine(
-                        f"[compacted: {cut_idx} messages summarized; "
-                        f"history is now {len(new_history)} messages]"
-                    )
-                )
 
     def _handle_event(self, ev: StreamEvent | Any, log: VerticalScroll) -> None:
         if isinstance(ev, TextDelta):
@@ -598,11 +745,12 @@ class PiApp(App[None]):
         elif isinstance(ev, ToolCallEnd):
             bubble = self._tool_bubbles.get(ev.tool_call.id)
             if bubble is not None:
-                bubble.update(f"⚙ {ev.tool_call.name}({ev.tool_call.arguments})")
+                bubble.update(f"⚙ {ev.tool_call.name}({_preview(str(ev.tool_call.arguments))})")
         elif isinstance(ev, ToolExecutionStart):
             bubble = self._tool_bubbles.get(ev.tool_call.id)
             if bubble is not None:
-                bubble.update(f"⚙ {ev.tool_call.name}({ev.tool_call.arguments}) — running...")
+                args = _preview(str(ev.tool_call.arguments))
+                bubble.update(f"⚙ {ev.tool_call.name}({args}) — running...")
         elif isinstance(ev, ToolExecutionEnd):
             bubble = self._tool_bubbles.get(ev.tool_call.id)
             if bubble is None:
@@ -610,13 +758,16 @@ class PiApp(App[None]):
             text = ""
             if ev.result.content and isinstance(ev.result.content[0], TextContent):
                 text = ev.result.content[0].text
-            preview = text if len(text) <= 200 else text[:200] + "…"
+            preview = _preview(text)
             tag = "ERR" if ev.result.is_error else "OK"
             if ev.result.is_error:
                 bubble.add_class("error")
             bubble.update(f"⚙ {ev.tool_call.name} → [{tag}] {preview}")
         elif isinstance(ev, AgentEnd):
             self._current_assistant = None
+            for m in ev.new_messages:
+                self._add_usage(m)
+            self._show_usage()
 
     @on(Worker.StateChanged)
     def _on_worker_state(self, event: Worker.StateChanged) -> None:
@@ -631,9 +782,11 @@ class PiApp(App[None]):
         log.scroll_end(animate=False)
 
     def action_interrupt(self) -> None:
-        worker = self._current_worker
-        if worker is not None and worker.state == WorkerState.RUNNING:
-            worker.cancel()
+        # Through `Controls.abort`, like `/abort`, so the queue is cleared
+        # before the cancel. Cancelling the worker alone left a message typed
+        # mid-turn to ride along, unseen, with the next prompt (#112).
+        if self.busy():
+            self._dropped_on_interrupt = len(self.controls.abort())
 
     def action_clear_input(self) -> None:
         if not self.query_one("#sidebar", Sidebar).has_class("hidden"):
@@ -655,5 +808,7 @@ def tui_log_handler(log_file: Path | None = None) -> logging.Handler | None:
     return None if log_file else TextualHandler()
 
 
-def run_tui(controls: Controls, *, compaction_threshold: int | None = None) -> None:
-    PiApp(controls, compaction_threshold=compaction_threshold).run()
+def run_tui(
+    controls: Controls, *, approve_tools: bool = False, notices: Sequence[str] = ()
+) -> None:
+    PiApp(controls, approve_tools=approve_tools, notices=notices).run()

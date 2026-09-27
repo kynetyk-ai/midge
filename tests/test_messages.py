@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import pytest
+
 from midge.messages import (
     AssistantMessage,
     ImageContent,
@@ -227,6 +229,32 @@ def test_to_openai_drops_content_less_error_turn() -> None:
     )
     assert all(m["role"] == "user" for m in wire)
     assert not any(m.get("content") is None for m in wire)
+
+
+@pytest.mark.parametrize("content", [[], [TextContent(text="")]])
+def test_to_openai_drops_an_empty_turn_that_stopped_normally(content: list) -> None:
+    """#111: a model that stops with nothing to say poisons every later request."""
+    wire = _wire(
+        [
+            UserMessage(content="hi"),
+            AssistantMessage(content=content, stop_reason="stop"),
+            UserMessage(content="still there?"),
+        ]
+    )
+    assert [m["role"] for m in wire] == ["user", "user"]
+
+
+def test_a_tool_call_with_no_text_is_not_an_empty_turn() -> None:
+    wire = _wire(
+        [
+            UserMessage(content="hi"),
+            AssistantMessage(
+                content=[ToolCall(id="c1", name="read", arguments={})], stop_reason="tool_use"
+            ),
+            ToolResultMessage(tool_call_id="c1", content=[TextContent(text="ok")]),
+        ]
+    )
+    assert [m["role"] for m in wire] == ["user", "assistant", "tool"]
 
 
 def test_to_openai_drops_aborted_turn() -> None:

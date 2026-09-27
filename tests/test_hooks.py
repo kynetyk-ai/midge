@@ -673,3 +673,16 @@ async def test_the_active_set_is_a_copy() -> None:
     assert got is not None
     got.add("b")
     assert hooks.active_sources == {"a"}
+
+
+async def test_unloading_extensions_keeps_the_entrypoints_own_handlers() -> None:
+    hooks = Hooks()
+    ran: list[str] = []
+    hooks.add_cleanup(lambda: ran.append("cleanup"))
+    hooks.on("tool_call", lambda ev, ctx: ran.append("entrypoint"))
+    hooks.on("tool_call", lambda ev, ctx: ran.append("extension"), source="/x/ext.py", name="ext")
+
+    await hooks.unload_extensions()
+    await hooks.emit(ToolCallEvent(tool_call=ToolCall(id="c", name="bash", arguments={})))
+
+    assert ran == ["cleanup", "entrypoint"]

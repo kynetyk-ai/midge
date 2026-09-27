@@ -3,11 +3,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from dataclasses import dataclass
 from typing import Any, Literal
-
-from pydantic import ValidationError
 
 from midge.client import (
     Client,
@@ -42,7 +40,7 @@ from midge.messages import (
     ToolResultMessage,
     UserMessage,
 )
-from midge.tools import ToolRegistry
+from midge.tools import InvalidArguments, ToolNotFound, ToolRegistry
 
 INTERRUPTED_MESSAGE = "Interrupted by user before the tool finished."
 TRUNCATED_MESSAGE = (
@@ -184,7 +182,7 @@ class Agent:
         self.history: list[Message] = []
         self._running = False
 
-    async def stream(self, user_input: str | UserMessage) -> AsyncIterator[AgentEvent]:
+    async def stream(self, user_input: str | UserMessage) -> AsyncGenerator[AgentEvent, None]:
         # `history` is mutated in place throughout the turn. A second concurrent
         # stream interleaves its appends with this one's, splitting tool calls
         # from their results. Callers that want to start a new turn must cancel
@@ -335,11 +333,7 @@ class Agent:
                     for i, (tc, d) in enumerate(zip(tool_calls, decisions, strict=True))
                     if not (isinstance(d, ToolCallResult) and d.block)
                 ]
-                # Kept as tasks so a cancel can still harvest whichever already
-                # finished — `gather` alone would discard their results.
-                for _, tc in pending:
-                    tool_tasks[tc.id] = asyncio.ensure_future(self._run_tool(tc))
-                executed = await asyncio.gather(*(tool_tasks[tc.id] for _, tc in pending))
+                executed = await self._run_in_order([tc for _, tc in pending], tool_tasks)
 
                 results: list[ToolResultMessage | None] = [None] * len(tool_calls)
                 for (i, _), result in zip(pending, executed, strict=True):
@@ -443,6 +437,43 @@ class Agent:
         assert last_assistant is not None
         return last_assistant
 
+    async def _run_in_order(
+        self, calls: list[ToolCall], tasks: dict[str, asyncio.Task[ToolResultMessage]]
+    ) -> list[ToolResultMessage]:
+        """Run one message's tool calls with the ordering a model can rely on.
+
+        **Anything that is not read-only runs alone, in the order it was asked
+        for** — after every call before it has finished, before any call after
+        it starts. Consecutive read-only calls run together. A model that
+        writes a file and then edits it in the same message gets the edit it
+        asked for; running everything at once raced them, and the edit failed
+        with a "No such file" that was false by the time anyone read it (#101).
+
+        Calls go into `tasks` as they start, so a cancel can still harvest
+        whichever finished — `gather` alone would discard their results — and
+        one that never started is answered as interrupted.
+        """
+        batch: list[ToolCall] = []
+
+        async def drain() -> None:
+            await asyncio.gather(*(tasks[tc.id] for tc in batch))
+            batch.clear()
+
+        for tc in calls:
+            t = self.tools.get(tc.name)
+            if t is not None and t.read_only:
+                tasks[tc.id] = asyncio.ensure_future(self._run_tool(tc))
+                batch.append(tc)
+                continue
+            # Not started until everything before it has finished: a task is
+            # scheduled the moment it is created, so creating it first would
+            # reintroduce the race.
+            await drain()
+            tasks[tc.id] = asyncio.ensure_future(self._run_tool(tc))
+            await tasks[tc.id]
+        await drain()
+        return [tasks[tc.id].result() for tc in calls]
+
     async def _run_tool(self, tc: ToolCall) -> ToolResultMessage:
         if tc.arguments_error is not None:
             _logger.warning("tool_args_unusable tool=%s id=%s", tc.name, tc.id)
@@ -468,10 +499,10 @@ class Agent:
                 content=[TextContent(text=text)],
                 is_error=False,
             )
-        except KeyError:
+        except ToolNotFound:
             _logger.warning("tool_not_found tool=%s id=%s", tc.name, tc.id)
             return _tool_error(tc, f"Tool {tc.name!r} not found")
-        except ValidationError as e:
+        except InvalidArguments as e:
             _logger.warning("tool_args_invalid tool=%s id=%s", tc.name, tc.id)
             return _tool_error(tc, f"Invalid arguments: {e}")
         except asyncio.CancelledError:

@@ -11,7 +11,7 @@ from midge.agent import Agent
 from midge.client import Client
 from midge.commands import Controls
 from midge.config import ProviderConfig
-from midge.messages import UserMessage
+from midge.messages import TextContent, UserMessage
 from midge.persistence import Session
 from midge.profiles import Profile, ProfileSet
 from midge.providers import ModelRegistry
@@ -23,7 +23,7 @@ from midge.tui.app import (
     StatusLine,
     UserBubble,
 )
-from tests.fakes import finish, install, install_gated, say
+from tests.fakes import finish, install, install_gated, say, whole_call
 
 
 def _build_agent(turns: list[list[Any]]) -> Agent:
@@ -83,13 +83,14 @@ async def test_escape_clears_input() -> None:
 
 
 @pytest.mark.asyncio
-async def test_alt_enter_inserts_newline_without_submitting() -> None:
+@pytest.mark.parametrize("key", ["ctrl+o", "alt+enter"])
+async def test_newline_keys_insert_without_submitting(key: str) -> None:
     agent = _build_agent([])
     app = PiApp(Controls(agent))
     async with app.run_test() as pilot:
         input_widget = app.query_one("#input")
         input_widget.text = "line one"  # type: ignore[attr-defined]
-        await pilot.press("alt+enter")
+        await pilot.press(key)
         await pilot.pause()
 
         # Newline got inserted; nothing was submitted
@@ -414,3 +415,307 @@ async def test_escape_closes_the_drawer_before_it_clears_the_draft() -> None:
 
         assert app.query_one("#sidebar", Sidebar).has_class("hidden")
         assert app.query_one("#input", TextArea).text == "a draft"
+
+
+@pytest.mark.asyncio
+async def test_ctrl_c_mid_turn_keeps_the_turn_on_disk(tmp_path: Path) -> None:
+    path = tmp_path / "t.jsonl"
+    gate = asyncio.Event()
+    client = Client()
+    install_gated(client, [say("partial")], gate)
+    agent = Agent(client=client, model="m")
+    session = Session.new(path, model="m")
+    app = PiApp(Controls(agent, session=session))
+    async with app.run_test() as pilot:
+        app.query_one("#input", TextArea).text = "keep me"
+        await pilot.press("enter")
+        await _settle(pilot)
+        assert app.busy()
+
+        await pilot.press("ctrl+c")
+        await app.workers.wait_for_complete()
+        await _settle(pilot)
+
+        assert any("[interrupted]" in s for s in _status(app))
+    session.close()
+
+    restored = Session.load(path).messages
+    assert restored and restored[0].content == "keep me"
+
+
+@pytest.mark.asyncio
+async def test_square_brackets_render_literally_and_the_turn_survives() -> None:
+    # #110: `[` in a prompt, a tool argument, a result or a reply is text, not
+    # markup — an unbalanced one used to raise MarkupError and kill the turn.
+    from midge.tools import ToolRegistry, tool
+
+    @tool
+    async def echo(text: str) -> str:
+        """Echo."""
+        return f"[red]{text}"
+
+    client = Client()
+    install(
+        client,
+        [
+            [*whole_call("echo", '{"text": "[bold]x[/bold] and [unclosed"}'), finish("tool_use")],
+            [say("[OK] done [unclosed"), finish()],
+        ],
+    )
+    agent = Agent(client=client, model="m", tools=ToolRegistry([echo]))
+    app = PiApp(Controls(agent))
+    async with app.run_test() as pilot:
+        app.query_one("#input", TextArea).text = "say [dim]hi"
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await _settle(pilot)
+
+        texts = [str(w.visual) for w in app.query(Static)]
+        assert any("say [dim]hi" in t for t in texts)
+        assert any("[OK]" in t and "[red][bold]x[/bold] and [unclosed" in t for t in texts)
+        assert any("[OK] done [unclosed" in t for t in texts)
+        assert not any("turn failed" in t for t in _status(app))
+
+
+@pytest.mark.asyncio
+async def test_long_tool_arguments_are_truncated_in_the_log() -> None:
+    from midge.tools import ToolRegistry, tool
+
+    release = asyncio.Event()
+
+    @tool
+    async def write_it(content: str) -> str:
+        """Write."""
+        await release.wait()  # hold the bubble at "running...", arguments on show
+        return "ok"
+
+    client = Client()
+    body = "y" * 5000
+    install(
+        client,
+        [
+            [*whole_call("write_it", f'{{"content": "{body}"}}'), finish("tool_use")],
+            [say("done"), finish()],
+        ],
+    )
+    agent = Agent(client=client, model="m", tools=ToolRegistry([write_it]))
+    app = PiApp(Controls(agent))
+    async with app.run_test() as pilot:
+        app.query_one("#input", TextArea).text = "go"
+        await pilot.press("enter")
+        await _settle(pilot)
+        running = [str(w.visual) for w in app.query(Static) if "running" in str(w.visual)]
+        assert running and all(len(t) < 400 for t in running)
+        release.set()
+        await app.workers.wait_for_complete()
+
+
+@pytest.mark.asyncio
+async def test_ctrl_c_drops_the_queue_like_abort() -> None:
+    # #112: a message typed mid-turn and then abandoned with Ctrl+C used to
+    # ride along with the next prompt.
+    gate = asyncio.Event()
+    client = Client()
+    install_gated(client, [say("first")], gate)
+    agent = Agent(client=client, model="m")
+    app = PiApp(Controls(agent))
+    async with app.run_test() as pilot:
+        app.query_one("#input", TextArea).text = "start"
+        await pilot.press("enter")
+        await _settle(pilot)
+        app.query_one("#input", TextArea).text = "never mind this"
+        await pilot.press("enter")
+        await _settle(pilot)
+        assert agent.steering is not None and agent.steering.pending()
+
+        await pilot.press("ctrl+c")
+        await app.workers.wait_for_complete()
+        await _settle(pilot)
+
+        assert not agent.steering.pending()
+        assert any("interrupted; 1 queued message(s) dropped" in s for s in _status(app))
+
+
+@pytest.mark.asyncio
+async def test_ctrl_c_when_idle_says_nothing() -> None:
+    app = _app([])
+    async with app.run_test() as pilot:
+        await pilot.press("ctrl+c")
+        await _settle(pilot)
+        assert _status(app) == []
+
+
+# --- approval: the TUI asks before anything that is not read-only ----------
+
+
+def _approval_app(calls: list[tuple[str, str]], ran: list[str], **kw: Any) -> PiApp:
+    from midge.hooks import Hooks
+    from midge.tools import ToolRegistry, tool
+
+    @tool
+    async def poke(x: str) -> str:
+        ran.append(f"poke {x}")
+        return "poked"
+
+    @tool(read_only=True)
+    async def peek(x: str) -> str:
+        ran.append(f"peek {x}")
+        return "seen"
+
+    client = Client()
+    first = [
+        chunk
+        for i, (name, x) in enumerate(calls)
+        for chunk in whole_call(name, f'{{"x": "{x}"}}', index=i, id=f"c{i}")
+    ]
+    install(client, [[*first, finish("tool_use")], [say("done"), finish()]])
+    agent = Agent(client=client, model="m", tools=ToolRegistry([poke, peek]), hooks=Hooks())
+    return PiApp(Controls(agent), approve_tools=kw.get("approve_tools", True))
+
+
+async def _submit(app: PiApp, pilot: Any, text: str = "go") -> None:
+    app.query_one("#input", TextArea).text = text
+    await pilot.press("enter")
+
+
+async def _until_asked(app: PiApp, pilot: Any) -> Any:
+    from midge.tui.app import ApprovalScreen
+
+    for _ in range(200):
+        if isinstance(app.screen, ApprovalScreen):
+            return app.screen
+        await pilot.pause(0.01)
+    raise AssertionError("the approval prompt never appeared")
+
+
+def _results(app: PiApp) -> list[str]:
+    from midge.messages import ToolResultMessage
+
+    return [
+        m.content[0].text
+        for m in app.agent.history
+        if isinstance(m, ToolResultMessage) and isinstance(m.content[0], TextContent)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_approval_y_runs_the_tool() -> None:
+    ran: list[str] = []
+    app = _approval_app([("poke", "1")], ran)
+    async with app.run_test() as pilot:
+        await _submit(app, pilot)
+        screen = await _until_asked(app, pilot)
+        assert screen.call.name == "poke"
+        await pilot.press("y")
+        await app.workers.wait_for_complete()
+    assert ran == ["poke 1"]
+
+
+@pytest.mark.asyncio
+async def test_approval_n_tells_the_model_and_runs_nothing() -> None:
+    ran: list[str] = []
+    app = _approval_app([("poke", "1")], ran)
+    async with app.run_test() as pilot:
+        await _submit(app, pilot)
+        await _until_asked(app, pilot)
+        await pilot.press("n")
+        await app.workers.wait_for_complete()
+    assert ran == []
+    assert _results(app) == ["Denied by the user."]
+
+
+@pytest.mark.asyncio
+async def test_approval_a_stops_asking_about_that_tool() -> None:
+    # Two mutating calls in one message: asked once, in order, then trusted.
+    ran: list[str] = []
+    app = _approval_app([("poke", "1"), ("poke", "2")], ran)
+    async with app.run_test() as pilot:
+        await _submit(app, pilot)
+        await _until_asked(app, pilot)
+        await pilot.press("a")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+    assert ran == ["poke 1", "poke 2"]
+
+
+@pytest.mark.asyncio
+async def test_read_only_tools_are_never_asked_about() -> None:
+    from midge.tui.app import ApprovalScreen
+
+    ran: list[str] = []
+    app = _approval_app([("peek", "1")], ran)
+    async with app.run_test() as pilot:
+        await _submit(app, pilot)
+        await app.workers.wait_for_complete()
+        assert not isinstance(app.screen, ApprovalScreen)
+    assert ran == ["peek 1"]
+
+
+@pytest.mark.asyncio
+async def test_approval_off_never_asks() -> None:
+    ran: list[str] = []
+    app = _approval_app([("poke", "1")], ran, approve_tools=False)
+    async with app.run_test() as pilot:
+        await _submit(app, pilot)
+        await app.workers.wait_for_complete()
+    assert ran == ["poke 1"]
+
+
+@pytest.mark.asyncio
+async def test_approval_survives_an_extension_reload() -> None:
+    ran: list[str] = []
+    app = _approval_app([("poke", "1")], ran)
+    async with app.run_test() as pilot:
+        assert app.agent.hooks is not None
+        await app.agent.hooks.unload_extensions()
+        await _submit(app, pilot)
+        await _until_asked(app, pilot)
+        await pilot.press("n")
+        await app.workers.wait_for_complete()
+    assert ran == []
+
+
+@pytest.mark.asyncio
+async def test_ctrl_c_while_asked_ends_the_turn_and_the_question() -> None:
+    from midge.tui.app import ApprovalScreen
+
+    ran: list[str] = []
+    app = _approval_app([("poke", "1")], ran)
+    async with app.run_test() as pilot:
+        await _submit(app, pilot)
+        await _until_asked(app, pilot)
+        await pilot.press("ctrl+c")
+        await app.workers.wait_for_complete()
+        await _settle(pilot)
+        assert not isinstance(app.screen, ApprovalScreen)
+        assert any("interrupted" in s for s in _status(app))
+    assert ran == []
+
+
+@pytest.mark.asyncio
+async def test_a_startup_notice_is_on_screen() -> None:
+    app = PiApp(Controls(_build_agent([])), notices=["No API key for openai: set OPENAI_API_KEY"])
+    async with app.run_test() as pilot:
+        await _settle(pilot)
+        assert "[No API key for openai: set OPENAI_API_KEY]" in _status(app)
+
+
+@pytest.mark.asyncio
+async def test_token_counts_add_up_in_the_header() -> None:
+    from midge.messages import AssistantMessage, Usage
+    from tests.fakes import tokens
+
+    agent = _build_agent([[say("hi"), tokens(input=1200, output=30, cached=1000), finish()]])
+    # A resumed session brings its own spend with it.
+    agent.history = [
+        UserMessage(content="before"),
+        AssistantMessage(content=[TextContent(text="x")], usage=Usage(input=800, output=20)),
+    ]
+    app = PiApp(Controls(agent))
+    async with app.run_test() as pilot:
+        await _settle(pilot)
+        assert app.sub_title == "in 800 · out 20 · cached 0"
+        await _submit(app, pilot)
+        await app.workers.wait_for_complete()
+        await _settle(pilot)
+        assert app.sub_title == "in 2.0k · out 50 · cached 1.0k"

@@ -36,16 +36,34 @@ _logger = logging.getLogger(__name__)
 _payload_cap = DEFAULT_PAYLOAD_CHARS
 
 
-def configure(handler: logging.Handler | None = None, *, log: LogConfig | None = None) -> None:
+def configure(
+    handler: logging.Handler | None = None,
+    *,
+    log: LogConfig | None = None,
+    fallback: logging.Handler | None = None,
+) -> None:
+    """Install midge's handler: `handler` if given, else `log.file`, else stderr.
+
+    `fallback` is what to use when `log.file` cannot be opened — the handler the
+    entrypoint would have chosen had no file been configured. It matters in the
+    TUI, where stderr is the screen: falling back there would draw log lines
+    over the interface.
+    """
     global _payload_cap
 
     log = log or LogConfig()
+    # A bad path is a warning, never a crash — the same contract `config.py`
+    # keeps for every other setting (#105). The parent is created first, as
+    # `Session.new` does for a transcript, so the common case just works.
+    file_error: OSError | None = None
+    if handler is None and log.file:
+        try:
+            log.file.parent.mkdir(parents=True, exist_ok=True)
+            handler = logging.FileHandler(log.file, encoding="utf-8")
+        except OSError as e:
+            file_error = e
     if handler is None:
-        handler = (
-            logging.FileHandler(log.file, encoding="utf-8")
-            if log.file
-            else logging.StreamHandler(sys.stderr)
-        )
+        handler = fallback or logging.StreamHandler(sys.stderr)
     handler.setFormatter(logging.Formatter(_FORMAT))
 
     _payload_cap = log.payload_chars
@@ -71,6 +89,13 @@ def configure(handler: logging.Handler | None = None, *, log: LogConfig | None =
     for key, value in (("log.level", bad_level), ("log.openai_level", bad_openai)):
         if value is not None:
             _logger.warning("log_level_invalid key=%s value=%r using=WARNING", key, value)
+    if file_error is not None:
+        _logger.warning(
+            "log_file_unusable path=%s using=%s",
+            log.file,
+            type(handler).__name__,
+            exc_info=file_error,
+        )
 
 
 class _Payload:

@@ -289,9 +289,15 @@ class OpenAIProvider:
         # Per provider instance, and `ModelRegistry` caches those — so the
         # parent and every sub-agent routed here share one deadline.
         self.limiter: RateLimiter | None = CoolOff()
+        key = api_key or os.getenv("OPENAI_API_KEY")
+        # A key is required exactly when the requests go to OpenAI itself; a
+        # local or compatible server may need none, and cannot be asked.
+        self._needs_key_but_has_none = not key and (
+            base_url is None or "api.openai.com" in base_url
+        )
         self._client = openai.AsyncOpenAI(
             # A local server needs no credential but the SDK insists on one.
-            api_key=api_key or os.getenv("OPENAI_API_KEY") or "not-needed",
+            api_key=key or "not-needed",
             base_url=base_url,
             # The SDK's own backoff sleep ignores cancellation, so Ctrl+C during
             # a retry would do nothing. `Client` owns the sleep instead.
@@ -365,6 +371,22 @@ class OpenAIProvider:
 
     def retry_after(self, exc: BaseException) -> float | None:
         return _retry_after(exc)
+
+    def describe(self, exc: BaseException) -> str | None:
+        if isinstance(exc, openai.AuthenticationError):
+            return (
+                f"{self.name} rejected the API key (401). Check OPENAI_API_KEY — or, for "
+                "a provider in [providers.*], the variable its api_key_env names."
+            )
+        return None
+
+    def credential_problem(self) -> str | None:
+        if not self._needs_key_but_has_none:
+            return None
+        return (
+            f"No API key for {self.name}: set OPENAI_API_KEY, or point [provider] "
+            "base_url at a server that needs none. The first request will be refused."
+        )
 
 
 # `capabilities=None` rather than a hardcoded default, so an operator can

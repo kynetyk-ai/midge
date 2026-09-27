@@ -3,6 +3,13 @@
 Demonstrates the `tool_call` hook — the only lifecycle point that can stop
 work before it happens.
 
+**This is a demonstration of the mechanism, not a safety boundary.** A denylist
+over command strings is advisory: in testing, a model blocked on `rm -rf` tried
+`find -delete` on its next attempt and emptied the directory (#102). A hook
+gates tool calls, not their effects. For a restriction that holds, allow a set
+of tools that cannot do the thing — see `examples/allowlist_extension/` — and
+run midge inside a container or as a user that cannot do it either.
+
     midge --extension-dir examples/approval_extension
 
 An extension participates in the lifecycle by defining `register_hooks`.

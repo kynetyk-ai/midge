@@ -50,13 +50,16 @@ handlers just get `(event, context)`.
 
 ## The concurrency constraint
 
-`Agent` runs tools concurrently via `asyncio.gather`. `tool_call` hooks therefore have to resolve
-**before** the gather, or a blocked call would already have run. The loop:
+`tool_call` hooks resolve **before** any call in the message runs, or a blocked call could already
+have run. The loop:
 
 1. emits `tool_call` for every call (concurrent across calls, sequential within one)
 2. applies any argument rewrites to `tool_calls`
-3. gathers only the un-blocked calls
+3. runs only the un-blocked calls, in order: consecutive `read_only` tools together, anything
+   else alone, after everything before it has finished (`Agent._run_in_order`, #101)
 4. scatters results back into their **original index** and synthesizes `_tool_error` for blocked ones
+
+*(Current as of #101 — this note otherwise predates the code; see #76.)*
 
 Step 4 is load-bearing: `zip(tool_calls, results, strict=True)` downstream assumes positional
 correspondence. `tests/test_hooks.py::test_ordering_preserved_when_some_calls_blocked` covers

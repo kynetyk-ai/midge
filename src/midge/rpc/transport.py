@@ -24,9 +24,13 @@ decide for itself:
 
 - **Anything that can send a line can run `bash`** with this process's
   privileges. There is no notion of a caller and no authorization layer; the
-  protocol assumes the peer is already trusted. Gating that is what a
-  `tool_call` hook is for — see `examples/approval_extension/`, which applies to
-  sub-agents too.
+  protocol assumes the peer is already trusted. **The boundary is the container
+  or the OS user, not midge.** A `tool_call` hook gates *tool calls*, not their
+  effects: it can refuse to run `bash`, or restrict `write` to a directory, but
+  a policy that reads a `bash` command string is advisory — `rm -rf` blocked is
+  `find -delete` allowed, and a guard on `write`'s path never sees a shell
+  redirect (#102). Hooks apply to sub-agents too. For a real restriction, leave
+  `bash` out of the tool set: `examples/allowlist_extension/`.
 - **One client, one agent, one session, one process.** A second client would
   share the same conversation and the same history. Multi-tenancy means multiple
   processes.

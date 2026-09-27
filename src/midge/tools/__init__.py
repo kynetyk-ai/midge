@@ -5,9 +5,28 @@ import typing
 from collections.abc import Awaitable, Callable, Iterator
 from typing import Any, overload
 
-from pydantic import BaseModel, ConfigDict, create_model
+from pydantic import BaseModel, ConfigDict, ValidationError, create_model
 
 ToolFn = Callable[..., Awaitable[Any]]
+
+
+class ToolNotFound(KeyError):
+    """The registry has no tool by that name.
+
+    Its own type because "not found" is the registry's answer, and a `KeyError`
+    raised *inside* a tool is the tool's — a missing note, a missing key. Both
+    were caught as `KeyError`, so a tool that failed was reported as a tool that
+    did not exist, and the model stopped calling it (#104).
+    """
+
+
+class InvalidArguments(ValueError):
+    """The model's arguments did not validate against the tool's schema.
+
+    Raised only around validation, for the same reason as `ToolNotFound`: a
+    pydantic `ValidationError` from a tool's own body is a failure of the tool,
+    not a mistake the model can fix by changing its arguments.
+    """
 
 
 class _ParamsBase(BaseModel):
@@ -22,11 +41,23 @@ class Tool:
         description: str,
         fn: ToolFn,
         params_model: type[BaseModel],
+        read_only: bool = False,
     ) -> None:
         self.name = name
         self.description = description
         self.fn = fn
         self.params_model = params_model
+        self._read_only = read_only
+
+    @property
+    def read_only(self) -> bool:
+        """Whether the tool only observes. The agent runs these concurrently
+        and everything else one at a time, in the order the model asked.
+
+        `False` is the default because it is the safe one: a tool nobody
+        classified is serialized, which costs time and never correctness.
+        """
+        return self._read_only
 
     def schema(self) -> dict[str, Any]:
         return {
@@ -35,13 +66,18 @@ class Tool:
             "parameters": self.params_model.model_json_schema(),
         }
 
+    def validate(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        try:
+            validated = self.params_model.model_validate(arguments)
+        except ValidationError as e:
+            raise InvalidArguments(str(e)) from e
+        return {f: getattr(validated, f) for f in self.params_model.model_fields}
+
     async def invoke(self, arguments: dict[str, Any], *, call_id: str | None = None) -> Any:
         # `call_id` is the provider's id for this tool call. The base tool has no
         # use for it; a subclass that produces its own artefacts uses it to tie
         # them back to the exact turn that asked for them.
-        validated = self.params_model.model_validate(arguments)
-        kwargs = {f: getattr(validated, f) for f in self.params_model.model_fields}
-        return await self.fn(**kwargs)
+        return await self.fn(**self.validate(arguments))
 
 
 @overload
@@ -51,6 +87,7 @@ def tool(
     *,
     name: str | None = None,
     description: str | None = None,
+    read_only: bool = False,
 ) -> Callable[[ToolFn], Tool]: ...
 def tool(
     fn: ToolFn | None = None,
@@ -58,6 +95,7 @@ def tool(
     *,
     name: str | None = None,
     description: str | None = None,
+    read_only: bool = False,
 ) -> Tool | Callable[[ToolFn], Tool]:
     def wrap(fn: ToolFn) -> Tool:
         if not inspect.iscoroutinefunction(fn):
@@ -72,6 +110,7 @@ def tool(
             description=tool_desc,
             fn=fn,
             params_model=params_model,
+            read_only=read_only,
         )
 
     if fn is None:
@@ -141,5 +180,5 @@ class ToolRegistry:
     ) -> Any:
         t = self._tools.get(name)
         if t is None:
-            raise KeyError(f"Tool {name!r} not registered")
+            raise ToolNotFound(f"Tool {name!r} not registered")
         return await t.invoke(arguments, call_id=call_id)

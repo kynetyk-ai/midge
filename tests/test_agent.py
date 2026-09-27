@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 import pytest
 
@@ -144,6 +145,59 @@ async def test_tool_raising_exception_becomes_error_result() -> None:
     assert tool_result.is_error is True
     assert isinstance(tool_result.content[0], TextContent)
     assert "kaboom" in tool_result.content[0].text
+
+
+async def _result_text(fn_tool: Any, args: str) -> str:
+    client = Client()
+    install(
+        client,
+        [
+            [tcall(index=0, id="c1", name=fn_tool.name, args=args), finish("tool_use")],
+            [say("ok"), finish()],
+        ],
+    )
+    agent = Agent(client=client, model="m", tools=ToolRegistry([fn_tool]))
+    await agent.run("go")
+    result = agent.history[2]
+    assert isinstance(result, ToolResultMessage) and result.is_error
+    assert isinstance(result.content[0], TextContent)
+    return result.content[0].text
+
+
+async def test_a_keyerror_inside_a_tool_is_the_tools_own_error() -> None:
+    # #104: a missing note used to be reported as a missing *tool*, and the
+    # model stopped calling it.
+    @tool
+    async def read_note(title: str) -> str:
+        raise KeyError(f"No note titled {title!r}")
+
+    text = await _result_text(read_note, '{"title": "nope"}')
+    assert "not found" not in text
+    assert "No note titled 'nope'" in text
+
+
+async def test_a_validationerror_inside_a_tool_is_not_blamed_on_the_arguments() -> None:
+    from pydantic import BaseModel
+
+    class Row(BaseModel):
+        n: int
+
+    @tool
+    async def parse(raw: str) -> str:
+        return str(Row.model_validate({"n": raw}))
+
+    text = await _result_text(parse, '{"raw": "x"}')
+    assert not text.startswith("Invalid arguments")
+    assert text.startswith("Tool error: ValidationError")
+
+
+async def test_bad_arguments_are_still_reported_as_bad_arguments() -> None:
+    @tool
+    async def add(a: int) -> int:
+        return a
+
+    text = await _result_text(add, '{"a": "x"}')
+    assert text.startswith("Invalid arguments")
 
 
 async def test_unknown_tool_becomes_error_result() -> None:
@@ -622,3 +676,143 @@ async def test_generator_exit_closes_out_tool_calls() -> None:
     }
     answered = {m["tool_call_id"] for m in wire if m.get("role") == "tool"}
     assert requested == answered
+
+
+# --- #101: what a message with several tool calls promises -----------------
+
+
+def _calls(*specs: tuple[str, str]) -> list[Any]:
+    return [
+        tcall(index=i, id=f"c{i}", name=name, args=args) for i, (name, args) in enumerate(specs)
+    ]
+
+
+async def test_a_mutating_call_waits_for_the_one_before_it() -> None:
+    # The phase-1 race: copy a file, then edit the copy, in one message.
+    log: list[str] = []
+
+    @tool
+    async def write_it(path: str) -> str:
+        log.append(f"start write {path}")
+        await asyncio.sleep(0.05)
+        log.append(f"end write {path}")
+        return "written"
+
+    @tool
+    async def edit_it(path: str) -> str:
+        log.append(f"start edit {path}")
+        return "edited"
+
+    client = Client()
+    install(
+        client,
+        [
+            [*_calls(("write_it", '{"path":"a"}'), ("edit_it", '{"path":"a"}')),
+             finish("tool_use")],
+            [say("ok"), finish()],
+        ],
+    )
+    agent = Agent(client=client, model="m", tools=ToolRegistry([write_it, edit_it]))
+    await agent.run("go")
+
+    assert log == ["start write a", "end write a", "start edit a"]
+
+
+async def test_read_only_calls_run_together() -> None:
+    started: list[str] = []
+    both = asyncio.Event()
+
+    @tool(read_only=True)
+    async def peek(name: str) -> str:
+        started.append(name)
+        if len(started) == 2:
+            both.set()
+        # Serialized, the first would wait here forever for the second.
+        await asyncio.wait_for(both.wait(), timeout=1)
+        return name
+
+    client = Client()
+    install(
+        client,
+        [
+            [*_calls(("peek", '{"name":"a"}'), ("peek", '{"name":"b"}')), finish("tool_use")],
+            [say("ok"), finish()],
+        ],
+    )
+    agent = Agent(client=client, model="m", tools=ToolRegistry([peek]))
+    await agent.run("go")
+
+    results = [m for m in agent.history if isinstance(m, ToolResultMessage)]
+    assert [r.is_error for r in results] == [False, False]
+
+
+async def test_reads_around_a_write_are_kept_on_their_side_of_it() -> None:
+    log: list[str] = []
+
+    @tool(read_only=True)
+    async def peek(name: str) -> str:
+        log.append(f"start {name}")
+        await asyncio.sleep(0.02)
+        log.append(f"end {name}")
+        return name
+
+    @tool
+    async def poke(name: str) -> str:
+        log.append(f"start {name}")
+        await asyncio.sleep(0.02)
+        log.append(f"end {name}")
+        return name
+
+    client = Client()
+    install(
+        client,
+        [
+            [*_calls(("peek", '{"name":"r1"}'), ("poke", '{"name":"w"}'),
+                     ("peek", '{"name":"r2"}')), finish("tool_use")],
+            [say("ok"), finish()],
+        ],
+    )
+    agent = Agent(client=client, model="m", tools=ToolRegistry([peek, poke]))
+    await agent.run("go")
+
+    assert log == ["start r1", "end r1", "start w", "end w", "start r2", "end r2"]
+    # Results still come back in the order the calls were made.
+    ids = [m.tool_call_id for m in agent.history if isinstance(m, ToolResultMessage)]
+    assert ids == ["c0", "c1", "c2"]
+
+
+async def test_a_cancel_mid_sequence_answers_every_call() -> None:
+    started = asyncio.Event()
+
+    @tool
+    async def hang(x: str) -> str:
+        started.set()
+        await asyncio.Event().wait()
+        return x
+
+    @tool
+    async def after(x: str) -> str:
+        return x
+
+    client = Client()
+    install(
+        client,
+        [[*_calls(("hang", '{"x":"1"}'), ("after", '{"x":"2"}')), finish("tool_use")]],
+    )
+    agent = Agent(client=client, model="m", tools=ToolRegistry([hang, after]))
+
+    async def run() -> None:
+        async for _ in agent.stream("go"):
+            pass
+
+    task = asyncio.create_task(run())
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    results = [m for m in agent.history if isinstance(m, ToolResultMessage)]
+    assert [r.tool_call_id for r in results] == ["c0", "c1"]
+    assert all(r.is_error for r in results)
+    texts = [r.content[0].text for r in results if isinstance(r.content[0], TextContent)]
+    assert texts == [INTERRUPTED_MESSAGE, INTERRUPTED_MESSAGE]
