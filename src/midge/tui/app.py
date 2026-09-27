@@ -46,9 +46,10 @@ from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
 from textual.command import DiscoveryHit, Hit, Hits, Provider
-from textual.containers import VerticalScroll
+from textual.containers import Vertical, VerticalScroll
 from textual.logging import TextualHandler
 from textual.message import Message
+from textual.screen import ModalScreen
 from textual.widgets import Footer, Header, OptionList, Static, TextArea
 from textual.widgets.option_list import Option
 from textual.worker import Worker, WorkerState
@@ -69,6 +70,7 @@ from midge.commands import (
     Controls,
     Refused,
 )
+from midge.hooks import Hooks, ToolCallEvent, ToolCallResult
 from midge.messages import TextContent, ToolCall
 from midge.persistence import Session
 
@@ -330,6 +332,44 @@ def _model_options(controls: Controls) -> list[Option]:
     ]
 
 
+class ApprovalScreen(ModalScreen[str]):
+    """Asks whether one tool call may run. Dismisses with `once`, `always` or
+    `deny`; Escape is a deny, so the way out of a prompt is never a yes."""
+
+    DEFAULT_CSS = """
+    ApprovalScreen { align: center middle; }
+    ApprovalScreen > Vertical {
+        width: 80%; height: auto; max-height: 80%;
+        padding: 1 2; background: $panel; border: thick $warning;
+    }
+    ApprovalScreen .choices { margin-top: 1; color: $text-muted; }
+    """
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("y", "choose('once')", "Allow once"),
+        Binding("a", "choose('always')", "Allow this tool for the session"),
+        Binding("n", "choose('deny')", "Deny"),
+        Binding("escape", "choose('deny')", "Deny", show=False),
+    ]
+
+    def __init__(self, call: ToolCall) -> None:
+        super().__init__()
+        self.call = call
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Static(f"Allow {self.call.name}?", markup=False)
+            yield Static(_preview(str(self.call.arguments), 1500), markup=False)
+            yield Static(
+                "[y] allow once   [a] always allow this tool   [n] deny",
+                markup=False,
+                classes="choices",
+            )
+
+    def action_choose(self, answer: str) -> None:
+        self.dismiss(answer)
+
+
 def _compaction_note(ev: CompactionEnd) -> str:
     if ev.error is not None:
         return f"[compaction failed: {ev.error}]"
@@ -357,10 +397,15 @@ class PiApp(App[None]):
         Binding("escape", "clear_input", "Clear input"),
     ]
 
-    def __init__(self, controls: Controls) -> None:
+    def __init__(self, controls: Controls, *, approve_tools: bool = False) -> None:
         super().__init__()
         self.controls = controls
         controls.runner = self
+        # Tools the person has said to stop asking about, for this process.
+        self._always_allowed: set[str] = set()
+        self._approval_lock = asyncio.Lock()
+        if approve_tools:
+            self._register_approval()
         # Steering has to be a real queue before a turn starts, or a message
         # typed mid-turn has nowhere to land.
         if controls.agent.steering is None:
@@ -370,6 +415,61 @@ class PiApp(App[None]):
         self._current_worker: Worker[None] | None = None
         self._dropped_on_interrupt = 0
         self.title = f"midge · {controls.agent.model}"
+
+    def _register_approval(self) -> None:
+        """Ask before any tool that is not read-only runs.
+
+        A `tool_call` handler, registered here by the front-end rather than by
+        an extension, for three reasons. It has no `source`, so a profile
+        cannot switch it off and `reload` does not remove it. It sees every
+        call a sub-agent makes too, because a child's hooks reach this same
+        registry. And it exists only in the TUI: RPC never registers it,
+        because nobody is there to answer.
+
+        It is registered after the extensions loaded at startup, so it runs
+        after their handlers — an extension that blocks a call does so before
+        anyone is asked. (After a `reload`, re-imported extensions register
+        behind it and are asked second; a block still blocks.)
+        """
+        if self.controls.agent.hooks is None:
+            self.controls.agent.hooks = Hooks()
+        self.controls.agent.hooks.on("tool_call", self._approve)
+
+    async def _approve(self, event: ToolCallEvent, ctx: Any) -> ToolCallResult | None:
+        call = event.tool_call
+        tool = self.controls.discovered_tools.get(call.name) or self.agent.tools.get(call.name)
+        if tool is not None and tool.read_only:
+            return None
+        # Decisions for one message are gathered concurrently, so two prompts
+        # could otherwise be pushed at once; one at a time, in call order.
+        async with self._approval_lock:
+            if call.name in self._always_allowed:
+                return None
+            answer = await self._ask(call)
+        if answer == "always":
+            self._always_allowed.add(call.name)
+        if answer in ("once", "always"):
+            return None
+        _logger.info("tool_denied_by_user tool=%s id=%s", call.name, call.id)
+        return ToolCallResult(block=True, reason="Denied by the user.")
+
+    async def _ask(self, call: ToolCall) -> str:
+        answered: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+        screen = ApprovalScreen(call)
+
+        def settle(answer: str | None) -> None:
+            if not answered.done():
+                answered.set_result(answer or "deny")
+
+        await self.push_screen(screen, callback=settle)
+        try:
+            return await answered
+        except asyncio.CancelledError:
+            # Ctrl+C while the question is open: the turn is gone, so the
+            # question goes with it rather than waiting on a dead worker.
+            if screen.is_active:
+                screen.dismiss(None)
+            raise
 
     @property
     def agent(self) -> Agent:
@@ -668,5 +768,5 @@ def tui_log_handler(log_file: Path | None = None) -> logging.Handler | None:
     return None if log_file else TextualHandler()
 
 
-def run_tui(controls: Controls) -> None:
-    PiApp(controls).run()
+def run_tui(controls: Controls, *, approve_tools: bool = False) -> None:
+    PiApp(controls, approve_tools=approve_tools).run()

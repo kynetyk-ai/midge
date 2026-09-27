@@ -444,7 +444,7 @@ def main(argv: list[str] | None = None) -> None:
     # event instead.
     asyncio.run(hooks.emit(SessionStart(path=session_path)))
     try:
-        run_tui(controls)
+        run_tui(controls, approve_tools=config.tui.approve_tools)
     finally:
         # `controls.session`, not the one opened at startup: `new_session` and a
         # profile fork replace it, and closing the original would leave the file

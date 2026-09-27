@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from midge.tools.coding import bash, edit, read, write
+from midge.tools.coding import bash, edit, grep, ls, read, write
 
 
 async def test_read_basic(tmp_path: Path) -> None:
@@ -246,3 +246,80 @@ async def test_edit_ambiguity_says_where(tmp_path: Path) -> None:
     f.write_text("foo\nbar\nfoo\n")
     with pytest.raises(ValueError, match=r"multiple locations \(lines 1, 3\)"):
         await edit.invoke({"path": str(f), "edits": [{"old_text": "foo", "new_text": "x"}]})
+
+
+# --- ls and grep: the read-only way to look around -------------------------
+
+
+async def test_ls_sorts_and_marks_directories(tmp_path: Path) -> None:
+    (tmp_path / "b.txt").write_text("")
+    (tmp_path / "A").mkdir()
+    (tmp_path / ".hidden").write_text("")
+    out = await ls.invoke({"path": str(tmp_path)})
+    assert out.splitlines() == [".hidden", "A/", "b.txt"]
+
+
+async def test_ls_says_what_it_left_out(tmp_path: Path) -> None:
+    for i in range(5):
+        (tmp_path / f"f{i}").write_text("")
+    out = await ls.invoke({"path": str(tmp_path), "limit": 2})
+    assert out.splitlines()[:2] == ["f0", "f1"]
+    assert "3 more" in out
+
+
+async def test_ls_refuses_a_file(tmp_path: Path) -> None:
+    f = tmp_path / "x"
+    f.write_text("")
+    with pytest.raises(NotADirectoryError):
+        await ls.invoke({"path": str(f)})
+
+
+async def test_grep_finds_lines_with_numbers(tmp_path: Path) -> None:
+    (tmp_path / "a.py").write_text("one\ndef slugify(x):\nthree\n")
+    (tmp_path / "b.md").write_text("slugify is documented here\n")
+    out = await grep.invoke({"pattern": r"def \w+", "path": str(tmp_path)})
+    assert out == "a.py:2: def slugify(x):"
+
+
+async def test_grep_glob_literal_and_case(tmp_path: Path) -> None:
+    (tmp_path / "a.py").write_text("x = f(1)\n")
+    (tmp_path / "b.md").write_text("X = F(1)\n")
+    out = await grep.invoke(
+        {"pattern": "f(1)", "path": str(tmp_path), "literal": True, "ignore_case": True}
+    )
+    assert out.splitlines() == ["a.py:1: x = f(1)", "b.md:1: X = F(1)"]
+    only_py = await grep.invoke(
+        {"pattern": "f(1)", "path": str(tmp_path), "literal": True, "glob": "*.py"}
+    )
+    assert only_py == "a.py:1: x = f(1)"
+
+
+async def test_grep_respects_gitignore_in_a_repo(tmp_path: Path) -> None:
+    import subprocess
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / ".gitignore").write_text("build/\n")
+    (tmp_path / "build").mkdir()
+    (tmp_path / "build" / "out.txt").write_text("needle\n")
+    (tmp_path / "src.txt").write_text("needle\n")
+    out = await grep.invoke({"pattern": "needle", "path": str(tmp_path)})
+    assert out == "src.txt:1: needle"
+
+
+async def test_grep_skips_binary_and_caps_output(tmp_path: Path) -> None:
+    (tmp_path / "bin.dat").write_bytes(b"needle\0\x01")
+    (tmp_path / "many.txt").write_text("needle\n" * 10)
+    out = await grep.invoke({"pattern": "needle", "path": str(tmp_path), "limit": 3})
+    assert "bin.dat" not in out
+    assert out.count("many.txt:") == 3
+    assert "stopped at 3 matches" in out
+
+
+async def test_grep_explains_a_bad_regex(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="literal=true"):
+        await grep.invoke({"pattern": "f(", "path": str(tmp_path)})
+
+
+def test_the_lookup_tools_are_read_only() -> None:
+    assert read.read_only and ls.read_only and grep.read_only
+    assert not (write.read_only or edit.read_only or bash.read_only)

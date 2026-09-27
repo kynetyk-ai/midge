@@ -13,8 +13,8 @@ The budget covers `src/midge/*.py`, the harness itself. `providers/`, `tools/` a
 - **Filesystem extension loader** — drop a `.py` file with `@tool`-decorated functions and an optional `SYSTEM_PROMPT` constant into a directory, point `--extension-dir` at it, and the agent picks up the new tools.
 - **Agent Skills** ([`SKILL.md`](https://agentskills.io/specification)) — drop a directory of markdown instructions in and point `--skill-dir` at it. Names and descriptions go in the system prompt; the agent opens the full file with `read` only when a task matches. No Python, no prompt edits, and directories written for other harnesses load as-is.
 - **Sub-agents** — declare a nested agent in a `.py` file and it becomes a `spawn_<name>` tool the model can delegate to, with its own system prompt and a subset of the parent's tools. The parent gets the result; the child's own turns stay out of its context and go to a linked transcript.
-- **Built-in coding tools**: `read`, `write`, `edit`, `bash`.
-- **Lifecycle hooks** — block or rewrite a tool call before it runs, transform context, patch results, observe every event. See [`notes/hooks.md`](./notes/hooks.md) and `examples/approval_extension/`.
+- **Built-in coding tools**: `read`, `ls`, `grep`, `write`, `edit`, `bash`. The first three are read-only.
+- **Lifecycle hooks** — block or rewrite a tool call before it runs, transform context, patch results, observe every event. See [`notes/hooks.md`](./notes/hooks.md) and `examples/approval_extension/`. A hook gates *tool calls*, not their effects: a rule that inspects a `bash` command string is advisory, because `bash` can do the same thing a dozen ways. For a restriction that holds, allow only tools that cannot do the thing (`examples/allowlist_extension/`) and run midge in a container.
 - **Textual TUI** for interactive use, plus a JSON-on-stdio RPC mode for embedding the agent in external tools.
 - **JSONL session save/resume, on by default.** Every run records a transcript under `.midge/sessions/` unless you say otherwise. The format is append-only and documented: a rename or a context clear is a record appended and replayed on load, never a rewrite, so a crash can only ever damage the final line. A session spanning several files — a sub-agent writes its own — says so in both directions, so the whole run is walkable from any one of them. Anything that wants to view or watch a session reads the transcript directly.
 - **Context compaction** that summarizes old turns when a session gets long.
@@ -43,6 +43,8 @@ poetry run midge
 Extensions load from `--extension-dir DIR` (repeatable). To stop typing it, set `[extensions] enabled = true` in `.midge/config.toml` and they are read from `.agents/extensions/` — **off by default**, because an extension is arbitrary Python imported at startup, before your first prompt. The flag is honoured either way.
 
 Flags: `--extension-dir DIR` (repeatable), `--session PATH`, `--compaction-threshold N`, `--compaction-keep-recent N`. Bindings: `Enter` submit, `Ctrl+O` newline (`Alt+Enter` too, where the terminal sends Option as Meta), `Ctrl+P` command palette, `Ctrl+B` switch-to panel, `Ctrl+C` interrupt and drop anything queued, `Ctrl+D` quit, `Esc` close the panel or clear input.
+
+**The TUI asks before running any tool that is not read-only** — `bash`, `write`, `edit`, an extension's tool, or a sub-agent that may call one (and then each call that sub-agent makes). `y` allows once, `a` allows that tool for the rest of the session, `n` refuses and the model is told so. `[tui] approve_tools = false` turns it off. RPC never asks: an unattended caller has nobody to answer, so the boundary there is the container.
 
 The TUI and the RPC server drive the same `Controls` object and enumerate the same command table, so neither can offer less than the other. `Ctrl+P` lists what needs no argument (`compact`, `clear_context`, `reload`, `abort`) plus anything whose values are knowable — with a `[models]` table configured, `set_model` appears once per registered model rather than as a prompt for free text. A leading slash does the same and can carry an argument: `/compact`, `/set_model gpt-4o`, `/open_session prior.jsonl`, `/skill:review`. A slash only intercepts when the word after it is a real command, so `/etc/hosts is missing` is still a message.
 
@@ -226,7 +228,7 @@ from midge.subagents import subagent
 @subagent(
     description="Locate where something lives in the codebase. Read-only.",
     prompt="You are a code explorer. Cite path:line for every claim.",
-    tools=("read", "bash"),
+    tools=("read", "ls", "grep"),   # read-only because every tool here is — not `bash`
     timeout=180,
 )
 async def explore(question: str, paths: list[str] | None = None) -> str:
@@ -295,7 +297,7 @@ from midge.profiles import Profile
 ADVERSARIAL = Profile(
     name="adversarial-reviewer",
     description="Reviews work that has just been done, looking for what is wrong with it.",
-    tools=("read", "bash"),      # read-only: a reviewer that can edit fixes instead of reporting
+    tools=("read", "ls", "grep"),  # read-only: a reviewer that can edit fixes instead of reporting
     hooks={"approve": True},     # a decision for every hook source, keyed by file stem
     prompt="Assume the work is wrong and find out how. Cite `path:line` for every claim.",
 )
@@ -388,7 +390,8 @@ examples/
 ├── rpc_agent.py       # RPC server for external clients
 ├── notes_agent.py     # second-domain TUI demo
 ├── config.toml        # every config key, commented, with its default
-├── approval_extension/ # tool-approval hook demo
+├── approval_extension/ # tool-approval hook demo (a denylist: advisory, see #102)
+├── allowlist_extension/ # a restriction that holds: named tools only, writes under cwd
 ├── notes_extension/   # the notes extension pack
 ├── subagent_extension/ # a read-only explorer sub-agent
 ├── profile_extension/ # a declared profile: the adversarial reviewer

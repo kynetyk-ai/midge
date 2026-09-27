@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -13,7 +14,7 @@ from midge.tools import Tool
 def test_load_builtin_coding_tools() -> None:
     registry, prompt = load_extensions(BUILTIN_TOOL_DIRS)
     names = {t.name for t in registry}
-    assert names == {"read", "bash", "edit", "write"}
+    assert names == {"read", "ls", "grep", "bash", "edit", "write"}
     assert prompt == ""
 
 
@@ -174,3 +175,22 @@ def test_two_dirs_compose(tmp_path: Path) -> None:
 
     registry, _ = load_extensions([a_dir, b_dir])
     assert {t.name for t in registry} == {"alpha", "beta"}
+
+
+async def test_the_allowlist_example_holds() -> None:
+    # #102's recommended pattern, loaded the way a user would load it.
+    from midge.hooks import Hooks, ToolCallEvent
+    from midge.messages import ToolCall
+
+    root = Path(__file__).resolve().parent.parent / "examples" / "allowlist_extension"
+    hooks = Hooks()
+    load_extensions([root], hooks=hooks)
+
+    async def decide(name: str, **args: object) -> Any:
+        return await hooks.emit(ToolCallEvent(tool_call=ToolCall(id="c", name=name, arguments=args)))
+
+    assert (await decide("bash", command="ls")).block
+    assert (await decide("write", path="/etc/passwd", content="x")).block
+    assert (await decide("write", path="../outside.txt", content="x")).block
+    assert await decide("write", path="notes/inside.txt", content="x") is None
+    assert await decide("read", path="/etc/hosts") is None

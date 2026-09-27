@@ -11,7 +11,7 @@ from midge.agent import Agent
 from midge.client import Client
 from midge.commands import Controls
 from midge.config import ProviderConfig
-from midge.messages import UserMessage
+from midge.messages import TextContent, UserMessage
 from midge.persistence import Session
 from midge.profiles import Profile, ProfileSet
 from midge.providers import ModelRegistry
@@ -543,3 +543,150 @@ async def test_ctrl_c_when_idle_says_nothing() -> None:
         await pilot.press("ctrl+c")
         await _settle(pilot)
         assert _status(app) == []
+
+
+# --- approval: the TUI asks before anything that is not read-only ----------
+
+
+def _approval_app(calls: list[tuple[str, str]], ran: list[str], **kw: Any) -> PiApp:
+    from midge.hooks import Hooks
+    from midge.tools import ToolRegistry, tool
+
+    @tool
+    async def poke(x: str) -> str:
+        ran.append(f"poke {x}")
+        return "poked"
+
+    @tool(read_only=True)
+    async def peek(x: str) -> str:
+        ran.append(f"peek {x}")
+        return "seen"
+
+    client = Client()
+    first = [
+        chunk
+        for i, (name, x) in enumerate(calls)
+        for chunk in whole_call(name, f'{{"x": "{x}"}}', index=i, id=f"c{i}")
+    ]
+    install(client, [[*first, finish("tool_use")], [say("done"), finish()]])
+    agent = Agent(client=client, model="m", tools=ToolRegistry([poke, peek]), hooks=Hooks())
+    return PiApp(Controls(agent), approve_tools=kw.get("approve_tools", True))
+
+
+async def _submit(app: PiApp, pilot: Any, text: str = "go") -> None:
+    app.query_one("#input", TextArea).text = text
+    await pilot.press("enter")
+
+
+async def _until_asked(app: PiApp, pilot: Any) -> Any:
+    from midge.tui.app import ApprovalScreen
+
+    for _ in range(200):
+        if isinstance(app.screen, ApprovalScreen):
+            return app.screen
+        await pilot.pause(0.01)
+    raise AssertionError("the approval prompt never appeared")
+
+
+def _results(app: PiApp) -> list[str]:
+    from midge.messages import ToolResultMessage
+
+    return [
+        m.content[0].text
+        for m in app.agent.history
+        if isinstance(m, ToolResultMessage) and isinstance(m.content[0], TextContent)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_approval_y_runs_the_tool() -> None:
+    ran: list[str] = []
+    app = _approval_app([("poke", "1")], ran)
+    async with app.run_test() as pilot:
+        await _submit(app, pilot)
+        screen = await _until_asked(app, pilot)
+        assert screen.call.name == "poke"
+        await pilot.press("y")
+        await app.workers.wait_for_complete()
+    assert ran == ["poke 1"]
+
+
+@pytest.mark.asyncio
+async def test_approval_n_tells_the_model_and_runs_nothing() -> None:
+    ran: list[str] = []
+    app = _approval_app([("poke", "1")], ran)
+    async with app.run_test() as pilot:
+        await _submit(app, pilot)
+        await _until_asked(app, pilot)
+        await pilot.press("n")
+        await app.workers.wait_for_complete()
+    assert ran == []
+    assert _results(app) == ["Denied by the user."]
+
+
+@pytest.mark.asyncio
+async def test_approval_a_stops_asking_about_that_tool() -> None:
+    # Two mutating calls in one message: asked once, in order, then trusted.
+    ran: list[str] = []
+    app = _approval_app([("poke", "1"), ("poke", "2")], ran)
+    async with app.run_test() as pilot:
+        await _submit(app, pilot)
+        await _until_asked(app, pilot)
+        await pilot.press("a")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+    assert ran == ["poke 1", "poke 2"]
+
+
+@pytest.mark.asyncio
+async def test_read_only_tools_are_never_asked_about() -> None:
+    from midge.tui.app import ApprovalScreen
+
+    ran: list[str] = []
+    app = _approval_app([("peek", "1")], ran)
+    async with app.run_test() as pilot:
+        await _submit(app, pilot)
+        await app.workers.wait_for_complete()
+        assert not isinstance(app.screen, ApprovalScreen)
+    assert ran == ["peek 1"]
+
+
+@pytest.mark.asyncio
+async def test_approval_off_never_asks() -> None:
+    ran: list[str] = []
+    app = _approval_app([("poke", "1")], ran, approve_tools=False)
+    async with app.run_test() as pilot:
+        await _submit(app, pilot)
+        await app.workers.wait_for_complete()
+    assert ran == ["poke 1"]
+
+
+@pytest.mark.asyncio
+async def test_approval_survives_an_extension_reload() -> None:
+    ran: list[str] = []
+    app = _approval_app([("poke", "1")], ran)
+    async with app.run_test() as pilot:
+        assert app.agent.hooks is not None
+        await app.agent.hooks.unload_extensions()
+        await _submit(app, pilot)
+        await _until_asked(app, pilot)
+        await pilot.press("n")
+        await app.workers.wait_for_complete()
+    assert ran == []
+
+
+@pytest.mark.asyncio
+async def test_ctrl_c_while_asked_ends_the_turn_and_the_question() -> None:
+    from midge.tui.app import ApprovalScreen
+
+    ran: list[str] = []
+    app = _approval_app([("poke", "1")], ran)
+    async with app.run_test() as pilot:
+        await _submit(app, pilot)
+        await _until_asked(app, pilot)
+        await pilot.press("ctrl+c")
+        await app.workers.wait_for_complete()
+        await _settle(pilot)
+        assert not isinstance(app.screen, ApprovalScreen)
+        assert any("interrupted" in s for s in _status(app))
+    assert ran == []
