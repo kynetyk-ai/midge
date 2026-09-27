@@ -124,6 +124,19 @@ class ExtensionConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class TuiConfig:
+    """What only the interactive front-end does.
+
+    `approve_tools` asks before any tool that is not read-only runs. On by
+    default because a person is watching, which is the one situation where
+    asking is possible. RPC never asks — an unattended caller has nobody to ask,
+    and a prompt that nobody answers is a hang, not a safeguard.
+    """
+
+    approve_tools: bool = True
+
+
+@dataclass(frozen=True, slots=True)
 class SessionConfig:
     enabled: bool = True
     # None means `cwd/.midge/sessions`, resolved where it is used rather than
@@ -178,6 +191,7 @@ class Config:
     retry: RetryConfig = RetryConfig()
     extensions: ExtensionConfig = ExtensionConfig()
     session: SessionConfig = SessionConfig()
+    tui: TuiConfig = TuiConfig()
     subagents: SubagentConfig = SubagentConfig()
     # The model registry. Empty is permissive — any model string is accepted and
     # goes to the single provider above, which is every install that predates
@@ -235,6 +249,11 @@ class Config:
             session=SessionConfig(
                 enabled=src.flag("session", "enabled", "MIDGE_SESSION", default=True),
                 dir=src.path("session", "dir", "MIDGE_SESSION_DIR"),
+            ),
+            tui=TuiConfig(
+                approve_tools=src.flag(
+                    "tui", "approve_tools", "MIDGE_APPROVE_TOOLS", default=True
+                ),
             ),
             providers=_providers(src),
             models=_models(src),

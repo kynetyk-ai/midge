@@ -185,6 +185,15 @@ max_delay = 60.0
 # dir = ".agents/extensions"
 
 
+[tui]
+# Ask before running any tool that is not read-only — `bash`, `write`, `edit`,
+# an extension's tool, a sub-agent that may call one. `y` allows once, `a`
+# allows that tool for the rest of the session, `n` refuses and tells the model.
+# TUI only: RPC never asks, because an unattended caller has nobody to answer.
+# Env: MIDGE_APPROVE_TOOLS
+approve_tools = true
+
+
 [compaction]
 # Summarize history after a turn once its estimated tokens exceed this.
 # Omit to disable. Flag: --compaction-threshold

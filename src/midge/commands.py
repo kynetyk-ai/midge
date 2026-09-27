@@ -965,12 +965,11 @@ class Controls:
         assert self.extension_sources is not None
         hooks = self.agent.hooks
         if hooks is not None:
-            # A whole-registry wipe, which is right because `load_extensions` is
-            # the only thing that registers into this `Hooks` — and it runs every
-            # `add_cleanup` handler first, which is what unloading should do.
-            # `_Registration.source` is already stamped if this ever needs to
-            # become a scoped removal.
-            await hooks.clear()
+            # Extensions only: they are what is being reloaded. A handler the
+            # entrypoint registered itself — the TUI's approval prompt — is not
+            # the extensions' to remove, and a reload that did would silently
+            # stop asking.
+            await hooks.unload_extensions()
         # A fresh set, for the same reason the registry is: a re-import produces
         # new instances, and a profile deleted from disk has to disappear.
         profiles = ProfileSet()
