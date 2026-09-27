@@ -465,3 +465,22 @@ def test_named_builtins_keep_only_those(
         agent = _start(tmp_path, monkeypatch, ["--extension-dir", str(tmp_path / "ext")])
     assert {t.name for t in agent.tools} == {"read", "autoloaded_marker"}
     assert any("tools_builtin_unknown name=nope" in r.getMessage() for r in caplog.records)
+
+
+def test_the_notes_domain_through_the_real_entrypoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Skills on disk and the coding built-ins loaded: the profile is what
+    # removes them, and with no path reader left there is no catalogue.
+    notes = Path(__file__).resolve().parent.parent / "examples" / "notes_extension"
+    skill = tmp_path / ".midge" / "skills" / "deploy"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("---\nname: deploy\ndescription: Deploys it.\n---\nSteps.\n")
+    agent = _start(tmp_path, monkeypatch, ["--extension-dir", str(notes), "--profile", "notes"])
+
+    assert {t.name for t in agent.tools} == {
+        "add_note", "search_notes", "read_note", "list_notes", "link_notes",
+    }
+    assert agent.system_prompt is not None
+    assert agent.system_prompt.startswith("You are a personal knowledge assistant")
+    assert "available_skills" not in agent.system_prompt

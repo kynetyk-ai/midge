@@ -31,13 +31,15 @@ TIMEOUT = 30.0
 class Midge:
     """One `python -m midge --rpc` process, spoken to over its pipes."""
 
-    def __init__(self, tmp_path: Path, fake: FakeOpenAI, *args: str) -> None:
-        env = {k: v for k, v in os.environ.items() if not k.startswith(("OPENAI_", "MIDGE_"))}
-        env |= {
+    def __init__(
+        self, tmp_path: Path, fake: FakeOpenAI, *args: str, env: dict[str, str] | None = None
+    ) -> None:
+        base = {k: v for k, v in os.environ.items() if not k.startswith(("OPENAI_", "MIDGE_"))}
+        env = base | {
             "OPENAI_BASE_URL": fake.base_url,  # a local server needs no key
             "MIDGE_MODEL": "m",
             "HOME": str(tmp_path),
-        }
+        } | (env or {})
         self.proc = subprocess.Popen(
             [sys.executable, "-m", "midge", "--rpc", *args],
             cwd=tmp_path,
@@ -158,3 +160,30 @@ def test_the_example_client_refuses_a_protocol_it_does_not_know(tmp_path: Path) 
     )
     assert done.returncode == 2
     assert "protocol 99" in done.stderr
+
+
+NOTES = Path(__file__).resolve().parent.parent / "examples" / "notes_extension"
+
+
+def test_the_notes_domain_runs_through_the_real_entrypoint(tmp_path: Path) -> None:
+    # M3's exit criterion: a non-coding domain is an extension and a profile,
+    # run by `midge` itself — its tools execute, and nothing from the coding
+    # pack is offered to the model.
+    kb = tmp_path / "kb.json"
+    note = {"title": "Wrapping", "content": "text.wrap breaks at 72", "tags": ["toybox"]}
+    with FakeOpenAI([{"tool": "add_note", "arguments": note}, "Saved it."]) as fake:
+        midge = Midge(
+            tmp_path, fake, "--no-session", "--extension-dir", str(NOTES), "--profile", "notes",
+            env={"MIDGE_NOTES_KB": str(kb)},
+        )
+        midge.until("ready")
+        midge.send({"id": "p", "type": "prompt", "message": "save a note about wrapping"})
+        turn = midge.until("agent_settled")
+        assert midge.close() == 0
+
+    [result] = [f for f in turn if f.get("type") == "tool_result"]
+    assert not result["is_error"], result
+    assert "Wrapping" in json.loads(kb.read_text())["notes"]["wrapping"]["title"]
+    offered = {t["function"]["name"] for t in fake.bodies[0]["tools"]}
+    assert offered == {"add_note", "search_notes", "read_note", "list_notes", "link_notes"}
+    assert fake.bodies[0]["messages"][0]["content"].startswith("You are a personal knowledge")

@@ -14,7 +14,7 @@ note records the reasoning behind them.
 |---|---|---|
 | RPC (`midge --rpc`) | **the protocol** — one stray byte breaks every client | free |
 | headless (`examples/coding_agent.py`) | the rendered transcript | free |
-| TUI (`cli.py`, `examples/notes_agent.py`) | captured by Textual and dropped | **unsafe for an eagerly-bound handler** |
+| TUI (`cli.py`) | captured by Textual and dropped | **unsafe for an eagerly-bound handler** |
 
 The TUI case is the one that bites. `textual/app.py` wraps its message loop in
 `redirect_stdout`/`redirect_stderr`, which rebind the `sys.stdout`/`sys.stderr`
