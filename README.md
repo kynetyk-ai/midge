@@ -42,7 +42,7 @@ poetry run midge
 
 Extensions load from `--extension-dir DIR` (repeatable). To stop typing it, set `[extensions] enabled = true` in `.midge/config.toml` and they are read from `.agents/extensions/` — **off by default**, because an extension is arbitrary Python imported at startup, before your first prompt. The flag is honoured either way.
 
-Flags: `--extension-dir DIR` and `--skill-dir DIR` (both repeatable), `--profile NAME`, `--rpc`, one of `--session PATH` / `--continue` (resume the most recently modified session) / `--no-session`, `--compaction-threshold N`, `--compaction-keep-recent N`, `--version`. Bindings: `Enter` submit, `Ctrl+O` newline (`Alt+Enter` too, where the terminal sends Option as Meta), `Ctrl+P` command palette, `Ctrl+B` switch-to panel, `Ctrl+C` interrupt and drop anything queued, `Ctrl+D` quit, `Esc` close the panel or clear input.
+Flags: `--extension-dir DIR` and `--skill-dir DIR` (both repeatable), `--profile NAME`, `--rpc`, one of `--session PATH` / `--continue` (resume the most recently modified session) / `--no-session`, `--compaction-threshold N`, `--compaction-keep-recent N`, `--version`. Bindings: `Enter` submit, `Ctrl+O` newline (`Alt+Enter` too, where the terminal sends Option as Meta), `Ctrl+P` commands (things you do: compact, clear, reload, skills), `Ctrl+B` the drawer (what the agent is: session, profile, model — the one place to switch them), `Ctrl+C` interrupt and drop anything queued, `Ctrl+D` quit, `Esc` close the panel or clear input.
 
 **The TUI asks before running any tool that is not read-only** — `bash`, `write`, `edit`, an extension's tool, or a sub-agent that may call one (and then each call that sub-agent makes). `y` allows once, `a` allows that tool for the rest of the session, `n` refuses and the model is told so. `[tui] approve_tools = false` turns it off. RPC never asks: an unattended caller has nobody to answer, so the boundary there is the container.
 
@@ -399,7 +399,7 @@ src/midge/
 ├── subagents.py       # @subagent → spawn_* tools running nested agents
 ├── profiles.py        # Profile discovery + validation (what the agent *is*)
 ├── hooks.py           # lifecycle events + handler registry
-├── tui/app.py         # Textual TUI: palette, slash commands, steering, switch panel
+├── tui/app.py         # Textual TUI: commands (Ctrl+P), drawer (Ctrl+B), slash commands, steering
 └── cli.py             # `midge` entrypoint
 examples/
 ├── coding_agent.py    # one-shot CLI for the coding domain

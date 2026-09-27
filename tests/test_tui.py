@@ -216,9 +216,28 @@ async def test_the_palette_offers_every_argument_free_builtin() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_model_registry_becomes_palette_entries() -> None:
-    # `builtin_schema` narrows `set_model` to the registered ids, so the palette
-    # offers them as choices rather than asking for free text.
+async def test_switches_live_in_the_drawer_not_the_command_list() -> None:
+    # #115: `set_model` in both places read as two different commands. With a
+    # registry the model is a choice, and the drawer is where choices are.
+    registry = ModelRegistry(
+        models={"a-model": "p", "b-model": "p"},
+        providers={"p": ProviderConfig(kind="openai")},
+    )
+    agent = Agent(client=Client(registry=registry), model="a-model")
+    app = PiApp(Controls(agent, profiles=_profiles("builder")))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        offered = {d for d, _desc, _arg in MidgeCommands(app.screen)._entries()}
+        assert not any(o.startswith(("set_model", "use_profile")) for o in offered)
+
+        await pilot.press("ctrl+b")
+        await _settle(pilot)
+        ids = {i for _label, i in _options(app)}
+        assert {"set_model\x00a-model", "set_model\x00b-model", "use_profile\x00builder"} <= ids
+
+
+@pytest.mark.asyncio
+async def test_a_slash_still_switches_the_model() -> None:
     registry = ModelRegistry(
         models={"a-model": "p", "b-model": "p"},
         providers={"p": ProviderConfig(kind="openai")},
@@ -226,10 +245,10 @@ async def test_a_model_registry_becomes_palette_entries() -> None:
     agent = Agent(client=Client(registry=registry), model="a-model")
     app = PiApp(Controls(agent))
     async with app.run_test() as pilot:
-        await pilot.pause()
-        offered = {d for d, _desc, _arg in MidgeCommands(app.screen)._entries()}
-
-        assert {"set_model a-model", "set_model b-model"} <= offered
+        app.query_one("#input", TextArea).text = "/set_model b-model"
+        await pilot.press("enter")
+        await _settle(pilot)
+        assert agent.model == "b-model"
 
 
 @pytest.mark.asyncio
@@ -357,15 +376,22 @@ async def test_the_drawer_lists_what_the_agent_could_be(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_section_with_nothing_to_offer_is_omitted() -> None:
-    # Same rule the palette follows: with an empty registry midge cannot know
-    # what the alternatives are, so it does not pretend to.
+async def test_a_section_with_nothing_to_offer_says_why() -> None:
+    # #115: a vanished model section read as "the model cannot be switched
+    # here". It is shown, with the current model and how to list others.
     app = _app([])
     async with app.run_test() as pilot:
         await pilot.press("ctrl+b")
         await _settle(pilot)
 
-        assert _sections(app) == ["nothing to switch to"]
+        assert _sections(app) == [
+            "sessions",
+            "none saved yet",
+            "profiles",
+            "none — declare a Profile in an extension",
+            "model",
+            "m — list models under [models] in config to switch here",
+        ]
         assert _options(app) == []
 
 

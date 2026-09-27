@@ -23,8 +23,8 @@ the container and can be read after you quit. That matters for §6.
 
 `--config config-models.toml` adds a `[models]` table. Without one the registry
 is empty, and midge deliberately offers no model choices at all rather than
-prompting for free text — so the drawer's model section and the palette's
-`set_model` entries simply will not appear. Use it when testing those.
+prompting for free text — the drawer's model section shows the current model and
+a hint to list models under `[models]`. Use it when testing model switching.
 
 ---
 
@@ -62,23 +62,26 @@ Only names in the command table intercept; anything else starting with a slash
 is prose. If that ever regresses, the input box starts rejecting ordinary
 English about paths.
 
-### 3. The palette
+### 3. Commands
 
-`Ctrl+P`. Type to filter.
+`Ctrl+P` — the footer calls it `Commands`. Type to filter. (Under `docker run -it`
+Ctrl+P is Docker's detach key and never reaches midge; the printed `tui` line
+passes `--detach-keys ctrl-^` for that reason — keep it if you edit the line.) It lists **verbs**;
+switching lives in the drawer (#115).
 
-Two things to check rather than admire:
-
-- **`set_model` appears once per registered model** (`set_model gpt-5.4-mini`,
-  `set_model gpt-4o-mini`) — not as a bare entry that would fire with no value.
-  With the default config it should be **absent entirely**.
+- **Every command with no required argument is here** — `compact`,
+  `clear_context`, `reload`, `abort`, and one entry per skill.
+- **No `set_model` or `use_profile` entries**, with or without a `[models]`
+  table. Those are switches, and the drawer is the one place for them.
 - **`new_session`, `open_session`, `set_session_name`, `set_system_prompt` are
-  absent.** They need typed text and a palette has nowhere to put it; the slash
-  form is where they live.
+  absent.** They need typed text; the slash form is where they live, and
+  `/set_model <id>` still works there.
 
 ### 4. The drawer
 
 `Ctrl+B`. Sections for sessions, profiles and model, with `●` marking the
-current one. `Esc` closes it without touching your draft.
+current one — always all three: a section with nothing to pick says why in a
+line instead of vanishing. `Esc` closes it without touching your draft.
 
 - Load profiles (`--extension-dir` for `profile_extension` **and**
   `approval_extension` — the profile declares `hooks={"approve": True}` and is
@@ -167,6 +170,6 @@ issue, the eleven already filed (#99–#109) are the format.
 Things the scripted phases could not judge and would be genuinely useful:
 
 - Is an error legible without reading the log?
-- Does the palette's ordering put the useful entries near the top?
+- Does the command list's ordering put the useful entries near the top?
 - Does the drawer answer "what am I on" at a glance, or take a second look?
 - Does steering *feel* like it worked, or does it feel like the message was lost?
