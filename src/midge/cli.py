@@ -399,6 +399,9 @@ def main(argv: list[str] | None = None) -> None:
         agent,
         session=session,
         compaction_keep_recent=keep_recent,
+        # Both modes: an unattended RPC session is the one most likely to run
+        # long enough to need it.
+        compaction_threshold=threshold,
         base_prompt=durable,
         extension_prompt=prompt_addition,
         skills=skills,
@@ -438,7 +441,7 @@ def main(argv: list[str] | None = None) -> None:
     # event instead.
     asyncio.run(hooks.emit(SessionStart(path=session_path)))
     try:
-        run_tui(controls, compaction_threshold=threshold)
+        run_tui(controls)
     finally:
         # `controls.session`, not the one opened at startup: `new_session` and a
         # profile fork replace it, and closing the original would leave the file

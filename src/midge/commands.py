@@ -31,21 +31,28 @@ answer, not a parse error — comes back out.
 a Textual `Worker` to the TUI, so `Runner` is the seam. It is what lets the
 clear-then-cancel ordering in `abort`, and the mid-run refusals, be stated once
 rather than rediscovered per front-end.
+
+What a turn *does* is not outside, though: `run_turn` is the one place a turn is
+persisted and compacted. Each front-end used to do both itself, and they
+drifted — RPC wrote nothing to its transcript at all (#99), and only the TUI
+compacted.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
-from collections.abc import Sequence
+from collections.abc import AsyncGenerator, Sequence
+from contextlib import aclosing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from midge.agent import Agent
-from midge.compaction import compact
+from midge.agent import Agent, AgentEnd, AgentEvent
+from midge.compaction import compact, needs_compaction
 from midge.config import SubagentConfig
 from midge.config import emit as emit_diagnostics
 from midge.extensions import load_extensions
@@ -79,6 +86,21 @@ class Refused(Exception):
     in flight, a profile that does not exist — so it carries a message meant to
     be shown to whoever asked.
     """
+
+
+@dataclass(frozen=True, slots=True)
+class CompactionStart:
+    """Automatic compaction is about to summarize; the turn itself is done."""
+
+
+@dataclass(frozen=True, slots=True)
+class CompactionEnd:
+    """`cut_index` is None when there was nothing worth summarizing, and
+    `error` is set when the summary call failed — history is untouched then."""
+
+    cut_index: int | None
+    message_count: int
+    error: str | None = None
 
 
 class Runner(Protocol):
@@ -204,6 +226,7 @@ class Controls:
         *,
         session: Session | None = None,
         compaction_keep_recent: int = 20_000,
+        compaction_threshold: int | None = None,
         base_prompt: str | None = None,
         extension_prompt: str = "",
         skills: Sequence[Skill] | None = None,
@@ -221,6 +244,10 @@ class Controls:
         # persistence commands need and cannot reach otherwise.
         self.session = session
         self.compaction_keep_recent = compaction_keep_recent
+        # `None` turns automatic compaction off. Held here rather than by a
+        # front-end, because an unattended RPC session is the one that most
+        # needs it and was the one without it.
+        self.compaction_threshold = compaction_threshold
         # The agent's prompt is composed: a durable base the operator owns, then
         # what midge generates — extension contributions and the skills
         # catalogue. Keeping the halves apart is what lets `set_system_prompt`
@@ -440,6 +467,14 @@ class Controls:
         reachable.
         """
         self._refuse_if_busy("compact")
+        summary, cut_index = await self._compact()
+        return {
+            "summary": summary,
+            "cut_index": cut_index,
+            "message_count": len(self.agent.history),
+        }
+
+    async def _compact(self) -> tuple[str | None, int | None]:
         result = await compact(
             self.agent.history,
             client=self.agent.client,
@@ -448,16 +483,65 @@ class Controls:
             hooks=self.agent.hooks,
         )
         if result is None:
-            return {
-                "summary": None,
-                "cut_index": None,
-                "message_count": len(self.agent.history),
-            }
+            return None, None
         new_history, summary, cut_index = result
+        # No await between the swap and the record, so a cancel can only land
+        # during `compact()` above — before either — and never between them.
         self.agent.history = new_history
         if self.session is not None:
             self.session.append_compaction(summary=summary, cut_index=cut_index)
-        return {"summary": summary, "cut_index": cut_index, "message_count": len(new_history)}
+        return summary, cut_index
+
+    async def run_turn(
+        self, message: str | UserMessage
+    ) -> AsyncGenerator[AgentEvent | CompactionStart | CompactionEnd, None]:
+        """Run one turn, persist it, and compact afterwards if it is due.
+
+        Both front-ends iterate this rather than `agent.stream`, and should do
+        so under `contextlib.aclosing`: a front-end that raises while rendering
+        an event abandons the generator, and only a deterministic close runs
+        the `finally` that saves what the turn had done.
+
+        **Persistence has one rule: what reached history reaches disk.** A turn
+        that completes is written from `AgentEnd`. One that does not — cancelled,
+        or failed underneath — is written from the history tail instead, because
+        `AgentEnd` never arrives. The agent has already answered any orphaned
+        tool calls by then, and `repair_history` drops what a provider would
+        refuse, so the tail is always safe to resume.
+
+        Compaction runs after the turn, never during it, which is what makes
+        swapping `agent.history` safe; see `compact`.
+        """
+        mark = len(self.agent.history)
+        persisted = False
+        try:
+            async with aclosing(self.agent.stream(message)) as events:
+                async for ev in events:
+                    if isinstance(ev, AgentEnd) and self.session is not None:
+                        self.session.append_many(ev.new_messages)
+                        persisted = True
+                    yield ev
+        finally:
+            if not persisted and self.session is not None:
+                tail = self.agent.history[mark:]
+                self.session.append_many(tail)
+                _logger.info("turn_persisted_partial messages=%d", len(tail))
+
+        if self.compaction_threshold is None or not needs_compaction(
+            self.agent.history, threshold_tokens=self.compaction_threshold
+        ):
+            return
+        yield CompactionStart()
+        try:
+            _, cut_index = await self._compact()
+        except asyncio.CancelledError:
+            _logger.info("compaction_cancelled")
+            raise
+        except Exception as e:
+            _logger.exception("compaction_failed")
+            yield CompactionEnd(None, len(self.agent.history), error=str(e))
+            return
+        yield CompactionEnd(cut_index, len(self.agent.history))
 
     def clear_context(self) -> dict[str, Any]:
         """Forget the conversation; keep recording to the same log.

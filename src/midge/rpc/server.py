@@ -57,6 +57,7 @@ class RpcServer:
         *,
         session: Session | None = None,
         compaction_keep_recent: int = 20_000,
+        compaction_threshold: int | None = None,
         base_prompt: str | None = None,
         extension_prompt: str = "",
         skills: Sequence[Skill] | None = None,
@@ -75,6 +76,7 @@ class RpcServer:
             agent,
             session=session,
             compaction_keep_recent=compaction_keep_recent,
+            compaction_threshold=compaction_threshold,
             base_prompt=base_prompt,
             extension_prompt=extension_prompt,
             skills=skills,
@@ -317,12 +319,13 @@ class RpcServer:
         )})
         saw_error_event = False
         try:
-            async for ev in self.agent.stream(message):
-                if isinstance(ev, Error):
-                    saw_error_event = True
-                wire = event_to_wire(ev)
-                if wire is not None:
-                    await self._emit(wire)
+            async with contextlib.aclosing(self.controls.run_turn(message)) as events:
+                async for ev in events:
+                    if isinstance(ev, Error):
+                        saw_error_event = True
+                    wire = event_to_wire(ev)
+                    if wire is not None:
+                        await self._emit(wire)
         except asyncio.CancelledError:
             if not saw_error_event:
                 await self._emit(

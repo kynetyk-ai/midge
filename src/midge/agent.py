@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -184,7 +184,7 @@ class Agent:
         self.history: list[Message] = []
         self._running = False
 
-    async def stream(self, user_input: str | UserMessage) -> AsyncIterator[AgentEvent]:
+    async def stream(self, user_input: str | UserMessage) -> AsyncGenerator[AgentEvent, None]:
         # `history` is mutated in place throughout the turn. A second concurrent
         # stream interleaves its appends with this one's, splitting tool calls
         # from their results. Callers that want to start a new turn must cancel
