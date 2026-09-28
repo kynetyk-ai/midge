@@ -12,7 +12,7 @@ Options:
                           from its header. Tool and skill availability is
                           recomposed from disk rather than restored.
 
-Env: OPENAI_API_KEY, OPENAI_BASE_URL, MIDGE_MODEL (default: gpt-4o-mini).
+Env: OPENAI_API_KEY, OPENAI_BASE_URL, MIDGE_MODEL (default: gpt-6-luna).
 """
 
 from __future__ import annotations

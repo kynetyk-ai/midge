@@ -41,7 +41,7 @@ from typing import Any
 
 _logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "gpt-4o-mini"
+DEFAULT_MODEL = "gpt-6-luna"
 DEFAULT_PAYLOAD_CHARS = 2000
 DEFAULT_KEEP_RECENT = 20_000
 

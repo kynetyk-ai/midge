@@ -2,13 +2,13 @@
 
 A hackable Python agent harness originally ported from [`pi-mono`](https://github.com/badlogic/pi-mono) (TypeScript) for personal preference, readability, and domain-adaptability.
 
-The core harness is about 3.5k lines of code — blank lines, comments and docstrings excluded — and **CI holds it under 5k** (`scripts/loc.py`). Counting the built-in tools, provider adapters and TUI alongside it, the whole package is roughly 4.5k. The agent loop, OpenAI-compatible client, tool registry, extension loader, RPC server, JSONL session save/load, context compaction, and Textual TUI are all small enough to read in a sitting and modify with confidence.
+The core harness is about 3.5k lines of code — blank lines, comments and docstrings excluded — and **CI holds it under 5k** (`scripts/loc.py`). Counting the built-in tools, provider adapters and TUI alongside it, the whole package is roughly 4.5k. The agent loop, provider client, tool registry, extension loader, RPC server, JSONL session save/load, context compaction, and Textual TUI are all small enough to read in a sitting and modify with confidence.
 
 The budget covers `src/midge/*.py`, the harness itself. `providers/`, `tools/` and `tui/` are excluded and reported separately: a provider adapter grows with the number of vendors, built-in tools with the domain, and the TUI is a presentation layer. Prose is free, so hitting the cap means simplifying code rather than deleting the explanation of why it works that way. Run `poetry run python scripts/loc.py` for the per-file table.
 
 ## What's in the box
 
-- **Streaming agent loop** against any OpenAI-compatible endpoint (OpenAI, Azure, ollama, vLLM, LM Studio, llama.cpp's `server`, Together, Groq, Fireworks, OpenRouter, ...). The wire format lives behind a provider registry, so the streaming state machine and retry policy are written once and a second format is an adapter rather than a branch.
+- **Streaming agent loop** against OpenAI's Responses API or any chat-completions endpoint (Azure, ollama, vLLM, LM Studio, llama.cpp's `server`, Together, Groq, Fireworks, OpenRouter, ...). The wire format lives behind a provider registry, so the streaming state machine and retry policy are written once and a second format is an adapter rather than a branch.
 - **`@tool` decorator** that turns an async Python function into an LLM-callable tool, with JSON Schema generated from its signature via Pydantic. When one message calls several tools, anything that changes state runs alone and in order; mark a tool `@tool(read_only=True)` to let it run alongside other reads.
 - **Filesystem extension loader** — drop a `.py` file with `@tool`-decorated functions and an optional `SYSTEM_PROMPT` constant into a directory, point `--extension-dir` at it, and the agent picks up the new tools.
 - **Agent Skills** ([`SKILL.md`](https://agentskills.io/specification)) — drop a directory of markdown instructions in and point `--skill-dir` at it. Names and descriptions go in the system prompt; the agent opens the full file with `read` only when a task matches. No Python, no prompt edits, and directories written for other harnesses load as-is.
@@ -85,7 +85,7 @@ MIDGE_MODEL=ibm/granite-3.2-8b \
 poetry run python -m examples.coding_agent --session run.jsonl "summarize the README"
 ```
 
-`model` defaults to `gpt-4o-mini` — see [Configuration](#configuration). Other flags: `--extension-dir DIR`, `--skill-dir DIR`, `--skill NAME`, `--session PATH` (resumes if the file exists), `--no-session`, `--compaction-threshold N`.
+`model` defaults to `gpt-6-luna` — see [Configuration](#configuration). Other flags: `--extension-dir DIR`, `--skill-dir DIR`, `--skill NAME`, `--session PATH` (resumes if the file exists), `--no-session`, `--compaction-threshold N`.
 
 Transcripts are written whether or not you ask. Without `--session`, a timestamped file appears in `.midge/sessions/` (already covered by `.gitignore`); `--session run.jsonl` names one in that same directory, and an absolute path writes wherever you point it. `--no-session` records nothing for one run, and `[session] enabled = false` turns it off for good.
 
@@ -126,7 +126,7 @@ api_key_env = "OPENAI_API_KEY"
 kind = "openai-compatible"
 base_url = "http://localhost:11434/v1"
 
-[models."gpt-4o-mini"]
+[models."gpt-6-luna"]
 provider = "openai"
 
 [models."ibm/granite-3.2-8b"]

@@ -299,6 +299,8 @@ class Client:
 
                             if ev.usage is not None:
                                 partial.usage = ev.usage
+                            if ev.extra:
+                                partial.extra.update(ev.extra)
 
                             if ev.text:
                                 if text_index is None:
