@@ -44,6 +44,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, ClassVar
 
+from rich.text import Text
 from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
@@ -233,11 +234,11 @@ class MidgeCommands(Provider):
                 )
 
 
-class Sidebar(VerticalScroll):
+class Sidebar(OptionList):
     """What the agent *is*, and what it could be instead.
 
     The palette is verbs — compact, clear, reload, things you do once. This is
-    nouns: the session, the profile and the model are each a set of named
+    nouns: the model, the profile and the session are each a set of named
     alternatives with exactly one current, which is a different shape and wants
     a different affordance. `Controls` already reports all three that way, so
     this renders rather than computes.
@@ -247,6 +248,11 @@ class Sidebar(VerticalScroll):
     docked, it shows what you are on. Before this the only visible state was the
     model in the title bar.
 
+    One list, with each section's heading as a disabled option, so the arrow
+    keys run through every section and Tab jumps to the next. Three separate
+    lists trapped the arrows in the first one. Sessions come last because that
+    section grows without bound.
+
     Every section is always shown. One with nothing to offer says why in a
     line, rather than vanishing: without a `[models]` table midge cannot know
     what the alternatives to the current model are, and a missing section read
@@ -254,12 +260,18 @@ class Sidebar(VerticalScroll):
     """
 
     DEFAULT_CSS = """
-    Sidebar { dock: left; width: 34; border-right: solid $accent; padding: 0 1; }
+    Sidebar, Sidebar:focus {
+        dock: left; width: 34; height: 1fr; border: none; border-right: solid $accent;
+    }
     Sidebar.hidden { display: none; }
-    Sidebar > .section { color: $text-muted; text-style: bold; padding: 1 0 0 0; }
-    Sidebar > OptionList { border: none; background: transparent; height: auto; }
-    Sidebar > .hint { color: $text-muted; padding: 0 0 0 2; }
     """
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("tab", "next_section", "Next section"),
+        Binding("shift+tab", "previous_section", "Previous section", show=False),
+    ]
+
+    _headings: tuple[int, ...] = ()
 
     def rebuild(self, controls: Controls) -> None:
         """Read the current state and redraw. Called on every open.
@@ -267,25 +279,44 @@ class Sidebar(VerticalScroll):
         Cheaper than staying in sync: sessions appear on disk from other
         processes, and a profile switch changes two sections at once.
         """
-        self.remove_children()
+        self.clear_options()
+        headings: list[int] = []
         for title, options, empty in (
-            ("sessions", _session_options(controls), "none saved yet"),
-            (
-                "profiles",
-                _profile_options(controls),
-                "none — declare a Profile in an extension",
-            ),
             (
                 "model",
                 _model_options(controls),
                 f"{controls.agent.model} — list models under [models] in config to switch here",
             ),
+            (
+                "profiles",
+                _profile_options(controls),
+                "none — declare a Profile in an extension",
+            ),
+            ("sessions", _session_options(controls), "none saved yet"),
         ):
-            self.mount(Static(title, classes="section"))
-            if options:
-                self.mount(OptionList(*options))
-            else:
-                self.mount(Static(empty, classes="hint", markup=False))
+            headings.append(self.option_count)
+            self.add_option(Option(Text(title, style="bold"), disabled=True))
+            self.add_options(options or [Option(Text(f"  {empty}"), disabled=True)])
+        self._headings = tuple(headings)
+        self.action_first()
+
+    def _jump(self, direction: int) -> None:
+        bounds = [*self._headings, self.option_count]
+        current = self.highlighted or 0
+        section = sum(1 for h in self._headings if h <= current) - 1
+        # A section whose only line is a hint has nothing to land on; skip it.
+        for step in range(1, len(self._headings) + 1):
+            target = (section + direction * step) % len(self._headings)
+            for i in range(bounds[target], bounds[target + 1]):
+                if not self.get_option_at_index(i).disabled:
+                    self.highlighted = i
+                    return
+
+    def action_next_section(self) -> None:
+        self._jump(1)
+
+    def action_previous_section(self) -> None:
+        self._jump(-1)
 
 
 # NUL, because the argument half is a filesystem path and everything printable
@@ -533,9 +564,7 @@ class PiApp(App[None]):
             sidebar.rebuild(self.controls)
             sidebar.remove_class("hidden")
             # Focus follows, or the arrow keys would still be editing the draft.
-            lists = sidebar.query(OptionList)
-            if lists:
-                lists.first().focus()
+            sidebar.focus()
         else:
             self._close_sidebar()
 
