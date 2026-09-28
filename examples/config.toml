@@ -13,13 +13,14 @@
 # visible.
 
 # The model id sent to the provider. Env: MIDGE_MODEL
-model = "gpt-4o-mini"
+model = "gpt-6-luna"
 
 
 [provider]
-# Which wire format to speak: "openai" or "openai-compatible". Omit to infer —
-# no base_url means OpenAI, a base_url means something OpenAI-compatible
-# (ollama, vLLM, LM Studio, llama.cpp). Env: MIDGE_PROVIDER
+# Which wire format to speak: "openai" (OpenAI's Responses API) or
+# "openai-compatible" (chat completions). Omit to infer — no base_url means
+# OpenAI, a base_url means something OpenAI-compatible (ollama, vLLM, LM Studio,
+# llama.cpp). Env: MIDGE_PROVIDER
 # name = "openai-compatible"
 
 # Where to send requests. Omit for the provider's own default.
@@ -69,7 +70,7 @@ model = "gpt-4o-mini"
 # base_url = "http://localhost:11434/v1"
 # include_usage = false              # per-provider; overrides what the adapter declares
 
-# [models."gpt-4o-mini"]
+# [models."gpt-6-luna"]
 # provider = "openai"
 
 # [models."ibm/granite-3.2-8b"]

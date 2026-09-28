@@ -22,10 +22,11 @@ So the contract is deliberately small:
 `Delta` is the normalization point. Everything above it speaks midge's own
 vocabulary; everything below is the vendor's.
 
-Two names are registered against one adapter today, because OpenAI and an
-OpenAI-compatible server (ollama, vLLM, LM Studio, llama.cpp) share a wire
-format and differ only in what they tolerate. Those differences are declared as
-`Capabilities` rather than discovered at runtime by catching a 400.
+Two adapters are registered today: `openai`, which speaks OpenAI's Responses
+API, and `openai-compatible`, which speaks chat completions to servers that
+implement only that (ollama, vLLM, LM Studio, llama.cpp). What those servers
+tolerate differs, and is declared as `Capabilities` rather than discovered at
+runtime by catching a 400.
 """
 
 from __future__ import annotations
@@ -75,12 +76,17 @@ class Delta:
     Every field is optional because providers split content freely: a chunk may
     carry text, tool-call fragments, a stop reason, usage, or nothing at all.
     An all-empty `Delta` is valid and is skipped by the caller.
+
+    `extra` is provider state to keep on the assistant message and receive back
+    in `encode`, such as reasoning a vendor returns only in encrypted form. The
+    core stores it without reading it.
     """
 
     text: str = ""
     tool_calls: tuple[ToolCallFragment, ...] = ()
     stop_reason: StopReason | None = None
     usage: Usage | None = None
+    extra: dict[str, Any] | None = None
 
 
 @runtime_checkable

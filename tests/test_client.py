@@ -34,7 +34,7 @@ from midge.client import (
 )
 from midge.config import ProviderConfig
 from midge.messages import Message, TextContent, ToolCall, UserMessage
-from midge.providers import ModelRegistry
+from midge.providers import Delta, ModelRegistry
 from midge.providers.openai_compat import CoolOff, OpenAIProvider
 from tests.fakes import (
     FakeProvider,
@@ -186,6 +186,17 @@ async def test_a_stream_with_no_stop_reason_still_stops() -> None:
     done = (await _run(client))[-1]
     assert isinstance(done, Done)
     assert done.message.stop_reason == "stop"
+
+
+async def test_provider_state_is_kept_on_the_message() -> None:
+    # The core stores it for the provider's next `encode` and never reads it.
+    client = Client()
+    install(client, [[say("hi"), Delta(stop_reason="stop", extra={"opaque": [1]})]])
+
+    done = (await _run(client))[-1]
+
+    assert isinstance(done, Done)
+    assert done.message.extra == {"opaque": [1]}
 
 
 async def test_invalid_tool_call_arguments_become_empty_dict() -> None:

@@ -6,7 +6,7 @@ like `openai` or `openai-compatible`. This module maps a **model id** to a live
 `Provider` built from one of those adapters, keyed by whatever the user called
 the service in `[providers.*]`.
 
-    "gpt-4o-mini"  ->  provider "openai"  ->  adapter kind "openai"
+    "gpt-6-luna"   ->  provider "openai"  ->  adapter kind "openai"
 
 The rule this exists to enforce is that **the model determines the provider**.
 `Client.stream` already takes a model per call — `Agent.model` is mutable and
