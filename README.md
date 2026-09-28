@@ -70,6 +70,23 @@ The TUI and the RPC server drive the same `Controls` object and enumerate the sa
 
 **Typing while a turn is running queues the message** rather than cancelling the turn: it lands at the next tool boundary, so nothing already done is thrown away. `Ctrl+C` is the explicit interrupt.
 
+### In a container
+
+The root `Dockerfile` builds midge from `poetry.lock` into an image that works on whatever is mounted at `/workspace`. The agent sees that directory and nothing else of the host, which makes the container the boundary for what `bash` can reach.
+
+```bash
+docker build -t midge .                     # on Linux: --build-arg UID=$(id -u) --build-arg GID=$(id -g)
+cd ~/code/my-project
+docker run -it --rm --detach-keys ctrl-^ \
+  -e OPENAI_API_KEY -v "$PWD":/workspace midge
+```
+
+- Arguments after the image name go to `midge`: `... midge --continue`, `... midge --rpc` (use `-i` without `-t` for RPC).
+- `--detach-keys ctrl-^` is required for the TUI. Docker's default detach sequence starts with `Ctrl+P` and consumes it before midge sees it.
+- Sessions are written to the project's `.midge/sessions/`, so they persist on the host. A project `.midge/config.toml` is read as usual; to use your global one as well, add `-v ~/.midge:/home/midge/.midge:ro`.
+- The `UID`/`GID` build arguments make files the agent writes owned by you. Docker Desktop on macOS maps ownership itself and does not need them.
+- The image has `git`, `ripgrep`, `curl`, `jq` and `make`. For a project that needs its own toolchain, build on it: `FROM midge`, then install what it needs as `root` and switch back to `USER midge`.
+
 ### One-shot CLI
 
 ```bash
