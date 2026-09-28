@@ -36,19 +36,37 @@ Python 3.11+. Poetry for env and dep management.
 
 ### Interactive TUI (coding domain)
 
-```bash
-poetry run midge
-```
+midge works on the directory it is started in: the coding tools read, write and run commands relative to it, and sessions are saved under its `.midge/sessions/`. Start it from the project you want to work on.
+
+1. Install once, from this repo: `poetry install`.
+2. Export an API key. midge reads it from the environment only and does not load `.env` files.
+
+   ```bash
+   export OPENAI_API_KEY=sk-...
+   ```
+
+3. Start the TUI from the project directory. `poetry run midge` works only inside this repo, because Poetry runs it from here, so call the installed script directly:
+
+   ```bash
+   cd ~/code/my-project
+   "$(poetry -C ~/coding/midge env info -p)/bin/midge"
+   ```
+
+   An alias saves retyping it: `alias midge="$(poetry -C ~/coding/midge env info -p)/bin/midge"`.
+
+4. Type a request and press `Enter`. `--continue` resumes the most recent session in that directory.
+
+The model and provider come from [Configuration](#configuration). A missing key is reported in the TUI when it opens.
 
 Extensions load from `--extension-dir DIR` (repeatable). To stop typing it, set `[extensions] enabled = true` in `.midge/config.toml` and they are read from `.agents/extensions/` — **off by default**, because an extension is arbitrary Python imported at startup, before your first prompt. The flag is honoured either way.
 
-Flags: `--extension-dir DIR` and `--skill-dir DIR` (both repeatable), `--profile NAME`, `--rpc`, one of `--session PATH` / `--continue` (resume the most recently modified session) / `--no-session`, `--compaction-threshold N`, `--compaction-keep-recent N`, `--version`. Bindings: `Enter` submit, `Ctrl+O` newline (`Alt+Enter` too, where the terminal sends Option as Meta), `Ctrl+P` commands (things you do: compact, clear, reload, skills), `Ctrl+B` the drawer (what the agent is: session, profile, model — the one place to switch them), `Ctrl+C` interrupt and drop anything queued, `Ctrl+D` quit, `Esc` close the panel or clear input.
+Flags: `--extension-dir DIR` and `--skill-dir DIR` (both repeatable), `--profile NAME`, `--rpc`, one of `--session PATH` / `--continue` (resume the most recently modified session) / `--no-session`, `--compaction-threshold N`, `--compaction-keep-recent N`, `--version`. Bindings: `Enter` submit, `Ctrl+O` newline (`Alt+Enter` too, where the terminal sends Option as Meta), `Ctrl+P` commands (things you do: compact, clear, reload, skills), `Ctrl+B` the drawer (what the agent is: model, profile, session — the one place to switch them), `Ctrl+C` interrupt and drop anything queued, `Ctrl+D` quit, `Esc` close the drawer or clear input.
 
 **The TUI asks before running any tool that is not read-only** — `bash`, `write`, `edit`, an extension's tool, or a sub-agent that may call one (and then each call that sub-agent makes). `y` allows once, `a` allows that tool for the rest of the session, `n` refuses and the model is told so. `[tui] approve_tools = false` turns it off. RPC never asks: an unattended caller has nobody to answer, so the boundary there is the container.
 
-The TUI and the RPC server drive the same `Controls` object and enumerate the same command table, so neither can offer less than the other. `Ctrl+P` lists what needs no argument (`compact`, `clear_context`, `reload`, `abort`) plus anything whose values are knowable — with a `[models]` table configured, `set_model` appears once per registered model rather than as a prompt for free text. A leading slash does the same and can carry an argument: `/compact`, `/set_model gpt-4o`, `/open_session prior.jsonl`, `/skill:review`. A slash only intercepts when the word after it is a real command, so `/etc/hosts is missing` is still a message.
+The TUI and the RPC server drive the same `Controls` object and enumerate the same command table, so neither can offer less than the other. `Ctrl+P` lists what needs no argument (`compact`, `clear_context`, `reload`, `abort`) and each skill. Switching model, profile or session is in the drawer instead. A leading slash reaches every command and can carry an argument: `/compact`, `/set_model gpt-4o`, `/open_session prior.jsonl`, `/skill:review`. A slash only intercepts when the word after it is a real command, so `/etc/hosts is missing` is still a message.
 
-`Ctrl+B` opens a panel on the left for the things you *switch between* rather than do: the session, the profile and the model are each a set of named alternatives with one current, and the current one is marked — so it also answers "what am I on?", which nothing else in the TUI did. A section with nothing to offer is omitted, which is why the model list appears only once a `[models]` table says what the alternatives are.
+`Ctrl+B` opens a panel on the left for the things you *switch between* rather than do: the model, the profile and the session are each a set of named alternatives with one current, and the current one is marked. `Up`/`Down` move through all three sections, `Tab`/`Shift+Tab` jump to the next or previous section, `Enter` switches to the highlighted entry, and `Esc` closes the panel. A section with nothing to offer says why, which is how the model section reads until a `[models]` table lists the alternatives.
 
 **Typing while a turn is running queues the message** rather than cancelling the turn: it lands at the next tool boundary, so nothing already done is thrown away. `Ctrl+C` is the explicit interrupt.
 
