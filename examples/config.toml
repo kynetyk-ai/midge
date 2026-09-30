@@ -32,10 +32,11 @@ model = "gpt-6-luna"
 # secret in it.
 # base_url = "http://localhost:11434/v1"
 
-# Ask the server to report token usage on the stream. Omit to use whatever the
-# provider declares (currently on for both). Set false for a server that
-# rejects `stream_options` with a 400 instead of ignoring it — that failure
-# takes down the whole turn. Env: MIDGE_INCLUDE_USAGE
+# Ask the server to report token usage on the stream. Applies to
+# `openai-compatible` only; the `openai` adapter always receives usage and
+# ignores this. Omit to use the adapter's default (on). Set false for a server
+# that rejects `stream_options` with a 400, since that error fails the whole
+# turn. Env: MIDGE_INCLUDE_USAGE
 # include_usage = true
 
 
@@ -68,7 +69,7 @@ model = "gpt-6-luna"
 # [providers.local]
 # kind = "openai-compatible"
 # base_url = "http://localhost:11434/v1"
-# include_usage = false              # per-provider; overrides what the adapter declares
+# include_usage = false              # per-provider, openai-compatible only; overrides the adapter's default
 
 # [models."gpt-6-luna"]
 # provider = "openai"
