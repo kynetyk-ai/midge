@@ -1,0 +1,70 @@
+# syntax=docker/sandbox-kit:3
+schemaVersion: "3"
+kind: workload
+displayName: midge
+description: >-
+  The midge agent harness as a Docker Sandboxes workload, with uv, Poetry,
+  conda (Miniforge), Node and a C toolchain for project work.
+sourceUrl: https://github.com/kynetyk-ai/midge
+
+args:
+  ref:
+    default: develop
+    description: midge git branch, tag or commit to install
+    pattern: '^[A-Za-z0-9._/-]+$'
+    buildArg: MIDGE_REF
+
+capabilities:
+  # The host launches the image's ENTRYPOINT (midge) under bash as `agent`.
+  - type: com.docker.sandbox/sbx@1
+
+  # Egress midge and its package managers need. Open web access for research
+  # is a per-machine policy decision (`sbx policy`), not part of the kit.
+  - type: com.docker.sandbox/network-policy@1
+    config:
+      runtime:
+        allow:
+          - api.openai.com:443
+          - pypi.org:443
+          - files.pythonhosted.org:443
+          - conda.anaconda.org:443
+          - registry.npmjs.org:443
+          - github.com:443
+          - api.github.com:443
+          - objects.githubusercontent.com:443
+          - release-assets.githubusercontent.com:443
+          - raw.githubusercontent.com:443
+          - archive.ubuntu.com:80
+          - security.ubuntu.com:80
+          - ports.ubuntu.com:80
+
+  # midge reads OPENAI_API_KEY. The sandbox sees a placeholder; the host
+  # proxy writes the real key into the Authorization header.
+  - type: com.docker.sandbox/credential@1
+    description: OpenAI API access for midge
+    config:
+      service: openai
+      phase: runtime
+      apiKey:
+        name: OPENAI_API_KEY
+        proxyManaged: true
+        inject:
+          - domain: api.openai.com
+            header: Authorization
+            format: "Bearer %s"
+
+  # midge loads ~/.agents/skills by default. This mounts the host's shared
+  # skills store there and receives the bundled skill below.
+  - type: com.docker.sandbox/agent-skills@1
+    optional: true
+    config:
+      path: /home/agent/.agents/skills
+
+  - type: com.docker.sandbox/agent-skill@1
+    config:
+      path: /usr/share/midge-kit/skills/sandbox-env
+
+  - type: com.docker.sandbox/resources@1
+    config:
+      cpu: 4
+      memory: 8g
