@@ -1,6 +1,6 @@
 """Profiles the shipped example cannot express.
 
-`examples/profile_extension` declares `tools=("read", "bash")`, so it cannot
+`examples/profile_extension` keeps `read` in its tools, so it cannot
 answer the question phase 2 left open: the skills catalogue is only injected
 when `read` is in the registry, and every CLI run loads the built-ins. A profile
 that projects `read` away is the only way to reach that gate.
