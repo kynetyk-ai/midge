@@ -11,7 +11,7 @@ args:
   # A commit rather than a branch: sbx rebuilds the image only when this
   # directory changes, so a branch name would keep whatever it built first.
   ref:
-    default: e7d154e7851ec20f84d7ecc16cba17970bbabdb3
+    default: 068112e4c6e2fc58ef998dd39c584300f1d9397b
     description: midge git commit, tag or branch to install
     pattern: '^[A-Za-z0-9._/-]+$'
     buildArg: MIDGE_REF
