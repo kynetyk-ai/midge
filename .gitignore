@@ -34,5 +34,5 @@ venv/
 .midge/
 .midge-*/
 
-# Container harness: transcripts and read offsets from test runs
-harness/.state/
+# End-to-end tests: transcripts and read offsets from test runs
+e2e/.state/
