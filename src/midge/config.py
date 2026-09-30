@@ -44,6 +44,7 @@ _logger = logging.getLogger(__name__)
 DEFAULT_MODEL = "gpt-6-luna"
 DEFAULT_PAYLOAD_CHARS = 2000
 DEFAULT_KEEP_RECENT = 20_000
+DEFAULT_SYSTEM_SKILL_DIR = Path("/usr/share/midge-kit/skills")
 
 _TRUE = ("1", "true", "yes", "on")
 _FALSE = ("0", "false", "no", "off")
@@ -121,6 +122,13 @@ class ExtensionConfig:
     # rather than `.midge/` because an extension is source you would commit,
     # and `.midge/` is runtime state this repo gitignores.
     dir: Path | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SkillsConfig:
+    # Searched after every project and user skill directory, so a skill there
+    # is shadowed by any other skill with the same name.
+    system_dir: Path = DEFAULT_SYSTEM_SKILL_DIR
 
 
 @dataclass(frozen=True, slots=True)
@@ -218,6 +226,7 @@ class Config:
     retry: RetryConfig = RetryConfig()
     extensions: ExtensionConfig = ExtensionConfig()
     session: SessionConfig = SessionConfig()
+    skills: SkillsConfig = SkillsConfig()
     tui: TuiConfig = TuiConfig()
     agent: AgentConfig = AgentConfig()
     tools: ToolsConfig = ToolsConfig()
@@ -278,6 +287,14 @@ class Config:
             session=SessionConfig(
                 enabled=src.flag("session", "enabled", "MIDGE_SESSION", default=True),
                 dir=src.path("session", "dir", "MIDGE_SESSION_DIR"),
+            ),
+            skills=SkillsConfig(
+                system_dir=src.path(
+                    "skills",
+                    "system_dir",
+                    "MIDGE_SYSTEM_SKILL_DIR",
+                    default=DEFAULT_SYSTEM_SKILL_DIR,
+                ),
             ),
             agent=AgentConfig(system_prompt=_system_prompt(src)),
             tools=ToolsConfig(builtin=src.names("tools", "builtin", "MIDGE_BUILTIN_TOOLS")),
@@ -625,12 +642,14 @@ __all__ = [
     "DEFAULT_KEEP_RECENT",
     "DEFAULT_MODEL",
     "DEFAULT_PAYLOAD_CHARS",
+    "DEFAULT_SYSTEM_SKILL_DIR",
     "Config",
     "Diagnostic",
     "ExtensionConfig",
     "LogConfig",
     "ProviderConfig",
     "RetryConfig",
+    "SkillsConfig",
     "config_paths",
     "emit",
 ]

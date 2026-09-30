@@ -279,6 +279,35 @@ def test_default_skill_dirs_are_absolute_and_project_first(
         home / ".midge" / "skills",
         home / ".agents" / "skills",
     ]
+    assert default_skill_dirs(Path("/opt/skills"))[-1] == Path("/opt/skills")
+
+
+def test_system_skill_dir_is_autodiscovered_and_lower_precedence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    system_dir = tmp_path / "system-skills"
+    write_skill(system_dir / "bundled", frontmatter=f"name: bundled\ndescription: {VALID}")
+    write_skill(
+        tmp_path / ".agents" / "skills" / "bundled",
+        frontmatter=f"name: bundled\ndescription: {VALID}",
+    )
+    write_skill(
+        system_dir / "sandbox-env",
+        frontmatter=f"name: sandbox-env\ndescription: {VALID}",
+    )
+
+    discovered = load_skills(default_skill_dirs(system_dir))
+
+    bundled = find_skill(discovered, "bundled")
+    assert bundled is not None
+    assert bundled.path == (
+        tmp_path / ".agents" / "skills" / "bundled" / "SKILL.md"
+    ).resolve()
+
+    sandbox_skill = find_skill(discovered, "sandbox-env")
+    assert sandbox_skill is not None
+    assert sandbox_skill.path == (system_dir / "sandbox-env" / "SKILL.md").resolve()
 
 
 def test_skills_prompt_empty_when_no_skills() -> None:

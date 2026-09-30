@@ -137,7 +137,7 @@ async def amain(
     # sub-agent inherits whatever the parent has.
     hooks = Hooks()
     registry, prompt_addition = load_extensions([*BUILTIN_TOOL_DIRS, *extension_dirs], hooks=hooks)
-    skills = load_skills([*(skill_dirs or []), *default_skill_dirs()])
+    skills = load_skills([*(skill_dirs or []), *default_skill_dirs(config.skills.system_dir)])
     catalogue = skills_prompt(skills) if "read" in registry else ""
 
     user_input: str | UserMessage = prompt
