@@ -527,3 +527,29 @@ def test_a_skill_is_still_reachable_with_no_tools_at_all(tmp_path: Path) -> None
     write_skill(tmp_path / "deploy")
     message = skill_message(load_skills([tmp_path]), "deploy")
     assert '<skill name="deploy"' in str(message.content)
+
+
+async def test_coding_agent_example_shows_the_catalogue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from examples import coding_agent
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
+    write_skill(tmp_path / "skills" / "deploy", frontmatter=f"name: deploy\ndescription: {VALID}")
+    captured: list[list[dict]] = []
+
+    def fake_client(**kwargs: object) -> Client:
+        client = Client(**kwargs)  # type: ignore[arg-type]
+        captured.append(install(client, [[say("hi"), finish()]]))
+        return client
+
+    monkeypatch.setattr(coding_agent, "Client", fake_client)
+    code = await coding_agent.amain(
+        "hello", extension_dirs=[], skill_dirs=[tmp_path / "skills"], no_session=True
+    )
+
+    assert code == 0
+    (bodies,) = captured
+    system = next(m["content"] for m in bodies[0]["messages"] if m["role"] == "system")
+    assert "<available_skills>" in system and "deploy" in system
