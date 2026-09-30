@@ -22,6 +22,7 @@ Start with [architecture](architecture.md) for how the pieces fit and an order f
 
 ## Guides
 
+- [Running midge](running.md): install, flags, the TUI, containers, Docker Sandboxes, the one-shot CLI.
 - [Retargeting](retargeting.md): build a non-coding domain from an empty directory.
 
 ## Decisions
