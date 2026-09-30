@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from textual.widgets import OptionList, Static, TextArea
+from textual.widgets import Static, TextArea
 
 from midge.agent import Agent
 from midge.client import Client
@@ -336,15 +336,20 @@ def _profiles(*names: str) -> ProfileSet:
 
 
 def _sections(app: PiApp) -> list[str]:
+    """Headings and hints: the lines of the drawer that cannot be chosen."""
     bar = app.query_one("#sidebar", Sidebar)
-    return [str(c.visual) for c in bar.children if isinstance(c, Static)]
+    return [str(o.prompt).strip() for o in bar.options if o.disabled]
 
 
 def _options(app: PiApp) -> list[tuple[str, str | None]]:
     bar = app.query_one("#sidebar", Sidebar)
-    return [
-        (str(o.prompt), o.id) for lst in bar.query(OptionList) for o in lst.options
-    ]
+    return [(str(o.prompt), o.id) for o in bar.options if not o.disabled]
+
+
+def _highlighted(app: PiApp) -> str | None:
+    bar = app.query_one("#sidebar", Sidebar)
+    assert bar.highlighted is not None
+    return bar.get_option_at_index(bar.highlighted).id
 
 
 @pytest.mark.asyncio
@@ -366,7 +371,7 @@ async def test_the_drawer_lists_what_the_agent_could_be(tmp_path: Path) -> None:
         await _settle(pilot)
 
         assert not app.query_one("#sidebar", Sidebar).has_class("hidden")
-        assert _sections(app) == ["sessions", "profiles", "model"]
+        assert _sections(app) == ["model", "profiles", "sessions"]
         labels = [prompt for prompt, _id in _options(app)]
         assert "  auth refactor" in labels
         assert "  builder" in labels
@@ -385,12 +390,12 @@ async def test_a_section_with_nothing_to_offer_says_why() -> None:
         await _settle(pilot)
 
         assert _sections(app) == [
-            "sessions",
-            "none saved yet",
-            "profiles",
-            "none — declare a Profile in an extension",
             "model",
             "m — list models under [models] in config to switch here",
+            "profiles",
+            "none — declare a Profile in an extension",
+            "sessions",
+            "none saved yet",
         ]
         assert _options(app) == []
 
@@ -402,15 +407,50 @@ async def test_choosing_applies_it_and_closes(tmp_path: Path) -> None:
     async with app.run_test() as pilot:
         await pilot.press("ctrl+b")
         await _settle(pilot)
-        options = app.query_one("#sidebar", Sidebar).query(OptionList).first()
-        options.highlighted = 1
-        await pilot.pause()
-        options.action_select()
+        await pilot.press("down", "enter")
         await _settle(pilot)
 
         assert app.controls.profile == "reviewer"
         assert app.query_one("#sidebar", Sidebar).has_class("hidden")
         assert any("profile reviewer" in s for s in _status(app))
+
+
+@pytest.mark.asyncio
+async def test_arrows_run_through_every_section(tmp_path: Path) -> None:
+    Session.new(tmp_path / "a.jsonl", model="gpt-4o").close()
+    agent = Agent(client=Client(registry=_registry("gpt-4o", "haiku")), model="gpt-4o")
+    app = PiApp(Controls(agent, profiles=_profiles("builder"), session_dir=tmp_path))
+    async with app.run_test() as pilot:
+        await pilot.press("ctrl+b")
+        await _settle(pilot)
+        seen = [_highlighted(app)]
+        for _ in range(3):
+            await pilot.press("down")
+            seen.append(_highlighted(app))
+
+        assert seen == [
+            "set_model\x00gpt-4o",
+            "set_model\x00haiku",
+            "use_profile\x00builder",
+            f"open_session\x00{tmp_path / 'a.jsonl'}",
+        ]
+
+
+@pytest.mark.asyncio
+async def test_tab_jumps_to_the_next_section_with_a_choice(tmp_path: Path) -> None:
+    # No profiles, so Tab from the models passes over that section's hint.
+    Session.new(tmp_path / "a.jsonl", model="gpt-4o").close()
+    agent = Agent(client=Client(registry=_registry("gpt-4o", "haiku")), model="gpt-4o")
+    app = PiApp(Controls(agent, profiles=_profiles(), session_dir=tmp_path))
+    async with app.run_test() as pilot:
+        await pilot.press("ctrl+b")
+        await _settle(pilot)
+        await pilot.press("down", "tab")
+        assert _highlighted(app) == f"open_session\x00{tmp_path / 'a.jsonl'}"
+
+        await pilot.press("shift+tab")
+        assert _highlighted(app) == "set_model\x00gpt-4o"
+        assert app.focused is app.query_one("#sidebar", Sidebar)
 
 
 @pytest.mark.asyncio

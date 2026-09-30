@@ -1,9 +1,9 @@
-"""The OpenAI chat-completions wire format.
+"""The OpenAI chat-completions wire format, registered as `openai-compatible`.
 
-Registered twice, under `openai` and `openai-compatible`. One adapter rather
-than two classes because ollama, vLLM, LM Studio and llama.cpp all speak this
-same format — what differs is what they tolerate, and that is expressed as
-`Capabilities` rather than as a second copy of the encoder.
+ollama, vLLM, LM Studio and llama.cpp all speak this format; what differs is
+what they tolerate, and that is expressed as `Capabilities` rather than as a
+second copy of the encoder. OpenAI itself is `openai`, the Responses adapter,
+which inherits this class's error handling.
 """
 
 from __future__ import annotations
@@ -394,14 +394,6 @@ class OpenAIProvider:
 # a server that does not support `stream_options` rejects the whole turn with a
 # 400 rather than ignoring the field, and there has to be a fix for that which
 # does not require editing code.
-register(
-    "openai",
-    lambda capabilities=None, **kw: OpenAIProvider(
-        name="openai",
-        capabilities=capabilities or Capabilities(),
-        **kw,
-    ),
-)
 register(
     "openai-compatible",
     # `stream_usage` stays on: it works on current ollama and vLLM, and the

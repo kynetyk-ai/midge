@@ -1,0 +1,16 @@
+# Credentials must never enter an image layer.
+.env
+.env.*
+
+.git
+.github
+.claude
+.midge
+.venv
+**/__pycache__
+.pytest_cache
+.ruff_cache
+notes
+tests
+docs
+scripts

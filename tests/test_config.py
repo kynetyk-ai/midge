@@ -39,6 +39,7 @@ _VARS = (
     "MIDGE_SYSTEM_PROMPT",
     "MIDGE_BUILTIN_TOOLS",
     "MIDGE_APPROVE_TOOLS",
+    "MIDGE_SYSTEM_SKILL_DIR",
     "OPENAI_BASE_URL",
 )
 
@@ -559,6 +560,23 @@ def test_emit_of_nothing_is_silent(caplog: pytest.LogCaptureFixture) -> None:
     with caplog.at_level(logging.WARNING, logger="midge.config"):
         emit([])
     assert caplog.records == []
+
+
+# --- skills -----------------------------------------------------------------
+
+
+def test_the_system_skill_dir_defaults_to_the_sandbox_kit_path() -> None:
+    assert Config().skills.system_dir == Path("/usr/share/midge-kit/skills")
+
+
+def test_the_system_skill_dir_is_configurable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _load(tmp_path, project='[skills]\nsystem_dir = "/srv/skills"\n')
+    assert config.skills.system_dir == Path("/srv/skills")
+
+    monkeypatch.setenv("MIDGE_SYSTEM_SKILL_DIR", "/opt/skills")
+    assert _load(tmp_path).skills.system_dir == Path("/opt/skills")
 
 
 # --- extension autoload ---------------------------------------------------

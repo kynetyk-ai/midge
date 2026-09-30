@@ -1,12 +1,12 @@
 # midge — instructions for Claude
 
-This repo is a Python agent harness originally ported from [`pi-mono`](../pi) (TypeScript). The harness is feature-complete for its original goals (see `README.md`); future work follows [`ROADMAP.md`](ROADMAP.md), which stages the MVP as trustworthy daily driver (M1, done) → embeddable via RPC (M2) → retargetable base (M3) → release. Update it in the PR that closes an item.
+This repo is a Python agent harness originally ported from [`pi-mono`](https://github.com/badlogic/pi-mono) (TypeScript). The harness is feature-complete for its original goals (see `README.md`); future work follows [`ROADMAP.md`](ROADMAP.md), which stages the MVP as trustworthy daily driver (M1, done) → embeddable via RPC (M2) → retargetable base (M3) → release. Update it in the PR that closes an item.
 
 The user does not work in TypeScript and wants a codebase they can read, modify, and adapt to non-coding domains.
 
 ## Goals
 
-1. **Readable, hackable codebase.** Idiomatic Python, not a faithful translation of the TS source.
+1. **Readable, hackable codebase.** Idiomatic Python.
 2. **Learning vehicle.** The user is using this project to understand how an agent harness works internals-up.
 3. **Domain-adaptability.** The harness must cleanly separate from the "coding agent" identity. Extensions + system prompt should be the only things that need to change to retarget it.
 
@@ -20,21 +20,15 @@ human-facing mode, not the main one. Two consequences:
   prompt is registered by `PiApp`, not by core or an extension; RPC has nobody to ask, and a
   prompt nobody answers is a hang, not a safeguard. The boundary in RPC mode is the container.
 
-## Working with `pi-mono`
+## Vocabulary
 
-- `../pi/` is **read-only reference material** (the `pi-mono` repo, checked out as `pi`). Do not edit it.
-- `notes/` holds the patterns extracted from `pi-mono` during the original port. When extending a subsystem, check there first to avoid re-reading the same TS code — but **treat it as a historical record, not as current documentation** (#76). Most of it was written *before* the code it describes, in the future tense; several notes reference code that has since moved or been deleted, and `providers/`, the model registry, `config.py` and `profiles.py` have no note at all. Verify anything load-bearing against the source.
-- Read for *concepts*, then write Python from scratch. Do not translate line-by-line.
-
-### Vocabulary — deliberately aligned with `pi-mono`
-
-| Concept | midge | `pi-mono` |
-|---|---|---|
-| Built-in LLM-callable tools (`read`, `bash`, …) | `src/midge/tools/coding/` | `packages/coding-agent/src/core/tools/` |
-| Loading user `.py` files that register tools | `src/midge/extensions.py`, `--extension-dir` | `src/core/extensions/` |
-| `SKILL.md` — the [Agent Skills standard](https://agentskills.io/specification) | `src/midge/skills.py`, `--skill-dir` | `src/core/skills.ts` |
-| A nested agent the model delegates to | `src/midge/subagents.py`, `@subagent` → a `spawn_*` tool | **no equivalent** (an example extension only) |
-| A named configuration the agent runs *as* | `src/midge/profiles.py`, a `Profile` instance in an extension file | **no equivalent** (`pi` records unnamed `model_change` / `active_tools_change` entries) |
+| Concept | Where |
+|---|---|
+| Built-in LLM-callable tools (`read`, `bash`, …) | `src/midge/tools/coding/` |
+| Loading user `.py` files that register tools | `src/midge/extensions.py`, `--extension-dir` |
+| `SKILL.md`, the [Agent Skills standard](https://agentskills.io/specification) | `src/midge/skills.py`, `--skill-dir` |
+| A nested agent the model delegates to | `src/midge/subagents.py`, `@subagent` → a `spawn_*` tool |
+| A named configuration the agent runs *as* | `src/midge/profiles.py`, a `Profile` instance in an extension file |
 
 The word **skill** means the `SKILL.md` standard and nothing else. Do not use it for tools or
 extensions.
@@ -56,14 +50,15 @@ See [ADR 0001](docs/adr/0001-session-profiles.md). Discovery, validation and *ap
 
 ## Tooling and conventions
 
+- **Docs live in `docs/`**, one per subsystem. A PR that changes how a subsystem behaves or is used updates its doc.
 - **Poetry** for env and dependency management (`poetry install`, `poetry run <cmd>`, `poetry add <pkg>`). Never `pip`, `uv`, `pip-tools`, or `hatch`. `poetry.lock` is committed.
 - **Python 3.11+**. Use `asyncio.TaskGroup`, exception groups, and modern type hints.
 - **Git flow:** feature branches are cut from `develop` and PR'd into `develop`; `main` is what
   `develop` merges into. A PR merges only when the user says so, and only after its behavioral
   test (below) is in the PR body.
-- **Behavioral test before merge.** A PR that changes observable behaviour is run in the container
-  harness (`harness/`, see its README) against a real model before it merges: RPC checks scripted
-  under `harness/scenarios/`, TUI checks driven through tmux (`midgectl.py tui-*`). Results go in
+- **Behavioral test before merge.** A PR that changes observable behaviour is run in the end-to-end
+  tests (`e2e/`, see its README) against a real model before it merges: RPC checks scripted
+  under `e2e/scenarios/`, TUI checks driven through tmux (`midgectl.py tui-*`). Results go in
   the PR body as PASS / FAIL / ODD with evidence. Where it can, run the same check against
   `develop` too, so the PR shows it fails there. Unit tests are necessary, not sufficient. What a
   real model cannot be made to do on demand is marked *unit-only* rather than faked.
@@ -73,7 +68,7 @@ See [ADR 0001](docs/adr/0001-session-profiles.md). Discovery, validation and *ap
   from its allowlist — never write "read-only" about something whose tools include `bash`
   (#103). A hook gates *tool calls*, not effects; a policy over `bash` command strings is advisory
   (#102).
-- **Providers live in `src/midge/providers/`.** The line is **the provider owns what is true about the vendor; the core owns the loop.** So a provider owns its wire format (`encode` / `open` / `decode`) and its error semantics (`is_retryable`, `retry_after`, `limiter`, and `describe` / `credential_problem`, which turn a 401 or a missing key into a sentence a person can act on), and `client.py` owns the streaming state machine, the retry loop, the ceilings and the sleeping — written once. `Delta` is the normalization point for the format; `RateLimiter` is the same seam for rate limits, which are barely portable at all: OpenAI counts per model per org, Anthropic per org across a tier, a local server not at all. A provider answers *how long* and *whether*; it never sleeps, logs, or caps, because those are the same mechanics whatever the vendor. Two names are registered against the OpenAI adapter today (`openai`, `openai-compatible`) because they share a format and differ only in declared `Capabilities`. Do not introduce LangChain or LiteLLM without checking with the user first — the harness loop is small enough that they add weight without buying anything.
+- **Providers live in `src/midge/providers/`.** The line is **the provider owns what is true about the vendor; the core owns the loop.** So a provider owns its wire format (`encode` / `open` / `decode`) and its error semantics (`is_retryable`, `retry_after`, `limiter`, and `describe` / `credential_problem`, which turn a 401 or a missing key into a sentence a person can act on), and `client.py` owns the streaming state machine, the retry loop, the ceilings and the sleeping — written once. `Delta` is the normalization point for the format; `RateLimiter` is the same seam for rate limits, which are barely portable at all: OpenAI counts per model per org, Anthropic per org across a tier, a local server not at all. A provider answers *how long* and *whether*; it never sleeps, logs, or caps, because those are the same mechanics whatever the vendor. Two adapters are registered today: `openai` speaks OpenAI's Responses API (`providers/openai_responses.py`) and `openai-compatible` speaks chat completions (`providers/openai_compat.py`) to servers that implement only that. The Responses adapter inherits the chat adapter's error semantics, since both describe the same vendor. Provider state that must round-trip with history (encrypted reasoning) travels as `Delta.extra` into `AssistantMessage.extra`; the core stores it without reading it. Do not introduce LangChain or LiteLLM without checking with the user first — the harness loop is small enough that they add weight without buying anything.
 - **Pydantic v2** for tool-arg schemas.
 - **Textual** for the TUI.
 - **Lint:** `ruff`. **Type-check:** `pyright`. **Test:** `pytest` + `pytest-asyncio`.
@@ -174,10 +169,9 @@ src/midge/rpc/        # JSON-on-stdio front-end: wire / server / transport
 src/midge/tui/        # Textual front-end: commands (verbs), drawer (nouns), slash commands, steering
 tests/              # pytest tests
 examples/           # entrypoints, and example extensions/profiles/skills
-docs/               # rpc.md (the wire contract, pinned by tests/test_rpc_contract.py), adr/
-harness/            # container test rig: the merge gate for behaviour (midgectl.py, scenarios/)
+docs/               # one doc per subsystem (index: docs/README.md); rpc.md is the wire contract, pinned by tests/test_rpc_contract.py; adr/
+e2e/                # end-to-end tests in a container: the merge gate for behaviour (midgectl.py, scenarios/)
 ROADMAP.md          # MVP milestones; update in the PR that closes an item
-notes/              # port-era reading notes; historical, may be stale (#76)
 ```
 
 ## Style

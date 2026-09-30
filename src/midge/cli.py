@@ -29,7 +29,7 @@ from midge.extensions import (
     keep_builtins,
     load_extensions,
 )
-from midge.hooks import Hooks, SessionEnd, SessionStart
+from midge.hooks import CancelResult, Hooks, SessionEnd, SessionStart
 from midge.logs import configure as configure_logging
 from midge.logs import provider_host
 from midge.persistence import Session, list_sessions, resolve_session_path
@@ -246,7 +246,7 @@ def main(argv: list[str] | None = None) -> None:
     # Explicit paths outrank the defaults: naming a directory on the command
     # line is a deliberate override. Note this is the opposite nesting from the
     # extension sources above, where the built-ins must not be shadowed.
-    skill_sources = [*args.skill_dir, *default_skill_dirs()]
+    skill_sources = [*args.skill_dir, *default_skill_dirs(config.skills.system_dir)]
     profiles = ProfileSet()
     registry, prompt_addition = load_extensions(extension_sources, hooks=hooks, profiles=profiles)
     registry = keep_builtins(registry, config.tools.builtin)
@@ -456,19 +456,33 @@ def main(argv: list[str] | None = None) -> None:
         skill_sources=skill_sources,
     )
 
+    async def _start() -> None:
+        result = await hooks.emit(SessionStart(path=session_path))
+        if isinstance(result, CancelResult) and result.cancel:
+            if controls.session is not None:
+                controls.session.close()
+            await hooks.clear()
+            _logger.error("startup_cancelled_by_hook path=%s", session_path)
+            raise SystemExit("a session_start hook cancelled startup")
+
+    async def _end() -> None:
+        await hooks.emit(SessionEnd(path=session_path))
+        # Cleanups otherwise run only on reload; this is the extensions' teardown.
+        await hooks.clear()
+
     if args.rpc:
         # RPC owns its loop, so the session bookends run inside it rather than
         # in their own `asyncio.run` the way the TUI's do.
         server = RpcServer(agent, controls=controls)
 
         async def _serve() -> None:
-            await hooks.emit(SessionStart(path=session_path))
+            await _start()
             try:
                 await serve_stdio(server)
             finally:
                 if server.session is not None:
                     server.session.close()
-                await hooks.emit(SessionEnd(path=session_path))
+                await _end()
 
         asyncio.run(_serve())
         return
@@ -476,7 +490,7 @@ def main(argv: list[str] | None = None) -> None:
     # These bookend the TUI's own event loop, so they run in their own.
     # A handler that needs the running app's loop should use a turn-scoped
     # event instead.
-    asyncio.run(hooks.emit(SessionStart(path=session_path)))
+    asyncio.run(_start())
     # Tools cannot reach the calling agent, so a sub-agent tool gets what it
     # needs to run a child here. Once per front-end, through `Controls`: RPC
     # binds in `RpcServer.__init__`, where it also wires the event envelope, and
@@ -490,4 +504,4 @@ def main(argv: list[str] | None = None) -> None:
         # actually being written to open.
         if controls.session is not None:
             controls.session.close()
-        asyncio.run(hooks.emit(SessionEnd(path=session_path)))
+        asyncio.run(_end())

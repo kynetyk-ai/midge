@@ -13,13 +13,14 @@
 # visible.
 
 # The model id sent to the provider. Env: MIDGE_MODEL
-model = "gpt-4o-mini"
+model = "gpt-6-luna"
 
 
 [provider]
-# Which wire format to speak: "openai" or "openai-compatible". Omit to infer —
-# no base_url means OpenAI, a base_url means something OpenAI-compatible
-# (ollama, vLLM, LM Studio, llama.cpp). Env: MIDGE_PROVIDER
+# Which wire format to speak: "openai" (OpenAI's Responses API) or
+# "openai-compatible" (chat completions). Omit to infer — no base_url means
+# OpenAI, a base_url means something OpenAI-compatible (ollama, vLLM, LM Studio,
+# llama.cpp). Env: MIDGE_PROVIDER
 # name = "openai-compatible"
 
 # Where to send requests. Omit for the provider's own default.
@@ -31,10 +32,11 @@ model = "gpt-4o-mini"
 # secret in it.
 # base_url = "http://localhost:11434/v1"
 
-# Ask the server to report token usage on the stream. Omit to use whatever the
-# provider declares (currently on for both). Set false for a server that
-# rejects `stream_options` with a 400 instead of ignoring it — that failure
-# takes down the whole turn. Env: MIDGE_INCLUDE_USAGE
+# Ask the server to report token usage on the stream. Applies to
+# `openai-compatible` only; the `openai` adapter always receives usage and
+# ignores this. Omit to use the adapter's default (on). Set false for a server
+# that rejects `stream_options` with a 400, since that error fails the whole
+# turn. Env: MIDGE_INCLUDE_USAGE
 # include_usage = true
 
 
@@ -67,9 +69,9 @@ model = "gpt-4o-mini"
 # [providers.local]
 # kind = "openai-compatible"
 # base_url = "http://localhost:11434/v1"
-# include_usage = false              # per-provider; overrides what the adapter declares
+# include_usage = false              # per-provider, openai-compatible only; overrides the adapter's default
 
-# [models."gpt-4o-mini"]
+# [models."gpt-6-luna"]
 # provider = "openai"
 
 # [models."ibm/granite-3.2-8b"]
@@ -183,6 +185,14 @@ max_delay = 60.0
 # Env: MIDGE_EXTENSIONS, MIDGE_EXTENSION_DIR
 # enabled = false
 # dir = ".agents/extensions"
+
+
+[skills]
+# A skill directory searched after the project and user ones (`.midge/skills`
+# and `.agents/skills` under cwd, then under ~), so any of those can shadow a
+# skill here. The default is where the sandbox kit installs its skills; a
+# directory that does not exist is skipped. Env: MIDGE_SYSTEM_SKILL_DIR
+# system_dir = "/usr/share/midge-kit/skills"
 
 
 [agent]

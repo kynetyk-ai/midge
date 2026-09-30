@@ -187,3 +187,37 @@ def test_the_notes_domain_runs_through_the_real_entrypoint(tmp_path: Path) -> No
     offered = {t["function"]["name"] for t in fake.bodies[0]["tools"]}
     assert offered == {"add_note", "search_notes", "read_note", "list_notes", "link_notes"}
     assert fake.bodies[0]["messages"][0]["content"].startswith("You are a personal knowledge")
+
+
+def test_a_session_start_hook_can_refuse_startup(tmp_path: Path) -> None:
+    ext = tmp_path / "ext"
+    ext.mkdir()
+    (ext / "gate.py").write_text(
+        "from midge.hooks import CancelResult\n"
+        "def register_hooks(hooks):\n"
+        "    hooks.on('session_start', lambda ev, ctx: CancelResult(cancel=True))\n"
+    )
+    with FakeOpenAI([]) as fake:
+        midge = Midge(tmp_path, fake, "--no-session", "--extension-dir", str(ext))
+        code = midge.proc.wait(timeout=TIMEOUT)
+
+    assert code != 0
+    assert midge.proc.stderr is not None
+    assert b"session_start hook cancelled startup" in midge.proc.stderr.read()
+
+
+def test_cleanups_run_when_the_process_exits(tmp_path: Path) -> None:
+    ext = tmp_path / "ext"
+    ext.mkdir()
+    marker = tmp_path / "cleaned"
+    (ext / "tidy.py").write_text(
+        "from pathlib import Path\n"
+        "def register_hooks(hooks):\n"
+        f"    hooks.add_cleanup(lambda: Path({str(marker)!r}).write_text('ok'))\n"
+    )
+    with FakeOpenAI([]) as fake:
+        midge = Midge(tmp_path, fake, "--no-session", "--extension-dir", str(ext))
+        midge.until("ready")
+        assert midge.close() == 0
+
+    assert marker.read_text() == "ok"
