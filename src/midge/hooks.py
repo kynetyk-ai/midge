@@ -548,7 +548,6 @@ class Hooks:
 
     _REDUCERS: ClassVar[dict[str, Any]] = {
         "session_start": _reduce_first_cancel_or_last,
-        "session_end": _reduce_first_cancel_or_last,
         "before_compact": _reduce_first_cancel_or_last,
         "turn_start": _reduce_turn_start,
         "context": _reduce_context,

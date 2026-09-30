@@ -34,7 +34,8 @@ Handlers for one event run in registration order. The last column says how their
 
 | Event | When | A handler may return | Combination |
 |---|---|---|---|
-| `session_start`, `session_end` | Process start and exit, in both TUI and RPC mode. Carries the session `path`. | `CancelResult`; midge does not act on it. | Stops at the first `cancel=True`. |
+| `session_start` | Process start, in both TUI and RPC mode, before the first prompt. Carries the session `path`. | `CancelResult(cancel=True)` to refuse startup: midge runs cleanups, logs `startup_cancelled_by_hook` and exits non-zero. | Stops at the first `cancel=True`. |
+| `session_end` | Process exit, in both modes. Carries the session `path`. | Nothing. | Observation only. |
 | `turn_start` | A prompt arrives, before it enters history. | `TurnStartResult(messages=, system_prompt=)`: messages to insert ahead of the prompt, and a system prompt for this turn only. | Messages accumulate; each handler sees the previous handler's system prompt. |
 | `context` | Before each model request. | `ContextResult(messages=)`: the messages to send for this request. History is unchanged. | Chained. |
 | `before_provider_request` | Before each model request, after `context`. | `ProviderRequestResult(model=, system=, tools=, kwargs=)`. | Each non-`None` field replaces the current value; the next handler sees the result. |
@@ -75,4 +76,4 @@ A profile must give a decision for every discovered source or it fails validatio
 
 ## Cleanup
 
-Functions registered with `add_cleanup` run when `reload` unloads extensions, and when `Hooks.clear()` is called. They do not run at process exit; use `session_end` for that. After running the cleanups, `reload` removes every registration that came from an extension and keeps those the entrypoint made itself. See [extensions](extensions.md#reload).
+Functions registered with `add_cleanup` run when `reload` unloads extensions, when the process exits (after `session_end`), and when `Hooks.clear()` is called. After running the cleanups, `reload` removes every registration that came from an extension and keeps those the entrypoint made itself. See [extensions](extensions.md#reload).
