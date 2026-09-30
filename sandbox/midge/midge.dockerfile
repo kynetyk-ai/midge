@@ -52,7 +52,8 @@ ENV PATH="/opt/conda/condabin:${PATH}"
 # midge itself, from the lock file, in its own Python 3.13 virtualenv so the
 # agent's `pip install` or `uv pip install` in a project cannot break it.
 ARG MIDGE_REPO=https://github.com/kynetyk-ai/midge.git
-ARG MIDGE_REF=develop
+# Set by `args.ref` in midge.yaml.
+ARG MIDGE_REF
 RUN git clone "$MIDGE_REPO" /opt/midge \
  && git -C /opt/midge checkout "$MIDGE_REF" \
  && uv venv --python 3.13 /opt/midge/.venv \

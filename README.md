@@ -87,6 +87,38 @@ docker run -it --rm --detach-keys ctrl-^ \
 - The `UID`/`GID` build arguments make files the agent writes owned by you. Docker Desktop on macOS maps ownership itself and does not need them.
 - The image has `git`, `ripgrep`, `curl`, `jq` and `make`. For a project that needs its own toolchain, build on it: `FROM midge`, then install what it needs as `root` and switch back to `USER midge`.
 
+### In a Docker Sandbox
+
+[`sandbox/midge/`](./sandbox/midge/) is a kit for [Docker Sandboxes](https://docs.docker.com/ai/sandboxes/) (`sbx`). midge runs in a microVM with the project mounted, outbound traffic limited to an allowlist, and the OpenAI key added to requests by a host proxy, so the real key never enters the sandbox. The image adds uv, Poetry, conda, Node and a C toolchain. The allowlist and resource limits are in [`midge.yaml`](./sandbox/midge/midge.yaml).
+
+Store the key once, then run the kit on a project:
+
+```bash
+sbx secret set openai                        # or `sbx secret import openai` to take OPENAI_API_KEY
+sbx run --name midge-myproj ~/coding/midge/sandbox/midge ~/code/my-project
+sbx run --name midge-myproj                  # re-attach later
+```
+
+- The project is mounted, so the agent's edits appear on the host immediately.
+- Arguments after `--` go to `midge`: `sbx run --name midge-myproj -- --continue`.
+- The image installs midge from GitHub at the commit in `args.ref.default` in `midge.yaml`, not from your checkout. To upgrade, change that commit. `sbx` rebuilds the image only when the kit directory changes, and `sbx run --kit-arg` cannot set `ref` because it is resolved at build time.
+- midge starts in the project, so its `.midge/config.toml` applies as described in [Configuration](#configuration).
+- The kit's `sandbox-env` skill, which tells the agent how to use the sandbox's package managers and network, loads from `[skills] system_dir`. Your host's shared skills store is mounted at `~/.agents/skills`.
+- `sbx ls` lists sandboxes, `sbx stop NAME` stops one and `sbx rm NAME` deletes it.
+
+With `--clone`, the agent works on a private clone of the host repository and cannot touch your working tree. Its branches are fetched from a `sandbox-NAME` remote that `sbx` adds to the host repository ([Docker's git workflow](https://docs.docker.com/ai/sandboxes/workflows/git/)):
+
+```bash
+cd ~/code/my-project
+sbx run --clone --name midge-safe ~/coding/midge/sandbox/midge
+git fetch sandbox-midge-safe
+git ls-remote sandbox-midge-safe             # branch names, which must match exactly
+git checkout -b my-branch sandbox-midge-safe/my-branch
+git push -u origin my-branch
+```
+
+The remote is reachable only while the sandbox is running and is removed by `sbx rm`, so push anything worth keeping first.
+
 ### One-shot CLI
 
 ```bash
@@ -446,6 +478,7 @@ examples/
 ├── subagent_extension/ # a read-only explorer sub-agent
 ├── profile_extension/ # a declared profile: the adversarial reviewer
 └── skills/            # a worked SKILL.md example
+sandbox/midge/         # Docker Sandboxes kit: image, kit spec, sandbox-env skill
 notes/                 # design rationale + patterns extracted from pi-mono
 tests/                 # pytest tests
 ```
