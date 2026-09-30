@@ -104,7 +104,8 @@ def load_extensions(
             # Extensions log under the same `midge` root, so one env var covers
             # them and the record names the file it came from. An extension that
             # declares its own `log` module-level name keeps it.
-            setattr(module, "log", logging.getLogger(f"midge.ext.{f.stem}"))  # noqa: B010
+            if not hasattr(module, "log"):
+                setattr(module, "log", logging.getLogger(f"midge.ext.{f.stem}"))  # noqa: B010
             for t in _extract_tools(module):
                 if t.name in registry:
                     _logger.warning("tool_name_shadowed tool=%s path=%s", t.name, f)

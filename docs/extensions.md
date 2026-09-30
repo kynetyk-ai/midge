@@ -50,7 +50,7 @@ Sources load in this order: the built-in tools (as selected by `[tools] builtin`
 
 A file that fails to import, or whose `register_hooks` raises, is logged with its traceback and skipped. Startup continues.
 
-The loader sets a module attribute `log` on each file to the logger `midge.ext.<file stem>`, so an extension's records go through midge's logging configuration (see [logging](logging.md)). Use it instead of `print()`: stdout is the protocol in RPC mode, and the TUI discards it.
+Unless a file defines its own module-level `log`, the loader sets one to the logger `midge.ext.<file stem>`, so an extension's records go through midge's logging configuration (see [logging](logging.md)). A logger the extension creates itself is covered by that configuration only if its name is under `midge`. Use it instead of `print()`: stdout is the protocol in RPC mode, and the TUI discards it.
 
 ## The system prompt
 

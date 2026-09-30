@@ -194,3 +194,15 @@ async def test_the_allowlist_example_holds() -> None:
     assert (await decide("write", path="../outside.txt", content="x")).block
     assert await decide("write", path="notes/inside.txt", content="x") is None
     assert await decide("read", path="/etc/hosts") is None
+
+
+async def test_extension_gets_a_log_unless_it_declares_one(tmp_path: Path) -> None:
+    tool = "from midge.tools import tool\n@tool\nasync def {name}() -> str:\n    return log.name\n"
+    (tmp_path / "plain.py").write_text(tool.format(name="plain_log"))
+    (tmp_path / "own.py").write_text(
+        "import logging\nlog = logging.getLogger('custom.name')\n" + tool.format(name="own_log")
+    )
+    registry, _ = load_extensions([tmp_path])
+
+    assert await registry.invoke("plain_log", {}) == "midge.ext.plain"
+    assert await registry.invoke("own_log", {}) == "custom.name"
