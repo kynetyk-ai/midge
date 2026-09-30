@@ -45,7 +45,7 @@ poetry run ruff check
 poetry run pyright
 ```
 
-Python 3.11+, Poetry for environment and dependency management. Behaviour changes are tested against a real model in the container harness before merge; see [`harness/README.md`](harness/README.md).
+Python 3.11+, Poetry for environment and dependency management. Behaviour changes are tested against a real model by the end-to-end tests before merge; see [`e2e/README.md`](e2e/README.md).
 
 ## Layout
 

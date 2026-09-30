@@ -2,7 +2,7 @@
 
 midge does what it set out to do: every subsystem in the README exists and is unit-tested. Running
 it end to end is a different test. A containerised run against a real model, followed by a
-hand-driven TUI session (branch `test/docker-harness`, `harness/FINDINGS.md`), filed most of the
+hand-driven TUI session (branch `test/docker-harness`, `e2e/FINDINGS.md`), filed most of the
 issues open today. Some break a shipped feature without saying so. Two make a safety claim that
 does not hold.
 
@@ -35,7 +35,7 @@ are listed roughly in the order worth doing them.
 **Goal:** midge can be relied on as a personal coding agent in the TUI.
 
 **Done**, in six PRs into `develop`, each merged only after a behavioral test in the container
-(`harness/`, brought in by #122) against a real model — RPC scripted under `harness/scenarios/`,
+(`e2e/`, brought in by #122) against a real model — RPC scripted under `e2e/scenarios/`,
 the TUI driven through tmux. The exit criteria, as met:
 
 - **No open issue kills a turn or corrupts a conversation.** #99 was pulled in from M2 once it was
@@ -175,7 +175,7 @@ Decided during M1, recorded so they are not reopened by accident:
 - Cost and price tables. Token counts shipped in M1; prices churn like model lists, and midge ships no
   model list for the same reason.
 - A socket transport. midge never listens; bridging is the deployer's choice.
-- Shipping the container harness as part of midge. It is in the repo (`harness/`, #122) as the
+- Shipping the end-to-end test rig as part of midge. It is in the repo (`e2e/`, #122) as the
   merge gate for behaviour a unit test cannot see, not as something a user installs.
 
 ## Already done

@@ -56,9 +56,9 @@ See [ADR 0001](docs/adr/0001-session-profiles.md). Discovery, validation and *ap
 - **Git flow:** feature branches are cut from `develop` and PR'd into `develop`; `main` is what
   `develop` merges into. A PR merges only when the user says so, and only after its behavioral
   test (below) is in the PR body.
-- **Behavioral test before merge.** A PR that changes observable behaviour is run in the container
-  harness (`harness/`, see its README) against a real model before it merges: RPC checks scripted
-  under `harness/scenarios/`, TUI checks driven through tmux (`midgectl.py tui-*`). Results go in
+- **Behavioral test before merge.** A PR that changes observable behaviour is run in the end-to-end
+  tests (`e2e/`, see its README) against a real model before it merges: RPC checks scripted
+  under `e2e/scenarios/`, TUI checks driven through tmux (`midgectl.py tui-*`). Results go in
   the PR body as PASS / FAIL / ODD with evidence. Where it can, run the same check against
   `develop` too, so the PR shows it fails there. Unit tests are necessary, not sufficient. What a
   real model cannot be made to do on demand is marked *unit-only* rather than faked.
@@ -170,7 +170,7 @@ src/midge/tui/        # Textual front-end: commands (verbs), drawer (nouns), sla
 tests/              # pytest tests
 examples/           # entrypoints, and example extensions/profiles/skills
 docs/               # one doc per subsystem (index: docs/README.md); rpc.md is the wire contract, pinned by tests/test_rpc_contract.py; adr/
-harness/            # container test rig: the merge gate for behaviour (midgectl.py, scenarios/)
+e2e/                # end-to-end tests in a container: the merge gate for behaviour (midgectl.py, scenarios/)
 ROADMAP.md          # MVP milestones; update in the PR that closes an item
 ```
 
