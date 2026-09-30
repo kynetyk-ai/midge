@@ -143,7 +143,6 @@ on `develop` where it applied. The exit criteria, as met:
 | Build the wheel and smoke-test the installed `midge` | **proposed** | S | `poetry check` passes, but nothing proves `pipx install` works. |
 | One source for the version, a CHANGELOG, tag `v0.1.0` | **proposed** | S | The version lives in `pyproject.toml` and `__init__.py`, and there are no tags. |
 | `pyproject` description says "~2k LOC" | **proposed** | S | The core is about 3.8k. |
-| `notes/` has drifted from the code | #76 | S–L | Decide what `notes/` is first. |
 | CLAUDE.md says `use_profile` is pending | **proposed** | S | #60 and #67 closed on 2026-07-30. |
 
 ---
@@ -194,3 +193,4 @@ Closed recently. Listed so they are not proposed again.
 - **Extension mechanisms:** Agent Skills (#29), sub-agents as `spawn_*` tools (#44).
 - **Robustness:** interrupt during tool execution (#27), history invariants (#33), central logging
   (#35).
+- **Docs:** `notes/` replaced by subsystem docs in `docs/` (#76).

@@ -1,12 +1,12 @@
 # midge — instructions for Claude
 
-This repo is a Python agent harness originally ported from [`pi-mono`](../pi) (TypeScript). The harness is feature-complete for its original goals (see `README.md`); future work follows [`ROADMAP.md`](ROADMAP.md), which stages the MVP as trustworthy daily driver (M1, done) → embeddable via RPC (M2) → retargetable base (M3) → release. Update it in the PR that closes an item.
+This repo is a Python agent harness originally ported from [`pi-mono`](https://github.com/badlogic/pi-mono) (TypeScript). The harness is feature-complete for its original goals (see `README.md`); future work follows [`ROADMAP.md`](ROADMAP.md), which stages the MVP as trustworthy daily driver (M1, done) → embeddable via RPC (M2) → retargetable base (M3) → release. Update it in the PR that closes an item.
 
 The user does not work in TypeScript and wants a codebase they can read, modify, and adapt to non-coding domains.
 
 ## Goals
 
-1. **Readable, hackable codebase.** Idiomatic Python, not a faithful translation of the TS source.
+1. **Readable, hackable codebase.** Idiomatic Python.
 2. **Learning vehicle.** The user is using this project to understand how an agent harness works internals-up.
 3. **Domain-adaptability.** The harness must cleanly separate from the "coding agent" identity. Extensions + system prompt should be the only things that need to change to retarget it.
 
@@ -20,21 +20,15 @@ human-facing mode, not the main one. Two consequences:
   prompt is registered by `PiApp`, not by core or an extension; RPC has nobody to ask, and a
   prompt nobody answers is a hang, not a safeguard. The boundary in RPC mode is the container.
 
-## Working with `pi-mono`
+## Vocabulary
 
-- `../pi/` is **read-only reference material** (the `pi-mono` repo, checked out as `pi`). Do not edit it.
-- `notes/` holds the patterns extracted from `pi-mono` during the original port. When extending a subsystem, check there first to avoid re-reading the same TS code — but **treat it as a historical record, not as current documentation** (#76). Most of it was written *before* the code it describes, in the future tense; several notes reference code that has since moved or been deleted, and `providers/`, the model registry, `config.py` and `profiles.py` have no note at all. Verify anything load-bearing against the source.
-- Read for *concepts*, then write Python from scratch. Do not translate line-by-line.
-
-### Vocabulary — deliberately aligned with `pi-mono`
-
-| Concept | midge | `pi-mono` |
-|---|---|---|
-| Built-in LLM-callable tools (`read`, `bash`, …) | `src/midge/tools/coding/` | `packages/coding-agent/src/core/tools/` |
-| Loading user `.py` files that register tools | `src/midge/extensions.py`, `--extension-dir` | `src/core/extensions/` |
-| `SKILL.md` — the [Agent Skills standard](https://agentskills.io/specification) | `src/midge/skills.py`, `--skill-dir` | `src/core/skills.ts` |
-| A nested agent the model delegates to | `src/midge/subagents.py`, `@subagent` → a `spawn_*` tool | **no equivalent** (an example extension only) |
-| A named configuration the agent runs *as* | `src/midge/profiles.py`, a `Profile` instance in an extension file | **no equivalent** (`pi` records unnamed `model_change` / `active_tools_change` entries) |
+| Concept | Where |
+|---|---|
+| Built-in LLM-callable tools (`read`, `bash`, …) | `src/midge/tools/coding/` |
+| Loading user `.py` files that register tools | `src/midge/extensions.py`, `--extension-dir` |
+| `SKILL.md`, the [Agent Skills standard](https://agentskills.io/specification) | `src/midge/skills.py`, `--skill-dir` |
+| A nested agent the model delegates to | `src/midge/subagents.py`, `@subagent` → a `spawn_*` tool |
+| A named configuration the agent runs *as* | `src/midge/profiles.py`, a `Profile` instance in an extension file |
 
 The word **skill** means the `SKILL.md` standard and nothing else. Do not use it for tools or
 extensions.
@@ -56,6 +50,7 @@ See [ADR 0001](docs/adr/0001-session-profiles.md). Discovery, validation and *ap
 
 ## Tooling and conventions
 
+- **Docs live in `docs/`**, one per subsystem. A PR that changes how a subsystem behaves or is used updates its doc.
 - **Poetry** for env and dependency management (`poetry install`, `poetry run <cmd>`, `poetry add <pkg>`). Never `pip`, `uv`, `pip-tools`, or `hatch`. `poetry.lock` is committed.
 - **Python 3.11+**. Use `asyncio.TaskGroup`, exception groups, and modern type hints.
 - **Git flow:** feature branches are cut from `develop` and PR'd into `develop`; `main` is what
@@ -174,10 +169,9 @@ src/midge/rpc/        # JSON-on-stdio front-end: wire / server / transport
 src/midge/tui/        # Textual front-end: commands (verbs), drawer (nouns), slash commands, steering
 tests/              # pytest tests
 examples/           # entrypoints, and example extensions/profiles/skills
-docs/               # rpc.md (the wire contract, pinned by tests/test_rpc_contract.py), adr/
+docs/               # one doc per subsystem (index: docs/README.md); rpc.md is the wire contract, pinned by tests/test_rpc_contract.py; adr/
 harness/            # container test rig: the merge gate for behaviour (midgectl.py, scenarios/)
 ROADMAP.md          # MVP milestones; update in the PR that closes an item
-notes/              # port-era reading notes; historical, may be stale (#76)
 ```
 
 ## Style
