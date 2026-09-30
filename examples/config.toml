@@ -186,6 +186,14 @@ max_delay = 60.0
 # dir = ".agents/extensions"
 
 
+[skills]
+# A skill directory searched after the project and user ones (`.midge/skills`
+# and `.agents/skills` under cwd, then under ~), so any of those can shadow a
+# skill here. The default is where the sandbox kit installs its skills; a
+# directory that does not exist is skipped. Env: MIDGE_SYSTEM_SKILL_DIR
+# system_dir = "/usr/share/midge-kit/skills"
+
+
 [agent]
 # The base system prompt for a new session — the agent's identity when no
 # profile is active. Unset, midge introduces itself as a coding assistant. A

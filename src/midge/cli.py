@@ -246,7 +246,7 @@ def main(argv: list[str] | None = None) -> None:
     # Explicit paths outrank the defaults: naming a directory on the command
     # line is a deliberate override. Note this is the opposite nesting from the
     # extension sources above, where the built-ins must not be shadowed.
-    skill_sources = [*args.skill_dir, *default_skill_dirs()]
+    skill_sources = [*args.skill_dir, *default_skill_dirs(config.skills.system_dir)]
     profiles = ProfileSet()
     registry, prompt_addition = load_extensions(extension_sources, hooks=hooks, profiles=profiles)
     registry = keep_builtins(registry, config.tools.builtin)

@@ -7,7 +7,6 @@ from pathlib import Path
 import pytest
 
 from midge import cli
-from midge import skills as skills_module
 from midge.agent import Agent
 from midge.client import Client
 from midge.messages import UserMessage
@@ -279,8 +278,8 @@ def test_default_skill_dirs_are_absolute_and_project_first(
         tmp_path / ".agents" / "skills",
         home / ".midge" / "skills",
         home / ".agents" / "skills",
-        Path("/usr/share/midge-kit/skills"),
     ]
+    assert default_skill_dirs(Path("/opt/skills"))[-1] == Path("/opt/skills")
 
 
 def test_system_skill_dir_is_autodiscovered_and_lower_precedence(
@@ -288,7 +287,6 @@ def test_system_skill_dir_is_autodiscovered_and_lower_precedence(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     system_dir = tmp_path / "system-skills"
-    monkeypatch.setattr(skills_module, "_SYSTEM_SKILL_DIR", system_dir)
     write_skill(system_dir / "bundled", frontmatter=f"name: bundled\ndescription: {VALID}")
     write_skill(
         tmp_path / ".agents" / "skills" / "bundled",
@@ -299,7 +297,7 @@ def test_system_skill_dir_is_autodiscovered_and_lower_precedence(
         frontmatter=f"name: sandbox-env\ndescription: {VALID}",
     )
 
-    discovered = load_skills(default_skill_dirs())
+    discovered = load_skills(default_skill_dirs(system_dir))
 
     bundled = find_skill(discovered, "bundled")
     assert bundled is not None

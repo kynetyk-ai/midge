@@ -39,7 +39,6 @@ if TYPE_CHECKING:
     from midge.tools import Tool
 
 _SKILL_FILE = "SKILL.md"
-_SYSTEM_SKILL_DIR = Path("/usr/share/midge-kit/skills")
 _SKIP_DIRS = frozenset({"node_modules", "__pycache__"})
 _MAX_DEPTH = 6
 _MAX_NAME = 64
@@ -60,20 +59,23 @@ class Skill:
     model_invocable: bool = True
 
 
-def default_skill_dirs() -> list[Path]:
-    """Project skills before personal ones, most specific first.
+def default_skill_dirs(system_dir: Path | None = None) -> list[Path]:
+    """Project skills before personal ones, most specific first, then
+    `system_dir` when given.
 
     A function rather than a module constant like `BUILTIN_TOOL_DIRS`: `cwd()`
     resolved at import time would freeze whatever directory the interpreter
     started in.
     """
-    return [
+    dirs = [
         Path.cwd() / ".midge" / "skills",
         Path.cwd() / ".agents" / "skills",
         Path.home() / ".midge" / "skills",
         Path.home() / ".agents" / "skills",
-        _SYSTEM_SKILL_DIR,
     ]
+    if system_dir is not None:
+        dirs.append(system_dir)
+    return dirs
 
 
 def load_skills(sources: Iterable[Path | str]) -> list[Skill]:
