@@ -8,9 +8,11 @@ description: >-
 sourceUrl: https://github.com/kynetyk-ai/midge
 
 args:
+  # A commit rather than a branch: sbx rebuilds the image only when this
+  # directory changes, so a branch name would keep whatever it built first.
   ref:
-    default: develop
-    description: midge git branch, tag or commit to install
+    default: e7d154e7851ec20f84d7ecc16cba17970bbabdb3
+    description: midge git commit, tag or branch to install
     pattern: '^[A-Za-z0-9._/-]+$'
     buildArg: MIDGE_REF
 
