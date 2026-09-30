@@ -34,7 +34,13 @@ from midge.logs import configure as configure_logging
 from midge.logs import provider_host
 from midge.messages import TextContent, UserMessage
 from midge.persistence import Session, resolve_session_path
-from midge.skills import default_skill_dirs, load_skills, skill_message, skills_prompt
+from midge.skills import (
+    default_skill_dirs,
+    load_skills,
+    path_reader,
+    skill_message,
+    skills_prompt,
+)
 from midge.subagents import bind_subagents
 
 # Not `__name__`: run as `-m`, that is "__main__", which sits outside the
@@ -138,7 +144,7 @@ async def amain(
     hooks = Hooks()
     registry, prompt_addition = load_extensions([*BUILTIN_TOOL_DIRS, *extension_dirs], hooks=hooks)
     skills = load_skills([*(skill_dirs or []), *default_skill_dirs(config.skills.system_dir)])
-    catalogue = skills_prompt(skills) if "read" in registry else ""
+    catalogue = skills_prompt(skills, reader=path_reader(registry))
 
     user_input: str | UserMessage = prompt
     if force_skill is not None:
