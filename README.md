@@ -14,7 +14,7 @@ The budget covers `src/midge/*.py`, the harness itself. `providers/`, `tools/` a
 - **Agent Skills** ([`SKILL.md`](https://agentskills.io/specification)) — drop a directory of markdown instructions in and point `--skill-dir` at it. Names and descriptions go in the system prompt; the agent opens the full file with `read` only when a task matches. No Python, no prompt edits, and directories written for other harnesses load as-is.
 - **Sub-agents** — declare a nested agent in a `.py` file and it becomes a `spawn_<name>` tool the model can delegate to, with its own system prompt and a subset of the parent's tools. The parent gets the result; the child's own turns stay out of its context and go to a linked transcript.
 - **Built-in coding tools**: `read`, `ls`, `grep`, `write`, `edit`, `bash`. The first three are read-only.
-- **Lifecycle hooks** — block or rewrite a tool call before it runs, transform context, patch results, observe every event. See [`notes/hooks.md`](./notes/hooks.md) and `examples/approval_extension/`. A hook gates *tool calls*, not their effects: a rule that inspects a `bash` command string is advisory, because `bash` can do the same thing a dozen ways. For a restriction that holds, allow only tools that cannot do the thing (`examples/allowlist_extension/`) and run midge in a container.
+- **Lifecycle hooks** — block or rewrite a tool call before it runs, transform context, patch results, observe every event. See [`docs/hooks.md`](./docs/hooks.md) and `examples/approval_extension/`. A hook gates *tool calls*, not their effects: a rule that inspects a `bash` command string is advisory, because `bash` can do the same thing a dozen ways. For a restriction that holds, allow only tools that cannot do the thing (`examples/allowlist_extension/`) and run midge in a container.
 - **Textual TUI** for interactive use, plus a JSON-on-stdio RPC mode for embedding the agent in external tools.
 - **JSONL session save/resume, on by default.** Every run records a transcript under `.midge/sessions/` unless you say otherwise. The format is append-only and documented: a rename or a context clear is a record appended and replayed on load, never a rewrite, so a crash can only ever damage the final line. A session spanning several files — a sub-agent writes its own — says so in both directions, so the whole run is walkable from any one of them. Anything that wants to view or watch a session reads the transcript directly.
 - **Context compaction** that summarizes old turns when a session gets long.
@@ -214,7 +214,7 @@ and `tests/test_rpc_contract.py` fails if a frame's shape changes without the re
 golden file following. [`examples/rpc_client.py`](./examples/rpc_client.py) is the shape to copy
 when embedding midge: spawn, read `ready`, prompt, render until `agent_settled`, close stdin.
 
-Newline-delimited JSON. `get_commands` enumerates everything invocable — built-in commands and `SKILL.md` skills alike — each with a JSON Schema for its arguments, so a client can build a command palette without hardcoding the protocol. `reload` re-scans skills and extensions from disk, so a new `SKILL.md` or an edited tool takes effect without restarting. `open_session` attaches a running agent to another transcript, creating it if the path is free, which is what lets a client leave a conversation and come back to it, and `list_sessions` says which transcripts exist so a client can offer the choice — sub-agent runs and profile excursions excluded, since reopening one would resume the middle of a tool call. What a transport other than stdio would have to decide for itself is recorded at the top of [`src/midge/rpc/transport.py`](./src/midge/rpc/transport.py); [`notes/rpc.md`](./notes/rpc.md) is the port-era reading note rather than current documentation.
+Newline-delimited JSON. `get_commands` enumerates everything invocable — built-in commands and `SKILL.md` skills alike — each with a JSON Schema for its arguments, so a client can build a command palette without hardcoding the protocol. `reload` re-scans skills and extensions from disk, so a new `SKILL.md` or an edited tool takes effect without restarting. `open_session` attaches a running agent to another transcript, creating it if the path is free, which is what lets a client leave a conversation and come back to it, and `list_sessions` says which transcripts exist so a client can offer the choice — sub-agent runs and profile excursions excluded, since reopening one would resume the middle of a tool call. What a transport other than stdio would have to decide for itself is recorded at the top of [`src/midge/rpc/transport.py`](./src/midge/rpc/transport.py); [`docs/rpc.md`](./docs/rpc.md) is the full protocol.
 
 **midge never listens on anything** — no socket, no port, no bind address; the only network traffic is outbound to the provider. Stdin and stdout are a capability handed to the process by whoever launched it, so access control comes from the OS and the container runtime rather than from code midge would have to get right. Bridging to a socket is left to whoever deploys it, because the right shape is the client's to decide — and because anything that can send a line can run `bash` with the process's privileges.
 
@@ -297,8 +297,8 @@ poetry run python -m examples.coding_agent --skill-dir examples/skills \
 Add `disable-model-invocation: true` to a skill's frontmatter to keep it out of
 the catalogue entirely, leaving `--skill` as the only way in.
 
-See `examples/skills/` for a worked example and [`notes/skills.md`](./notes/skills.md)
-for design rationale.
+See `examples/skills/` for a worked example and [`docs/skills.md`](./docs/skills.md)
+for discovery and precedence.
 
 ### Sub-agents — delegate work out of the conversation
 
@@ -366,7 +366,7 @@ A delegation is always bounded, by three people. The author sets a budget per ag
 its signature, for a job that needs longer; and `[subagents] max_timeout` caps the lot, so
 offering the knob never means offering none.
 
-See `examples/subagent_extension/` and [`notes/subagents.md`](./notes/subagents.md).
+See `examples/subagent_extension/` and [`docs/subagents.md`](./docs/subagents.md).
 
 ### Profiles — what the agent *is*
 
@@ -442,7 +442,7 @@ for the design and what was deliberately rejected along with it.
 2. Optionally add a module-level `SYSTEM_PROMPT` string to extend the agent's prompt.
 3. Point `--extension-dir` at the directory, and declare a `Profile` in the same file for the domain's identity — see `examples/notes_extension/notes.py`.
 
-The harness deliberately separates from the "coding agent" identity. See `examples/notes_extension/` for a working example, and [`notes/extensions.md`](./notes/extensions.md) for design rationale.
+The harness deliberately separates from the "coding agent" identity. See `examples/notes_extension/` for a working example, and [`docs/extensions.md`](./docs/extensions.md) for how loading works.
 
 ## Layout
 
@@ -479,7 +479,7 @@ examples/
 ├── profile_extension/ # a declared profile: the adversarial reviewer
 └── skills/            # a worked SKILL.md example
 sandbox/midge/         # Docker Sandboxes kit: image, kit spec, sandbox-env skill
-notes/                 # design rationale + patterns extracted from pi-mono
+docs/                  # subsystem docs, guides, ADRs (index: docs/README.md)
 tests/                 # pytest tests
 ```
 

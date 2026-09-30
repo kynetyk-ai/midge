@@ -113,7 +113,7 @@ layer up: `_child_registry` keeps only names in an allowlist. A profile uses the
 same shape — discover once, project a subset.
 
 Filtering hides rather than denies at call time. A `tool_call` hook could refuse
-by name, but `notes/subagents.md` is explicit that telling a model it has a tool
+by name, but [sub-agents](../subagents.md) is explicit that telling a model it has a tool
 the registry will reject is misinformation rather than access control. A profile
 changes what the agent is, so the schemas it receives must match.
 

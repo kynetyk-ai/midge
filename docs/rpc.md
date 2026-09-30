@@ -19,6 +19,23 @@ does not know.
 midge's own version (`midge` in `ready`) says which build you are talking to. It is informational;
 the protocol version is the one to check.
 
+## Running
+
+```bash
+midge --rpc                                   # the server
+python examples/rpc_client.py "say hi"        # a stdlib-only client that spawns it
+```
+
+`midge --rpc` takes the same flags as the TUI (`--session`, `--continue`, `--no-session`,
+`--profile`, `--extension-dir`, `--skill-dir`, the compaction flags) and reads the same
+[config](config.md). [`examples/rpc_client.py`](../examples/rpc_client.py) shows the sequence a
+client follows: spawn the process, read `ready` and check `protocol`, send `prompt`, read frames
+until `agent_settled`, and close stdin to finish.
+
+midge opens no socket or port. One process serves one client, one agent and one session; running
+several agents means running several processes. Logging goes to stderr or the configured log file
+(see [logging](logging.md)).
+
 ## Framing
 
 - One JSON object per line, UTF-8, `\n`-terminated. Output is `json.dumps(obj, ensure_ascii=False)`.
@@ -27,6 +44,10 @@ the protocol version is the one to check.
   next line is read normally. A blank line is ignored and unanswered.
 - **EOF on stdin ends the process** after the turn in flight is cancelled and pending frames are
   flushed. SIGTERM and SIGHUP do the same.
+- At startup the server takes the real stdout for the protocol and points `sys.stdout` at stderr,
+  so a `print()` from a tool, hook or extension lands on stderr.
+- Outgoing frames pass through a bounded queue. If the client stops reading and the queue fills,
+  the agent pauses until the client drains it. Frames are never dropped.
 
 ## Commands and responses
 
@@ -62,6 +83,13 @@ and runs it in the background, so `abort` and `steer` can arrive while it runs.
 | `follow_up` | `message` | `queue_id`. Run as a new turn after the current one settles |
 | `abort` | — | `dropped`: `[{id, content}]` — queued messages discarded. Refused if nothing is running |
 
+A steered message is injected after every tool result of the current model response has been
+recorded, before the next request is built; if the response had no tool calls, the steer starts
+another request in the same run. Steering is drained at every such point and follow-ups only when
+the run has nothing left to do, so pending steers are delivered before an earlier follow-up. A
+`/skill:<name>` message is expanded when it is queued, and an unknown skill name is refused in the
+response.
+
 ### Reading state
 
 | Command | Parameters | `data` |
@@ -73,6 +101,14 @@ and runs it in the background, so `abort` and `steer` can arrive while it runs.
 | `get_commands` | — | `commands`: `[{name, source, invoke, description, parameters}]`. `parameters` is JSON Schema — **the machine-readable version of these tables**, including enums for `set_model` and `use_profile` |
 | `get_profiles` | — | `active`, `profiles`: `[{name, description, model, tools, hooks, prompt, source}]` |
 | `list_sessions` | `roots_only` (bool, default true) | `sessions`: `[{path, name, created_at, model, messages, modified, current}]` |
+
+In `get_commands`, `invoke: "command"` means send `{"type": name, …}` with `parameters` as keys of
+the object; `invoke: "prompt"` (skills, named `skill:<name>`) means send the text `/<name> …` in a
+`prompt`, `steer` or `follow_up` message. An empty `properties` object means the entry takes no
+arguments.
+
+With `roots_only`, `list_sessions` omits transcripts that another transcript started: sub-agent
+runs, profile excursions and forks (see [sub-agents](subagents.md) and [sessions](sessions.md)).
 
 ### Changing the agent
 
@@ -90,6 +126,10 @@ the turn is using; the others take effect from the next request.
 | `set_session_name` | `name` | `name` |
 | `use_profile` · **idle** | `name`, `transcript` (`continue` · `fork` · `resume_last`, default `continue`) | `profile`, `requested` and `transcript` (the transcript mode asked for and the one used), `model`, `tools`, `session`, `messages`, `durable` |
 | `reload` · **idle** | `targets` (list of `skills` / `extensions`; default both) | `targets`, `tools`, `skills`, `profiles` (counts after reloading) |
+
+`open_session` restores the transcript's history and base system prompt and keeps the running
+model. `recorded_model` is the model the transcript last recorded, and `model_differs` says whether
+it differs from `model`, so a client can offer `set_model`.
 
 ### Refusals
 
@@ -166,8 +206,7 @@ is in its own transcript. A frame with no `agent` key is the top-level agent's.
 
 With a session (the default, or `--session PATH`), each turn is written to the transcript as it
 ends — or, if it is aborted or fails, as far as it got. A new process opening the same file (with
-`--session`, `--continue` or `open_session`) resumes the conversation. See `README.md` for the
-transcript format.
+`--session`, `--continue` or `open_session`) resumes the conversation. See [sessions](sessions.md) for the transcript format.
 
 ## Trust
 
