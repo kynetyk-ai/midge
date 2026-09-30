@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     from midge.tools import Tool
 
 _SKILL_FILE = "SKILL.md"
+_SYSTEM_SKILL_DIR = Path("/usr/share/midge-kit/skills")
 _SKIP_DIRS = frozenset({"node_modules", "__pycache__"})
 _MAX_DEPTH = 6
 _MAX_NAME = 64
@@ -71,6 +72,7 @@ def default_skill_dirs() -> list[Path]:
         Path.cwd() / ".agents" / "skills",
         Path.home() / ".midge" / "skills",
         Path.home() / ".agents" / "skills",
+        _SYSTEM_SKILL_DIR,
     ]
 
 

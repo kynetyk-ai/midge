@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from midge import cli
+from midge import skills as skills_module
 from midge.agent import Agent
 from midge.client import Client
 from midge.messages import UserMessage
@@ -278,7 +279,37 @@ def test_default_skill_dirs_are_absolute_and_project_first(
         tmp_path / ".agents" / "skills",
         home / ".midge" / "skills",
         home / ".agents" / "skills",
+        Path("/usr/share/midge-kit/skills"),
     ]
+
+
+def test_system_skill_dir_is_autodiscovered_and_lower_precedence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    system_dir = tmp_path / "system-skills"
+    monkeypatch.setattr(skills_module, "_SYSTEM_SKILL_DIR", system_dir)
+    write_skill(system_dir / "bundled", frontmatter=f"name: bundled\ndescription: {VALID}")
+    write_skill(
+        tmp_path / ".agents" / "skills" / "bundled",
+        frontmatter=f"name: bundled\ndescription: {VALID}",
+    )
+    write_skill(
+        system_dir / "sandbox-env",
+        frontmatter=f"name: sandbox-env\ndescription: {VALID}",
+    )
+
+    discovered = load_skills(default_skill_dirs())
+
+    bundled = find_skill(discovered, "bundled")
+    assert bundled is not None
+    assert bundled.path == (
+        tmp_path / ".agents" / "skills" / "bundled" / "SKILL.md"
+    ).resolve()
+
+    sandbox_skill = find_skill(discovered, "sandbox-env")
+    assert sandbox_skill is not None
+    assert sandbox_skill.path == (system_dir / "sandbox-env" / "SKILL.md").resolve()
 
 
 def test_skills_prompt_empty_when_no_skills() -> None:
