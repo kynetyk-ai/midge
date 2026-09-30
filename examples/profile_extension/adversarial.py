@@ -42,7 +42,7 @@ ADVERSARIAL = Profile(
     description="Reviews work that has just been done, looking for what is wrong with it.",
     # Read-only on purpose. A reviewer that can edit will fix what it finds
     # instead of reporting it, and the report is the product.
-    tools=("read", "bash"),
+    tools=("read", "ls", "grep"),
     # A decision for *every* hook source that is loaded, keyed by the extension
     # file's stem — `examples/approval_extension/approve.py` is `"approve"`.
     # Leaving one out is a validation failure, not a default: omitting a tool
