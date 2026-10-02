@@ -160,7 +160,7 @@ As of `main` at `e0d1ae0`, the wheel builds, installs from git into a clean 3.12
 | Item | Issue | Size | Notes |
 |---|---|---|---|
 | One source for the version, a CHANGELOG, tag `v0.1.0` | **proposed** | S | The version lives in `pyproject.toml` and `__init__.py`, and there are no tags. Deployers, and the sandbox kit, pin a commit hash today. |
-| Ship `py.typed` | **proposed** | S | The wheel has no marker, so a type checker treats midge as untyped and an extension's tools and profiles are checked against nothing. |
+| Ship `py.typed` | — | S | Done. |
 | Textual as an optional `tui` extra | **proposed** | S | `cli.py` imports `midge.tui` at module load and `textual` is a hard dependency, so every headless install, sandbox images included, pulls in the TUI. Import it on the TUI path only and say what to install when it is missing. |
 | Build the wheel and smoke-test the installed `midge` | **proposed** | S | `poetry check` passes, but nothing proves `pipx install` works. Run against the built wheel in a clean venv, including one RPC round trip, and without the `tui` extra. |
 | CI across Python 3.11–3.13 and macOS | **proposed** | S | CI runs 3.11 on Ubuntu only, and development happens on macOS. |

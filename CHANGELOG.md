@@ -45,6 +45,8 @@ The RPC protocol has its own version number, carried in the `protocol` field of 
 
 ### Changed
 
+- `py.typed` marker added so type checkers recognize midge as a typed package.
+
 - Package description corrected in `pyproject.toml`.
 - CONTRIBUTING.md branch rule corrected to match CLAUDE.md (feature branches from `develop`).
 - Single source for the version: `midge.__version__` now reads from pyproject metadata.
