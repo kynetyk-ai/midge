@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for your interest. This is a small personal-scale project — the core harness is roughly 3.5k LOC, deliberately readable and hackable, and most contributions probably take the form of bug fixes, new extensions, or small focused features. Before opening a PR with significant scope, please open an issue first to align on direction.
+Thanks for your interest. This is a small personal-scale project — the core harness is deliberately readable and hackable, and most contributions probably take the form of bug fixes, new extensions, or small focused features. Before opening a PR with significant scope, please open an issue first to align on direction.
 
 ## Dev setup
 
@@ -44,7 +44,7 @@ If you'd like the extension upstreamed as a built-in, open an issue describing t
 
 ## Pull requests
 
-- Branch off `main`.
+- Branch off `develop`; PRs target `develop`. `main` receives `develop` only through a merge commit.
 - One logical change per PR; small PRs are easier to review and revert.
 - Commit messages: imperative mood, scope prefix when natural (`feat(extensions):`, `fix(rpc):`, `docs:`). The history follows that pattern.
 - CI runs `ruff`, `pyright`, and `pytest`; please run them locally before pushing.

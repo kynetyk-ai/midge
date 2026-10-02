@@ -166,9 +166,9 @@ As of `main` at `e0d1ae0`, the wheel builds, installs from git into a clean 3.12
 | CI across Python 3.11–3.13 and macOS | **proposed** | S | CI runs 3.11 on Ubuntu only, and development happens on macOS. |
 | A packaged RPC client | **proposed** | M | The only client is `examples/rpc_client.py`, which a host copies and then maintains against a protocol that moves without it. Ship it as `midge.rpc.client`: standard library only, as the example is, typed, checking `ready`'s protocol version, and covering the commands an embedder needs (prompt, abort, `use_profile`, `clear_context`, sessions). Tested against a real `midge --rpc` subprocess. |
 | Sandbox kit and Dockerfile install a release | **proposed** | S | Both build from source; once a tag exists they install the wheel at that tag, so an image is the same artifact a deployer pins. |
-| `pyproject` description says "~2k LOC" | **proposed** | S | The core is about 3.8k. |
-| CLAUDE.md says `use_profile` is pending | **proposed** | S | #60 and #67 closed on 2026-07-30. |
-| CONTRIBUTING.md says to branch off `main` | **proposed** | S | CLAUDE.md's git flow cuts feature branches from `develop`. |
+| `pyproject` description says "~2k LOC" | — | S | Done. |
+| CLAUDE.md says `use_profile` is pending | — | S | #60 and #67 closed on 2026-07-30. Done. |
+| CONTRIBUTING.md says to branch off `main` | — | S | CLAUDE.md's git flow cuts feature branches from `develop`. Done. |
 
 ---
 
