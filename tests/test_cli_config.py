@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from midge import cli
+from midge import cli, tui
 from midge.agent import Agent
 from midge.cli import BASE_SYSTEM_PROMPT, _parse_args, main, resume_identity
 from midge.config import DEFAULT_KEEP_RECENT, Config, ProviderConfig
@@ -159,7 +159,7 @@ def _start(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, argv: list[str]) -> 
     captured: list[Agent] = []
     monkeypatch.chdir(tmp_path)
     # `run_tui` takes the `Controls` both front-ends share; the agent is on it.
-    monkeypatch.setattr(cli, "run_tui", lambda controls, **kw: captured.append(controls.agent))
+    monkeypatch.setattr(tui, "run_tui", lambda controls, **kw: captured.append(controls.agent))
     main(argv)
     return captured[0]
 
@@ -379,7 +379,7 @@ def test_continue_resumes_the_most_recently_modified_session(
     # Created second, but touched last: modification is what "latest" means.
     os.utime(older, (1, 1))
     opened: list[Path] = []
-    monkeypatch.setattr(cli, "run_tui", lambda controls, **kw: opened.append(controls.session.path))
+    monkeypatch.setattr(tui, "run_tui", lambda controls, **kw: opened.append(controls.session.path))
     monkeypatch.setenv("MIDGE_SESSION_DIR", str(tmp_path))
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
 
@@ -405,7 +405,7 @@ def test_sub_agents_are_bound_once_in_either_mode(
         return None
 
     monkeypatch.setattr(cli, "serve_stdio", no_serve)
-    monkeypatch.setattr(cli, "run_tui", lambda controls, **kw: None)
+    monkeypatch.setattr(tui, "run_tui", lambda controls, **kw: None)
     # `main` configures logging for the run; caplog listens on the root logger.
     monkeypatch.setattr(cli, "configure_logging", lambda *a, **kw: None)
 

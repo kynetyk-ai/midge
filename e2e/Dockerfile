@@ -19,7 +19,7 @@ COPY pyproject.toml poetry.lock README.md ./
 COPY src ./src
 # `pytest` is the workspace's, not midge's: the toybox project has a suite, and
 # a scenario where `bash` runs it — and makes it fail — needs a runner present.
-RUN pip install --no-cache-dir . pytest
+RUN pip install --no-cache-dir ".[tui]" pytest
 
 # midge's own shipped examples, which are project-agnostic and load as they are.
 COPY examples ./examples
