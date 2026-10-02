@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import sys
 from pathlib import Path
 
 from midge import __version__
@@ -40,7 +41,6 @@ from midge.rpc import RpcServer, serve_stdio
 from midge.skills import default_skill_dirs, load_skills, path_reader, skills_prompt
 from midge.subagents import validate as validate_subagents
 from midge.tools import ToolRegistry
-from midge.tui import run_tui, tui_log_handler
 
 _logger = logging.getLogger(__name__)
 
@@ -206,16 +206,32 @@ def main(argv: list[str] | None = None) -> None:
     # of the things it resolves. `load` therefore logs nothing and hands back
     # diagnostics, which are emitted as soon as there is somewhere to put them.
     config, diagnostics = Config.load()
+    # TUI path needs Textual. Import here so the failure message prints
+    # before logging is configured (logging does not exist yet).
+    if not args.rpc:
+        try:
+            from midge.tui import tui_log_handler
+        except ImportError:
+            print("midge: the TUI needs Textual; install midge[tui], or run midge --rpc",
+                  file=sys.stderr)
+            sys.exit(2)
+
+        handler = tui_log_handler(config.log.file)
+        fallback = tui_log_handler()
+    else:
+        handler = None
+        fallback = None
+
     # Before `load_extensions`/`load_skills`, which are the two loudest
     # loaders — a handler installed after them loses every startup diagnostic.
     # The TUI needs a handler that resolves per record; RPC needs stderr,
     # because a handler bound to stdout would corrupt the protocol.
     configure_logging(
-        None if args.rpc else tui_log_handler(config.log.file),
+        handler,
         log=config.log,
         # Where records go if the configured file cannot be opened: stderr is
         # fine beside the RPC protocol, and is the screen in the TUI.
-        fallback=None if args.rpc else tui_log_handler(),
+        fallback=fallback,
     )
     emit_config_diagnostics(diagnostics)
 
@@ -490,6 +506,8 @@ def main(argv: list[str] | None = None) -> None:
     # These bookend the TUI's own event loop, so they run in their own.
     # A handler that needs the running app's loop should use a turn-scoped
     # event instead.
+    # Imported here (already cached) so pyright sees run_tui bound.
+    from midge.tui import run_tui
     asyncio.run(_start())
     # Tools cannot reach the calling agent, so a sub-agent tool gets what it
     # needs to run a child here. Once per front-end, through `Controls`: RPC

@@ -161,7 +161,7 @@ As of `main` at `e0d1ae0`, the wheel builds, installs from git into a clean 3.12
 |---|---|---|---|
 | One source for the version, a CHANGELOG, tag `v0.1.0` | **proposed** | S | The version lives in `pyproject.toml` and `__init__.py`, and there are no tags. Deployers, and the sandbox kit, pin a commit hash today. |
 | Ship `py.typed` | — | S | Done. |
-| Textual as an optional `tui` extra | **proposed** | S | `cli.py` imports `midge.tui` at module load and `textual` is a hard dependency, so every headless install, sandbox images included, pulls in the TUI. Import it on the TUI path only and say what to install when it is missing. |
+| Textual as an optional `tui` extra | — | S | Done. |
 | Build the wheel and smoke-test the installed `midge` | **proposed** | S | `poetry check` passes, but nothing proves `pipx install` works. Run against the built wheel in a clean venv, including one RPC round trip, and without the `tui` extra. |
 | CI across Python 3.11–3.13 and macOS | **proposed** | S | CI runs 3.11 on Ubuntu only, and development happens on macOS. |
 | A packaged RPC client | **proposed** | M | The only client is `examples/rpc_client.py`, which a host copies and then maintains against a protocol that moves without it. Ship it as `midge.rpc.client`: standard library only, as the example is, typed, checking `ready`'s protocol version, and covering the commands an embedder needs (prompt, abort, `use_profile`, `clear_context`, sessions). Tested against a real `midge --rpc` subprocess. |

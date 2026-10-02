@@ -20,9 +20,9 @@ WORKDIR /opt/midge
 ENV POETRY_VIRTUALENVS_IN_PROJECT=true \
     POETRY_NO_INTERACTION=1
 COPY pyproject.toml poetry.lock README.md ./
-RUN poetry install --only main --no-root
+RUN poetry install --only main --extras tui --no-root
 COPY src ./src
-RUN poetry install --only main
+RUN poetry install --only main --extras tui
 
 # --- runtime ------------------------------------------------------------------
 FROM python:3.13-slim

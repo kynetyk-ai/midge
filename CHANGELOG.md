@@ -45,12 +45,12 @@ The RPC protocol has its own version number, carried in the `protocol` field of 
 
 ### Changed
 
-- `py.typed` marker added so type checkers recognize midge as a typed package.
-
 - Package description corrected in `pyproject.toml`.
 - CONTRIBUTING.md branch rule corrected to match CLAUDE.md (feature branches from `develop`).
 - Single source for the version: `midge.__version__` now reads from pyproject metadata.
 - This CHANGELOG added.
+- `py.typed` marker added so type checkers recognize midge as a typed package.
+- Textual moved to an optional `tui` extra; `pip install midge` is enough for `midge --rpc`, and `pip install midge[tui]` adds the TUI.
 
 [Unreleased]: https://github.com/kynetyk-ai/midge/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/kynetyk-ai/midge/releases/tag/v0.1.0
