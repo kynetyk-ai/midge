@@ -57,7 +57,7 @@ See [ADR 0001](docs/adr/0001-session-profiles.md). Discovery, validation and *ap
   `develop` merges into. A PR merges only when the user says so, and only after its behavioral
   test (below) is in the PR body. Promote `develop` to `main` with a merge commit, never a
   squash: a squash leaves `develop`'s commits unreachable from `main`, so the two diverge with
-  identical trees and every later promotion re-lists them.
+  identical trees and every later promotion re-lists them. The changelog rule is in CONTRIBUTING.md.
 - **Behavioral test before merge.** A PR that changes observable behaviour is run in the end-to-end
   tests (`e2e/`, see its README) against a real model before it merges: RPC checks scripted
   under `e2e/scenarios/`, TUI checks driven through tmux (`midgectl.py tui-*`). Results go in
