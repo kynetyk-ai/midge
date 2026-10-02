@@ -1,7 +1,7 @@
 [project]
 name = "midge"
 version = "0.1.0"
-description = "Hackable Python agent harness — readable, retargetable, ~2k LOC."
+description = "Hackable Python agent harness, readable and retargetable."
 authors = [{ name = "Joshua Ziel", email = "josh@kynetyk.ai" }]
 license = "MIT"
 readme = "README.md"
