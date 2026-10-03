@@ -43,7 +43,7 @@ Handlers for one event run in registration order. The last column says how their
 | `message_end` | After the response is appended to history. | Nothing. | Observation only. |
 | `tool_call` | Once per tool call, before any call in the message runs. | `ToolCallResult(block=, reason=, arguments=)`. | Argument rewrites chain; the first `block=True` stops the chain. |
 | `tool_result` | Once per call, after it runs or is blocked, before the result enters history. | `ToolResultResult(content=, is_error=)`. | Each non-`None` field replaces the current value. |
-| `before_compact` | In [compaction](compaction.md), after a cut point is chosen. | `CompactResult(cancel=, cut_index=)`. A `cut_index` is moved forward to the next user message; compaction is skipped if none remains. | Stops at the first `cancel=True`. |
+| `before_compact` | In [compaction](compaction.md), after a cut point is chosen. | `CompactResult(cancel=, cut_index=)`. A `cut_index` is moved forward to the next cut point; compaction is skipped if none remains. | Stops at the first `cancel=True`. |
 | `turn_end` | The turn has finished. Carries the turn's new messages. | Nothing. | Observation only. |
 
 An event type with no rule in `Hooks._REDUCERS` is observation only. `on` accepts any string, so an extension can use custom event types with its own `emit` calls.
