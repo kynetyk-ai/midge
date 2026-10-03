@@ -182,7 +182,7 @@ class Agent:
         self.history: list[Message] = []
         self._running = False
         # Run at the loop edge, where history may change; see `Controls.run_turn`.
-        self.between_requests: Callable[[], AsyncIterator[AgentEvent]] | None = None
+        self.between_requests: Callable[[], AsyncIterator[Any]] | None = None
 
     async def stream(self, user_input: str | UserMessage) -> AsyncGenerator[AgentEvent, None]:
         # `history` is mutated in place throughout the turn. A second concurrent
