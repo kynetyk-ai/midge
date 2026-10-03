@@ -221,3 +221,57 @@ def test_cleanups_run_when_the_process_exits(tmp_path: Path) -> None:
         assert midge.close() == 0
 
     assert marker.read_text() == "ok"
+
+
+def test_devnull_stdin_does_not_hang(tmp_path: Path) -> None:
+    # midge --rpc should exit cleanly when stdin is /dev/null.
+    with FakeOpenAI([]) as fake:
+        base = {k: v for k, v in os.environ.items() if not k.startswith(("OPENAI_", "MIDGE_"))}
+        env = base | {
+            "OPENAI_BASE_URL": fake.base_url,
+            "MIDGE_MODEL": "m",
+            "HOME": str(tmp_path),
+        }
+        done = subprocess.run(
+            [sys.executable, "-m", "midge", "--rpc", "--no-session"],
+            cwd=tmp_path,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=15,
+        )
+
+    assert done.returncode == 0
+    first_line = done.stdout.split(b"\n")[0]
+    frame = json.loads(first_line)
+    assert frame["type"] == "ready"
+
+
+def test_regular_file_stdin(tmp_path: Path) -> None:
+    # midge --rpc should handle stdin from a regular file.
+    cmd_file = tmp_path / "cmd.jsonl"
+    cmd_file.write_text(json.dumps({"id": "s", "type": "get_state"}) + "\n")
+
+    with FakeOpenAI([]) as fake:
+        base = {k: v for k, v in os.environ.items() if not k.startswith(("OPENAI_", "MIDGE_"))}
+        env = base | {
+            "OPENAI_BASE_URL": fake.base_url,
+            "MIDGE_MODEL": "m",
+            "HOME": str(tmp_path),
+        }
+        with cmd_file.open("rb") as fh:
+            done = subprocess.run(
+                [sys.executable, "-m", "midge", "--rpc", "--no-session"],
+                cwd=tmp_path,
+                env=env,
+                stdin=fh,
+                capture_output=True,
+                timeout=15,
+            )
+
+    assert done.returncode == 0
+    lines = done.stdout.decode().split("\n")
+    responses = [json.loads(line) for line in lines if line and json.loads(line).get("type") == "response"]
+    s_response = [r for r in responses if r.get("id") == "s"]
+    assert len(s_response) == 1
+    assert s_response[0]["success"] is True

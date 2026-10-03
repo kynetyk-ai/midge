@@ -53,5 +53,9 @@ The RPC protocol has its own version number, carried in the `protocol` field of 
 - Textual moved to an optional `tui` extra; `pip install midge` is enough for `midge --rpc`, and `pip install midge[tui]` adds the TUI.
 - Compaction now also runs between model requests inside a long turn, so an autonomous run's context stays bounded.
 
+### Fixed
+
+- `midge --rpc` no longer hangs when stdin is `/dev/null` or a regular file.
+
 [Unreleased]: https://github.com/kynetyk-ai/midge/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/kynetyk-ai/midge/releases/tag/v0.1.0
