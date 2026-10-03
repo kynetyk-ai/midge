@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from collections.abc import AsyncIterator
+from typing import Any, cast
 
 import pytest
 
@@ -26,6 +27,11 @@ from midge.providers import Delta, ToolCallFragment
 from midge.providers.openai_compat import encode_messages
 from midge.tools import ToolRegistry, tool
 from tests.fakes import finish, install, install_provider, say, tcall
+
+_MARKER = object()
+
+async def _edge() -> AsyncIterator[Any]:
+    yield _MARKER
 
 
 async def _collect(agent: Agent, user_input: str) -> list[AgentEvent]:
@@ -816,3 +822,33 @@ async def test_a_cancel_mid_sequence_answers_every_call() -> None:
     assert all(r.is_error for r in results)
     texts = [r.content[0].text for r in results if isinstance(r.content[0], TextContent)]
     assert texts == [INTERRUPTED_MESSAGE, INTERRUPTED_MESSAGE]
+
+
+async def test_between_requests_runs_at_each_loop_edge() -> None:
+    @tool
+    async def echo(text: str) -> str:
+        return f"echoed:{text}"
+
+    client = Client()
+    install(
+        client,
+        [
+            # turn 1: tool call
+            [
+                tcall(index=0, id="c1", name="echo", args='{"text":"hi"}'),
+                finish("tool_use"),
+            ],
+            # turn 2: final text
+            [say("done"), finish()],
+        ],
+    )
+    agent = Agent(client=client, model="gpt-4o", tools=ToolRegistry([echo]))
+    agent.between_requests = cast(Any, _edge)
+
+    events: list[AgentEvent] = [ev async for ev in agent.stream("please echo hi")]
+    raw: list[Any] = events
+
+    markers = [ev for ev in raw if ev is _MARKER]
+    assert len(markers) == 1
+    assert isinstance(events[-1], AgentEnd)
+    assert raw.index(_MARKER) < raw.index(events[-1])
