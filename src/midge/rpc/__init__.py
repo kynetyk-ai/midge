@@ -10,8 +10,10 @@ anything else can write, so a stray `print()` anywhere in the process lands on
 stderr instead of corrupting the stream.
 
 The package is four modules: `wire` maps internal events to frames, `server`
-owns the dispatch loop and the handlers, `transport` binds the loop to stdio,
-and `client` is a standard-library client for hosts.
+owns the dispatch loop and the handlers, `transport`
+binds the loop to stdio and records what a bridge
+to anything else would have to decide, and `client`
+is a standard-library client for hosts.
 """
 
 from midge.rpc.server import (

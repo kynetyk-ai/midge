@@ -20,6 +20,7 @@ import sys
 import tempfile
 import threading
 import time
+import tomllib
 import zipfile
 from pathlib import Path
 
@@ -32,7 +33,6 @@ def _run(cmd: list[str], **kw: object) -> subprocess.CompletedProcess:
 
 
 def get_version() -> str:
-    import tomllib
     meta = tomllib.loads((ROOT / "pyproject.toml").read_text())
     return meta["project"]["version"]
 

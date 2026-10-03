@@ -12,26 +12,18 @@ import sys
 from midge.rpc.client import MidgeClient, ProtocolError
 
 
-def default_server() -> list[str]:
-    import shutil
-
-    exe = shutil.which("midge")
-    return [exe, "--rpc"] if exe else [sys.executable, "-m", "midge", "--rpc"]
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description="Ask midge a question via RPC.")
     parser.add_argument("prompt")
     parser.add_argument(
-          "--server",
+        "--server",
         type=shlex.split,
         default=None,
         help="command that starts the server (default: `midge --rpc`)",
-     )
+    )
     args = parser.parse_args()
-    server = args.server or default_server()
     try:
-        with MidgeClient(server) as client:
+        with MidgeClient(args.server) as client:
             status = 0
             for frame in client.prompt(args.prompt):
                 if frame.get("agent"):

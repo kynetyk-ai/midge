@@ -67,7 +67,7 @@ The protocol, a minimal client and embedding guidance are in [rpc](rpc.md).
 
 ## In a container
 
-The root `Dockerfile` builds the midge wheel from source and installs it into the image. The agent sees that directory and nothing else of the host, so the container bounds what `bash` can reach.
+The root `Dockerfile` builds the midge wheel from source and installs it into an image that works on whatever is mounted at `/workspace`. The agent sees that directory and nothing else of the host, so the container bounds what `bash` can reach.
 
 ```bash
 docker build -t midge .                     # on Linux: --build-arg UID=$(id -u) --build-arg GID=$(id -g)
