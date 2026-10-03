@@ -51,6 +51,7 @@ The RPC protocol has its own version number, carried in the `protocol` field of 
 - This CHANGELOG added.
 - `py.typed` marker added so type checkers recognize midge as a typed package.
 - Textual moved to an optional `tui` extra; `pip install midge` is enough for `midge --rpc`, and `pip install midge[tui]` adds the TUI.
+- `find_cut_index` check for open tool calls moved before adding the current message's calls, so every assistant message in a tool-use sequence is a valid cut point.
 
 [Unreleased]: https://github.com/kynetyk-ai/midge/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/kynetyk-ai/midge/releases/tag/v0.1.0

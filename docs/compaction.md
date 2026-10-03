@@ -19,11 +19,11 @@ The estimate is the UTF-8 length of the messages serialized as JSON, divided by 
 
 ## Choosing the cut
 
-`find_cut_index` keeps the longest recent suffix that fits in `[compaction] keep_recent` (or `--compaction-keep-recent`) tokens, measured with the estimator. The cut is always at a `UserMessage`, so a tool call and its result are never separated. The most recent user turn is always kept, even when it alone exceeds the budget.
+`find_cut_index` keeps the longest recent suffix that fits in `[compaction] keep_recent` (or `--compaction-keep-recent`) tokens, measured with the estimator. The cut falls at a `UserMessage` or `AssistantMessage` as long as no tool call is left open across it. The suffix from the latest cut point is always kept, even when it alone exceeds the budget.
 
-Nothing is compacted when there is no user message after the first position, or when the whole history already fits.
+Nothing is compacted when there is no cut point, or when the whole history already fits.
 
-A `before_compact` hook receives the history and the proposed `cut_index`. It can cancel compaction, or return its own `cut_index`, which is moved forward to the next user message; an index that ends up at the start or past the end cancels compaction. See [hooks](hooks.md).
+A `before_compact` hook receives the history and the proposed `cut_index`. It can cancel compaction, or return its own `cut_index`, which is moved forward to the next valid cut point; an index that ends up at the start or past the end cancels compaction. See [hooks](hooks.md).
 
 ## The summary
 
