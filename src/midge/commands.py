@@ -466,7 +466,15 @@ class Controls:
     async def compact(self) -> dict[str, Any]:
         """Summarize older turns to reclaim context.
 
-        Refused mid-run because only the loop edge is safe for compaction.
+        Refused mid-run, and the reason is sharper than it looks: summarizing is
+        itself a provider call, so `agent.history` is reassigned *after* an
+        await. A turn running across that window appends to the list being
+        replaced, and those messages are dropped from context with nothing
+        saying so. The TUI's automatic compaction was only ever safe because it
+        runs between turns; putting it on a keystroke is what made this
+        reachable. The automatic path now also runs inside a turn, but only at
+        the agent loop edge, which a command arriving at an arbitrary moment cannot
+        use.
         """
         self._refuse_if_busy("compact")
         summary, cut_index = await self._compact()
