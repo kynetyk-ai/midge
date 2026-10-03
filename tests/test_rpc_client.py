@@ -105,10 +105,10 @@ def test_a_server_that_does_not_send_ready_is_refused(tmp_path: Path) -> None:
     stub = tmp_path / "stub.py"
     stub.write_text(
         "import sys\n"
-        "print('hello')\n"
+        "print('hello', flush=True)\n"
         "sys.stdin.read()\n"
     )
-    with pytest.raises(ProtocolError):
+    with pytest.raises(ProtocolError, match="not JSON"):
         MidgeClient([sys.executable, str(stub)], timeout=TIMEOUT)
 
 

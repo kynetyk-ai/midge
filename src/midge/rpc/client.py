@@ -226,7 +226,6 @@ def _read_ready(out: IO[str], timeout: float) -> dict[str, Any]:
     and enforce the timeout. Raises ``ProtocolError`` on timeout or a
     non-ready frame.
     """
-
     result: list[dict[str, Any]] = []
     exc: list[Exception] = []
 
