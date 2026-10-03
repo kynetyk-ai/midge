@@ -83,3 +83,59 @@ def test_an_unsupported_protocol_is_refused(tmp_path: Path) -> None:
 def test_protocols_stay_in_step() -> None:
     from midge.rpc.server import PROTOCOL_VERSION
     assert PROTOCOL_VERSION in SUPPORTED_PROTOCOLS
+
+
+def test_a_request_that_gets_no_answer_times_out(tmp_path: Path) -> None:
+    stub = tmp_path / "stub.py"
+    stub.write_text(
+         "import json, sys, time\n"
+         "print(json.dumps({'type': 'ready', 'protocol': 1, 'midge': 'x'}), flush=True)\n"
+         "time.sleep(30)\n"
+     )
+    import pytest
+    client = MidgeClient([sys.executable, str(stub)], timeout=1)
+    try:
+        with pytest.raises(TimeoutError):
+            client.get_state()
+    finally:
+        client._proc.kill()
+
+
+def test_a_server_that_does_not_send_ready_is_refused(tmp_path: Path) -> None:
+    stub = tmp_path / "stub.py"
+    stub.write_text(
+        "import sys\n"
+        "print('hello')\n"
+        "sys.stdin.read()\n"
+    )
+    with pytest.raises(ProtocolError):
+        MidgeClient([sys.executable, str(stub)], timeout=TIMEOUT)
+
+
+def test_a_prompt_streams_the_answer(tmp_path: Path) -> None:
+    with FakeOpenAI(["pong"]) as fake, MidgeClient(
+        _cmd(), cwd=tmp_path, env=_env(tmp_path, fake), timeout=TIMEOUT,
+    ) as client:
+        frames = list(client.prompt("ping"))
+    text = "".join(
+        f["delta"] for f in frames if f["type"] == "assistant_text_delta"
+    )
+    assert text == "pong"
+    assert frames[-1]["type"] == "agent_settled"
+
+
+def test_a_second_process_resumes_the_session(tmp_path: Path) -> None:
+    session_file = tmp_path / "s.jsonl"
+    cmd = [sys.executable, "-m", "midge", "--rpc", "--session", str(session_file)]
+    with FakeOpenAI(["first", "second"]) as fake:
+        with MidgeClient(
+            cmd, cwd=tmp_path, env=_env(tmp_path, fake), timeout=TIMEOUT,
+        ) as client1:
+            list(client1.prompt("remember 7341"))
+
+        with MidgeClient(
+            cmd, cwd=tmp_path, env=_env(tmp_path, fake), timeout=TIMEOUT,
+        ) as client2:
+            messages = client2.get_messages()
+    found = [m for m in messages if isinstance(m.get("content", ""), str) and "remember 7341" in m["content"]]
+    assert found
