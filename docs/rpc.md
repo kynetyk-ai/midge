@@ -184,8 +184,8 @@ Guarantees a client can rely on:
 
 - **`agent_settled` is last**, and always arrives — on success, error and abort alike. Wait on it,
   not on `agent_end`: a queued follow-up makes one prompt produce several `agent_end`s.
-- `compaction_start` / `compaction_end` come after the turn's `agent_end` and before
-  `agent_settled`.
+- `compaction_start` / `compaction_end` may arrive during a turn, between a `tool_result` and the
+    next model output, or after `agent_end`. They always come in pairs and before `agent_settled`.
 - Tool calls in one model response that change state run one at a time, in order; read-only ones
   may overlap. Each `tool_result` carries the `tool_call_id` it answers.
 

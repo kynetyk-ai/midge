@@ -205,15 +205,27 @@ async def _noop() -> str:
     return "ok " + "y" * 200
 
 
+def _long_turn_replies() -> list[list]:
+    """Six model responses for a long turn."""
+    return [
+        [tcall(id="c1", name="_noop", args="{}"), finish("tool_use")],
+        [say("## Goal\nsummary one"), finish()],
+        [tcall(id="c2", name="_noop", args="{}"), finish("tool_use")],
+        [say("## Goal\nsummary two"), finish()],
+        [say("done"), finish()],
+        [say("## Goal\nsummary three"), finish()],
+    ]
+
+
 def _controls_with_tool(
-    tmp_path: Path, client: Client, *, count_tokens_recent: int | None = None, **kw: Any
+    tmp_path: Path, client: Client, **kw: Any
 ) -> tuple[Controls, Path]:
     """Controls helper with `_noop` tool and pre-loaded session history."""
     path = tmp_path / "t.jsonl"
     history = _long_history()
     session = Session.new(path, model="m")
     session.append_many(history)
-    keep_recent = count_tokens_recent or count_tokens(history[-2:]) + 5
+    keep_recent = count_tokens(history[-2:]) + 5
     agent = Agent(client=client, model="m", tools=ToolRegistry([_noop]))
     controls = Controls(
         agent, session=session, compaction_threshold=1, compaction_keep_recent=keep_recent, **kw
@@ -226,14 +238,7 @@ async def test_compaction_runs_inside_a_long_turn(tmp_path: Path) -> None:
     client = Client()
     install(
         client,
-        [
-            [tcall(id="c1", name="_noop", args="{}"), finish("tool_use")],
-            [say("## Goal\nsummary one"), finish()],
-            [tcall(id="c2", name="_noop", args="{}"), finish("tool_use")],
-            [say("## Goal\nsummary two"), finish()],
-            [say("done"), finish()],
-            [say("## Goal\nsummary three"), finish()],
-        ],
+        _long_turn_replies(),
     )
     controls, _ = _controls_with_tool(tmp_path, client)
 
@@ -251,14 +256,7 @@ async def test_the_request_after_a_mid_turn_compaction_is_smaller(tmp_path: Path
     client = Client()
     bodies = install(
         client,
-        [
-            [tcall(id="c1", name="_noop", args="{}"), finish("tool_use")],
-            [say("## Goal\nsummary one"), finish()],
-            [tcall(id="c2", name="_noop", args="{}"), finish("tool_use")],
-            [say("## Goal\nsummary two"), finish()],
-            [say("done"), finish()],
-            [say("## Goal\nsummary three"), finish()],
-        ],
+        _long_turn_replies(),
     )
     controls, _ = _controls_with_tool(tmp_path, client)
 
@@ -273,14 +271,7 @@ async def test_a_session_replays_to_the_agents_history_after_mid_turn_compaction
     client = Client()
     install(
         client,
-        [
-            [tcall(id="c1", name="_noop", args="{}"), finish("tool_use")],
-            [say("## Goal\nsummary one"), finish()],
-            [tcall(id="c2", name="_noop", args="{}"), finish("tool_use")],
-            [say("## Goal\nsummary two"), finish()],
-            [say("done"), finish()],
-            [say("## Goal\nsummary three"), finish()],
-        ],
+        _long_turn_replies(),
     )
     controls, path = _controls_with_tool(tmp_path, client)
 
@@ -297,14 +288,7 @@ async def test_abandoning_a_turn_after_a_mid_turn_compaction_leaves_a_replayable
     client = Client()
     install(
         client,
-        [
-            [tcall(id="c1", name="_noop", args="{}"), finish("tool_use")],
-            [say("## Goal\nsummary one"), finish()],
-            [tcall(id="c2", name="_noop", args="{}"), finish("tool_use")],
-            [say("## Goal\nsummary two"), finish()],
-            [say("done"), finish()],
-            [say("## Goal\nsummary three"), finish()],
-        ],
+        _long_turn_replies(),
     )
     controls, path = _controls_with_tool(tmp_path, client)
 

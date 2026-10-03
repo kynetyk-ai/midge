@@ -30,6 +30,7 @@ from tests.fakes import finish, install, install_provider, say, tcall
 
 _MARKER = object()
 
+
 async def _edge() -> AsyncIterator[Any]:
     yield _MARKER
 

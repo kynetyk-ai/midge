@@ -102,6 +102,25 @@ def check_abort() -> None:
            f"errors={errors!r} reply={text_of(frames)!r}")
 
 
+def check_compaction_within_a_turn() -> None:
+    midgectl.up_quiet("--compaction-threshold", "3000")
+    frames = midgectl.prompt(
+        "Read each file under src/toybox/ and tests/ one at a time, "
+        "then give a one-line summary of each after reading all of them."
+    )
+    types = types_of(frames)
+    end = next((f for f in frames if isinstance(f, dict) and f.get("type") == "compaction_end"), None)
+    ordered = ("compaction_end" in types and "agent_end" in types
+               and types.index("compaction_end") < types.index("agent_end"))
+    record("compaction inside a turn, before agent_end",
+           ordered and end is not None and end.get("cut_index") is not None,
+           json.dumps(end))
+    path = session_of()
+    records = [json.loads(line) for line in host_path(path).read_text().splitlines()]
+    count = sum(r.get("type") == "compaction" for r in records)
+    record("compaction record on disk", count >= 1, f"{count} compaction record(s)")
+
+
 def check_compaction() -> None:
     midgectl.up_quiet("--compaction-threshold", "3000")
     seen: list[str] = []
@@ -128,7 +147,7 @@ def check_compaction() -> None:
 
 
 def main() -> int:
-    for check in (check_resume, check_abort, check_compaction):
+    for check in (check_resume, check_abort, check_compaction_within_a_turn, check_compaction):
         try:
             check()
         except Exception as e:  # an e2e failure is a result too

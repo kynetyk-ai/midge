@@ -4,12 +4,12 @@ Compaction replaces the older part of the conversation with a model-written summ
 
 ## When it runs
 
-- **Automatically**, after a turn, when `[compaction] threshold` (or `--compaction-threshold`) is set and the measured context exceeds it. It is off when no threshold is set.
+- **Automatically**, between model requests inside a turn and after a turn, when `[compaction] threshold` (or `--compaction-threshold`) is set and the measured context exceeds it. It is off when no threshold is set.
 - **On request**, through the `compact` command: `Ctrl+P` or `/compact` in the TUI, or the `compact` RPC command. It is refused while a run is in flight.
 
-Compaction never runs during a turn. Summarizing is itself a provider call, and replacing `agent.history` while a turn is appending to it would drop that turn's messages.
+Inside a turn, compaction runs at the agent's loop edge, after every tool result is recorded and before the next request is built, which is the one point where replacing `agent.history` is safe. Before recording the compaction, `Controls` writes the turn's messages so far to the session, because a `compaction` record's `cut_index` is applied to the messages written before it; the end of the turn then writes only what came after.
 
-In RPC mode automatic compaction is reported as `compaction_start` and `compaction_end` events after the turn's `agent_end` (see [rpc](rpc.md)).
+In RPC mode automatic compaction is reported as `compaction_start` and `compaction_end` events (see [rpc](rpc.md)).
 
 ## Measuring the context
 
