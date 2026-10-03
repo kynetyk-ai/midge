@@ -36,6 +36,23 @@ midge opens no socket or port. One process serves one client, one agent and one 
 several agents means running several processes. Logging goes to stderr or the configured log file
 (see [logging](logging.md)).
 
+## Client
+
+`midge.rpc.client.MidgeClient` is the supported Python client; it uses only the standard library,
+so a host can vendor the file.
+
+```python
+from midge.rpc.client import MidgeClient
+
+with MidgeClient() as client:
+    for frame in client.prompt("what is in README.md?"):
+        if frame["type"] == "assistant_text_delta":
+            print(frame["delta"], end="")
+```
+
+It implements the two rules every client needs: waiting on `agent_settled` and passing unknown
+frames through.
+
 ## Framing
 
 - One JSON object per line, UTF-8, `\n`-terminated. Output is `json.dumps(obj, ensure_ascii=False)`.
