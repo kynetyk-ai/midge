@@ -13,8 +13,8 @@ import sys
 import threading
 from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
-from queue import Queue
-from typing import Any
+from queue import Empty, Queue
+from typing import IO, Any
 
 SUPPORTED_PROTOCOLS: frozenset[int] = frozenset({1})
 
@@ -60,14 +60,19 @@ class MidgeClient:
         )
         self._timeout = timeout
         self._id_counter = 0
-        self._waiters: dict[str, Queue] = {}
+        self._waiters: dict[str, Queue[dict[str, Any]]] = {}
         self._waiters_lock = threading.Lock()
-        self._events: Queue = Queue()
+        self._events: Queue[dict[str, Any] | None] = Queue()
         self._closed = False
 
         # Read the ready frame synchronously
         assert self._proc.stdout is not None
-        ready_frame = _read_ready(self._proc.stdout, timeout)
+        try:
+            ready_frame = _read_ready(self._proc.stdout, timeout)
+        except ProtocolError:
+            self._proc.kill()
+            self._proc.wait()
+            raise
 
         proto = ready_frame.get("protocol")
         if proto not in SUPPORTED_PROTOCOLS:
@@ -129,7 +134,9 @@ class MidgeClient:
         self._proc.stdin.flush()
         try:
             frame = q.get(timeout=self._timeout)
-        except Queue.empty:
+        except Empty:
+            with self._waiters_lock:
+                self._waiters.pop(rid, None)
             raise TimeoutError(f"no response for {type!r} within {self._timeout}s") from None
         if not frame.get("success", True):
             raise CommandError(frame.get("command", type), frame.get("error", "unknown error"))
@@ -147,8 +154,14 @@ class MidgeClient:
 
     def prompt(self, message: str) -> Iterator[dict[str, Any]]:
         """Submit a prompt and yield event frames until the agent settles."""
-        # Implemented in step 6b.
-        raise NotImplementedError
+        self.request("prompt", message=message)
+        while True:
+            frame = self._events.get()
+            if frame is None:
+                raise ConnectionError("midge exited before agent_settled")
+            yield frame
+            if frame.get("type") == "agent_settled":
+                return
 
     def abort(self) -> list[dict[str, Any]]:
         """Abort the running turn. Returns dropped queued messages."""
@@ -206,27 +219,29 @@ class MidgeClient:
         self.close()
 
 
-def _read_ready(out: object, timeout: float) -> dict[str, Any]:
+def _read_ready(out: IO[str], timeout: float) -> dict[str, Any]:
     """Read the first ready line from the process stdout.
 
     Uses a separate thread so we can block-read from a text-mode file
     and enforce the timeout. Raises ``ProtocolError`` on timeout or a
     non-ready frame.
     """
-    import threading as _tl
 
-    result: list = []
-    exc: list = []
+    result: list[dict[str, Any]] = []
+    exc: list[Exception] = []
 
     def _do() -> None:
         try:
-            line = out.readline()  # type: ignore[union-attr]
+            line = out.readline()
             if line:
-                result.append(json.loads(line.strip()))
+                try:
+                    result.append(json.loads(line.strip()))
+                except json.JSONDecodeError as e:
+                    exc.append(ProtocolError(f"first frame is not JSON: {e}"))
         except Exception as e:
             exc.append(e)
 
-    t = _tl.Thread(target=_do)
+    t = threading.Thread(target=_do)
     t.start()
     t.join(timeout=timeout)
 
