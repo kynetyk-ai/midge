@@ -51,8 +51,11 @@ import asyncio
 import contextlib
 import io
 import logging
+import os
 import signal
+import stat
 import sys
+import threading
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, BinaryIO
 
@@ -148,6 +151,30 @@ def claim_stdout() -> BinaryIO:
     return real
 
 
+async def _connect_stdin_reader(reader: asyncio.StreamReader) -> None:
+    """Connect stdin to `reader`, using a thread when the selector cannot register it.
+
+    The selector refuses character devices such as `/dev/null` and regular files,
+    so `connect_read_pipe` raises inside an asyncio callback. In those cases a
+    daemon thread feeds data to the loop instead.
+    """
+    loop = asyncio.get_running_loop()
+    fd = sys.stdin.fileno()
+    st = os.fstat(fd)
+    if stat.S_ISFIFO(st.st_mode) or stat.S_ISSOCK(st.st_mode) or sys.stdin.isatty():
+        await loop.connect_read_pipe(lambda: asyncio.StreamReaderProtocol(reader), sys.stdin)
+    else:
+        def _feed() -> None:
+            while True:
+                chunk = os.read(fd, 65536)
+                if not chunk:
+                    loop.call_soon_threadsafe(reader.feed_eof)
+                    break
+                loop.call_soon_threadsafe(reader.feed_data, chunk)
+
+        threading.Thread(target=_feed, daemon=True).start()
+
+
 async def serve_stdio(server: RpcServer) -> None:
     """Run `server` over this process's stdin/stdout.
 
@@ -160,7 +187,7 @@ async def serve_stdio(server: RpcServer) -> None:
     # The default 64 KiB would refuse a large pasted prompt. Raising it moved
     # the cliff rather than removing it; `read_bounded_line` is what removes it.
     reader = asyncio.StreamReader(limit=READ_LIMIT)
-    await loop.connect_read_pipe(lambda: asyncio.StreamReaderProtocol(reader), sys.stdin)
+    await _connect_stdin_reader(reader)
 
     async def read_line() -> bytes:
         return await read_bounded_line(reader)
