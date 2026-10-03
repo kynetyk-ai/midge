@@ -52,6 +52,7 @@ The RPC protocol has its own version number, carried in the `protocol` field of 
 - `py.typed` marker added so type checkers recognize midge as a typed package.
 - Textual moved to an optional `tui` extra; `pip install midge` is enough for `midge --rpc`, and `pip install midge[tui]` adds the TUI.
 - Compaction now also runs between model requests inside a long turn, so an autonomous run's context stays bounded.
+- CI runs across Python 3.11–3.13 and macOS; `scripts/smoke_wheel.py` builds the wheel, installs it in a clean venv, and runs one RPC round trip.
 
 ### Fixed
 
