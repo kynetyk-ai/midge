@@ -59,7 +59,9 @@ RUN git clone "$MIDGE_REPO" /opt/midge \
  && uv venv --python 3.13 /opt/midge/.venv \
  && cd /opt/midge \
  && POETRY_VIRTUALENVS_IN_PROJECT=true POETRY_NO_INTERACTION=1 \
-    poetry install --only main --extras tui
+    poetry install --only main --no-root --extras tui \
+ && poetry build -f wheel \
+ && uv pip install --python .venv/bin/python --no-deps dist/*.whl \
  && ln -s /opt/midge/.venv/bin/midge /usr/local/bin/midge
 
 # Sandbox-environment skill, exposed to midge by agent-skill@1 in midge.yaml.

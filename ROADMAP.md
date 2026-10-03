@@ -167,7 +167,7 @@ As of `main` at `e0d1ae0`, the wheel builds, installs from git into a clean 3.12
 | Compaction inside a long autonomous turn | #162 | M | Done. |
 | `midge --rpc` hung with stdin at `/dev/null` | #163 | S | Done. |
 | A packaged RPC client | — | M | Done. |
-| Sandbox kit and Dockerfile install a release | **proposed** | S | Both build from source; once a tag exists they install the wheel at that tag, so an image is the same artifact a deployer pins. |
+| Sandbox kit and Dockerfile install a release | — | S | Both images now install the built wheel at the release tag. Done. |
 | `pyproject` description says "~2k LOC" | — | S | Done. |
 | CLAUDE.md says `use_profile` is pending | — | S | #60 and #67 closed on 2026-07-30. Done. |
 | CONTRIBUTING.md says to branch off `main` | — | S | CLAUDE.md's git flow cuts feature branches from `develop`. Done. |
