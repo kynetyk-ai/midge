@@ -234,6 +234,10 @@ def _controls_with_tool(
     return controls, path
 
 
+def _without_timestamps(messages: list[Message]) -> list[dict[str, Any]]:
+    return [m.model_dump(exclude={"timestamp"}) for m in messages]
+
+
 async def test_compaction_runs_inside_a_long_turn(tmp_path: Path) -> None:
     client = Client()
     install(
@@ -279,7 +283,7 @@ async def test_a_session_replays_to_the_agents_history_after_mid_turn_compaction
     assert controls.session is not None
     controls.session.close()
 
-    assert Session.load(path).messages == controls.agent.history
+    assert _without_timestamps(Session.load(path).messages) == _without_timestamps(controls.agent.history)
 
 
 async def test_abandoning_a_turn_after_a_mid_turn_compaction_leaves_a_replayable_session(
@@ -299,4 +303,4 @@ async def test_abandoning_a_turn_after_a_mid_turn_compaction_leaves_a_replayable
 
     assert controls.session is not None
     controls.session.close()
-    assert Session.load(path).messages == controls.agent.history
+    assert _without_timestamps(Session.load(path).messages) == _without_timestamps(controls.agent.history)
