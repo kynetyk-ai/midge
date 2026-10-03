@@ -1,8 +1,8 @@
 name: CI
 
 on:
-    # `develop` too: feature PRs land there, and a release PR into `main` used to
-    # be the first time a milestone's changes ever ran in CI.
+  # `develop` too: feature PRs land there, and a release PR into `main` used to
+  # be the first time a milestone's changes ever ran in CI.
   push:
     branches: [main, develop]
   pull_request:
