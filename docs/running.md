@@ -6,12 +6,14 @@ midge works on the directory it starts in: the coding tools read, write and run 
 
 ## Install
 
+The Quick start [in the README](../README.md#quick-start) shows how to install from a release tag. For development:
+
 ```bash
 poetry install                               # from this repo
 export OPENAI_API_KEY=sk-...
 ```
 
-midge reads the key from the environment only and does not load `.env` files. The model and provider come from [configuration](config.md); a missing key is reported when the TUI opens.
+midge reads the key from the environment only and does not load `.env` files. The model and provider come from [configuration](config.md); a missing key is reported when the TUI opens. Without the `tui` extra only `midge --rpc` is available; add `[tui]` for the TUI.
 
 `poetry run midge` works only inside this repo, because Poetry runs it from there. To start midge in another project, call the installed script:
 

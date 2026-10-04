@@ -1,7 +1,7 @@
 [project]
 name = "midge"
 version = "0.1.0"
-description = "Hackable Python agent harness — readable, retargetable, ~2k LOC."
+description = "Hackable Python agent harness, readable and retargetable."
 authors = [{ name = "Joshua Ziel", email = "josh@kynetyk.ai" }]
 license = "MIT"
 readme = "README.md"
@@ -9,10 +9,12 @@ requires-python = ">=3.11,<4.0"
 dependencies = [
     "openai>=1.50.0,<2.0.0",
     "pydantic>=2.13.5,<3.0",
-    "textual>=8.2.8,<9.0.0",
     "pyyaml (>=6.0.3,<7.0.0)",
     "tenacity (>=9.1.4,<10.0.0)",
 ]
+
+[project.optional-dependencies]
+tui = ["textual>=8.2.8,<9.0.0"]
 
 [project.scripts]
 midge = "midge.cli:main"
@@ -25,6 +27,7 @@ pytest = "^9.1"
 pytest-asyncio = "^1.4"
 ruff = "^0.16"
 pyright = "^1.1.414"
+textual = ">=8.2.8,<9.0.0"
 types-pyyaml = "^6.0.12.20260906"
 
 [build-system]

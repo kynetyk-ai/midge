@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from midge import cli
+from midge import cli, tui
 from midge.agent import Agent
 from midge.client import Client
 from midge.messages import UserMessage
@@ -415,7 +415,7 @@ def _run_cli(argv: list[str], monkeypatch: pytest.MonkeyPatch) -> Agent:
     """Drive `cli.main` far enough to inspect the composed agent."""
     captured: list[Agent] = []
     # `run_tui` takes the `Controls` both front-ends share; the agent is on it.
-    monkeypatch.setattr(cli, "run_tui", lambda controls, **kw: captured.append(controls.agent))
+    monkeypatch.setattr(tui, "run_tui", lambda controls, **kw: captured.append(controls.agent))
     cli.main(argv)
     return captured[0]
 

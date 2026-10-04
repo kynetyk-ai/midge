@@ -20,10 +20,13 @@ The agent loop, provider client, tool registry, extension loader, RPC server, se
 ## Quick start
 
 ```bash
-poetry install
+pipx install "midge[tui] @ git+https://github.com/kynetyk-ai/midge@v0.1.0"
 export OPENAI_API_KEY=sk-...
-alias midge="$(poetry -C ~/coding/midge env info -p)/bin/midge"
+```
 
+Without `[tui]` only `midge --rpc` is available.
+
+```bash
 cd ~/code/my-project
 midge                                        # the TUI
 midge --rpc                                  # the RPC server on stdin/stdout
