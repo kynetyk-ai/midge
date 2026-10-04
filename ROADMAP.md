@@ -26,7 +26,7 @@ marked **proposed** have no issue yet and are filed when work on them starts. Si
 is an afternoon, **M** a few sessions, **L** needs a design pass first. Within a milestone, items
 are listed roughly in the order worth doing them.
 
-*Status as of 2026-10-02: M1, M2 and M3 done; the release milestone, now scoped as a deployable package, is what remains. This is a living document: update it in the PR that closes an item.*
+*Status as of 2026-10-03: M1, M2, M3 and the release milestone are done; midge is at v0.1.0. This is a living document: update it in the PR that closes an item.*
 
 ---
 
@@ -135,15 +135,14 @@ on `develop` where it applied. The exit criteria, as met:
 
 ---
 
-## Release — a deployable package
+## Release — a deployable package ✅
 
 **Goal:** midge is something another project depends on by version, not by commit. A deployer pins
 a tag, installs only what an unattended agent needs into a sandbox image, type-checks its own
 extensions against midge, and drives `midge --rpc` from a host process with a client that moves
 in step with the protocol.
 
-As of `main` at `e0d1ae0`, the wheel builds, installs from git into a clean 3.12 venv, and
-`midge --version` runs. What is missing is everything that makes that repeatable and lean.
+**Done**, as `v0.1.0`: the version has one source, the wheel is smoke-tested in CI across Python 3.11–3.13 on Ubuntu and macOS, a headless install carries no TUI, the package ships `py.typed`, hosts have `midge.rpc.client`, and both images install the built wheel. Two bugs found while driving midge unattended were fixed on the way: compaction never ran inside a long turn (#162), and `midge --rpc` hung with stdin at `/dev/null` (#163).
 
 **Exit criteria:**
 
@@ -157,20 +156,18 @@ As of `main` at `e0d1ae0`, the wheel builds, installs from git into a clean 3.12
   declarations get midge's annotations, not `Unknown`.
 - **A host has a supported client.** Embedding no longer means copying `examples/rpc_client.py`.
 
-| Item | Issue | Size | Notes |
-|---|---|---|---|
-| One source for the version, a CHANGELOG, tag `v0.1.0` | **proposed** | S | The version lives in `pyproject.toml` and `__init__.py`, and there are no tags. Deployers, and the sandbox kit, pin a commit hash today. |
-| Ship `py.typed` | — | S | Done. |
-| Textual as an optional `tui` extra | — | S | Done. |
-| Build the wheel and smoke-test the installed `midge` | — | S | Done. |
-| CI across Python 3.11–3.13 and macOS | — | S | Done. |
-| Compaction inside a long autonomous turn | #162 | M | Done. |
-| `midge --rpc` hung with stdin at `/dev/null` | #163 | S | Done. |
-| A packaged RPC client | — | M | Done. |
-| Sandbox kit and Dockerfile install a release | **proposed** | S | Both build from source; once a tag exists they install the wheel at that tag, so an image is the same artifact a deployer pins. |
-| `pyproject` description says "~2k LOC" | — | S | Done. |
-| CLAUDE.md says `use_profile` is pending | — | S | #60 and #67 closed on 2026-07-30. Done. |
-| CONTRIBUTING.md says to branch off `main` | — | S | CLAUDE.md's git flow cuts feature branches from `develop`. Done. |
+| Item | Issue | PR |
+|---|---|---|
+| One source for the version, a CHANGELOG, tag `v0.1.0` | — | this release |
+| Ship `py.typed` | — | this release |
+| Textual as an optional `tui` extra | — | this release |
+| Compaction inside a long autonomous turn | #162 | this release |
+| `midge --rpc` hung with stdin at `/dev/null` | #163 | this release |
+| Build the wheel and smoke-test the installed `midge` | — | this release |
+| CI across Python 3.11–3.13 and macOS | — | this release |
+| A packaged RPC client, `midge.rpc.client` | — | this release |
+| Sandbox kit and Dockerfile install the built wheel | — | this release |
+| `pyproject` description, CONTRIBUTING branch rule | — | this release |
 
 ---
 
@@ -182,16 +179,11 @@ These shape items above. None of them is settled by writing them down here.
   it an adapter rather than a branch, but CLAUDE.md asks for a real reason, not symmetry.
 - **Settings for extensions.** An extension has no `Config` of its own, so the notes example reads
   `MIDGE_NOTES_KB` from the environment. Worth solving once a domain needs more than a path.
-- **Where the RPC client ships.** Inside `midge` is simplest and keeps client and protocol in one
-  version, but a host then installs midge's dependencies to talk to a pipe. A separate,
-  dependency-free distribution avoids that at the cost of a second release. With Textual optional,
-  the cost of the first is openai, pydantic, pyyaml and tenacity.
-- **PyPI or tags only.** A public repo with tags is enough to pin by version. Publishing to PyPI
-  needs the name to be free and a release workflow; decide before `v0.1.0` so the CHANGELOG says
-  how to install it.
 
-Decided during M1, recorded so they are not reopened by accident:
+Decided, recorded so they are not reopened by accident:
 
+- **The RPC client ships inside midge** as `midge.rpc.client`, standard library only, so client and protocol share one version.
+- **Tags only, no PyPI, for v0.1.0.** Install with `pipx install "midge[tui] @ git+https://github.com/kynetyk-ai/midge@v0.1.0"`.
 - **midge is RPC-first.** The TUI is the human-facing mode; the unattended one is primary. Anything
   that needs a person in the loop lives in `tui/` and never blocks RPC.
 - **#101:** anything not read-only runs alone and in order; reads run together. `@tool(read_only=True)`

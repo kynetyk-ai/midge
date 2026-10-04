@@ -11,7 +11,7 @@
 # The container is the boundary for what the agent can touch. It sees the
 # mounted project and nothing else of the host, unless more is mounted.
 
-# --- build: resolve dependencies from poetry.lock -----------------------------
+# --- build: install dependencies, then build and install the wheel -----------
 FROM python:3.13-slim AS build
 
 RUN pip install --no-cache-dir poetry==2.2.1
@@ -20,9 +20,10 @@ WORKDIR /opt/midge
 ENV POETRY_VIRTUALENVS_IN_PROJECT=true \
     POETRY_NO_INTERACTION=1
 COPY pyproject.toml poetry.lock README.md ./
-RUN poetry install --only main --extras tui --no-root
-COPY src ./src
-RUN poetry install --only main --extras tui
+RUN poetry install --only main --no-root --extras tui
+COPY . .
+RUN poetry build -f wheel
+RUN .venv/bin/python -m pip install --no-deps dist/*.whl
 
 # --- runtime ------------------------------------------------------------------
 FROM python:3.13-slim
@@ -42,7 +43,7 @@ ARG GID=1000
 RUN groupadd --gid "$GID" midge \
  && useradd --uid "$UID" --gid "$GID" --create-home --shell /bin/bash midge
 
-COPY --from=build /opt/midge /opt/midge
+COPY --from=build /opt/midge/.venv /opt/midge/.venv
 COPY examples /opt/midge/examples
 
 ENV PATH=/opt/midge/.venv/bin:$PATH \
