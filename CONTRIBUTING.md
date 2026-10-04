@@ -47,7 +47,7 @@ If you'd like the extension upstreamed as a built-in, open an issue describing t
 - Branch off `develop`; PRs target `develop`. `main` receives `develop` only through a merge commit.
 - One logical change per PR; small PRs are easier to review and revert.
 - Commit messages: imperative mood, scope prefix when natural (`feat(extensions):`, `fix(rpc):`, `docs:`). The history follows that pattern.
-- CI runs `ruff`, `pyright`, and `pytest`; please run them locally before pushing.
+- CI runs `ruff`, `pyright`, and `pytest`; please run them locally before pushing. CI also builds the wheel and smoke-tests it; run `poetry run python scripts/smoke_wheel.py` locally.
 - A PR that changes behaviour a user or embedder can observe adds a line to `CHANGELOG.md` under `## [Unreleased]`. A release renames that heading to the version and date, and starts a new empty `## [Unreleased]`.
 
 ## Reporting a bug
