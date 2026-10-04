@@ -2,8 +2,8 @@
 
 The algorithm walks the history backwards from the end, finds the largest
 suffix that fits in `keep_recent_tokens`, and summarizes everything before
-that cut. Cuts are only made at `UserMessage` boundaries so a tool call and
-its matching tool result never get split across the summary boundary.
+that cut. A cut may fall on a `UserMessage` or `AssistantMessage` as long
+as no tool call is left open across the boundary.
 
 The summary is produced by a separate LLM call using `Client.stream` with a
 dedicated system prompt and is written into the new history as a single
@@ -27,6 +27,8 @@ from midge.logs import payload
 from midge.messages import (
     AssistantMessage,
     Message,
+    ToolCall,
+    ToolResultMessage,
     Usage,
     UserMessage,
     make_summary_message,
@@ -132,6 +134,29 @@ def needs_compaction(
     return measure_context(history, count_tokens_fn=count_tokens_fn) > threshold_tokens
 
 
+def _find_cut_points(history: Sequence[Message]) -> list[int]:
+    """Return indices at which a safe cut can be made.
+
+    Index i (0 < i < len) is a cut point when history[i] is a UserMessage
+    or AssistantMessage and every ToolCall issued by AssistantMessages before i
+    has its ToolResultMessage also before i.
+    """
+    cut_points: list[int] = []
+    open_calls: set[str] = set()
+    for i, m in enumerate(history):
+        if isinstance(m, AssistantMessage):
+            if i > 0 and len(open_calls) == 0:
+                cut_points.append(i)
+            for c in m.content:
+                if isinstance(c, ToolCall):
+                    open_calls.add(c.id)
+        elif isinstance(m, ToolResultMessage):
+            open_calls.discard(m.tool_call_id)
+        elif i > 0 and len(open_calls) == 0:
+            cut_points.append(i)
+    return cut_points
+
+
 def find_cut_index(
     history: Sequence[Message],
     *,
@@ -139,15 +164,10 @@ def find_cut_index(
     count_tokens_fn: CountTokensFn = count_tokens,
 ) -> int:
     """Return idx such that history[:idx] should be summarized and history[idx:]
-    kept. The cut snaps to a UserMessage boundary (so tool call/result pairs
-    are never split). Returns 0 to signal "no compaction needed/possible":
+    kept. The cut falls at a safe cut point: a UserMessage or AssistantMessage
+    where no tool call is left open. Returns 0 for an empty history, a history that fits, or no cut point.
 
-    - empty history
-    - no UserMessage in history
-    - the entire history fits within keep_recent_tokens (best cut would be 0)
-    - the only UserMessage is at index 0
-
-    If even the suffix from the latest UserMessage exceeds the budget, that
+    If even the suffix from the latest cut point exceeds the budget, that
     suffix is kept anyway — we never drop the most recent turn.
 
     Unlike `measure_context` this stays on the estimator: `usage` reports whole
@@ -157,16 +177,19 @@ def find_cut_index(
     if not history:
         return 0
 
-    user_indices = [i for i, m in enumerate(history) if isinstance(m, UserMessage)]
-    if not user_indices:
+    if count_tokens_fn(history) <= keep_recent_tokens:
         return 0
 
-    latest = user_indices[-1]
+    cut_points = _find_cut_points(history)
+    if not cut_points:
+        return 0
+
+    latest = cut_points[-1]
     if count_tokens_fn(history[latest:]) > keep_recent_tokens:
-        return latest if latest > 0 else 0
+        return latest
 
     best = latest
-    for idx in reversed(user_indices[:-1]):
+    for idx in reversed(cut_points[:-1]):
         if count_tokens_fn(history[idx:]) <= keep_recent_tokens:
             best = idx
         else:
@@ -175,12 +198,12 @@ def find_cut_index(
     return best if best > 0 else 0
 
 
-def _snap_to_user_boundary(history: Sequence[Message], idx: int) -> int:
-    """Move `idx` forward to the next `UserMessage`, or past the end if there
-    is none. Cutting anywhere else splits a tool call from its result."""
-    for i in range(max(idx, 0), len(history)):
-        if isinstance(history[i], UserMessage):
-            return i
+def _snap_to_cut_point(history: Sequence[Message], idx: int) -> int:
+    """Move `idx` forward to the next valid cut point, or past the end."""
+    cut_points = _find_cut_points(history)
+    for cp in cut_points:
+        if cp >= idx:
+            return cp
     return len(history)
 
 
@@ -261,7 +284,7 @@ async def compact(
             if res.cut_index is not None:
                 # A hook index landing mid-sequence would put a tool result at
                 # the head of the new history, with nothing issuing its call.
-                cut_idx = _snap_to_user_boundary(history, res.cut_index)
+                cut_idx = _snap_to_cut_point(history, res.cut_index)
                 if cut_idx != res.cut_index:
                     _logger.info(
                         "compaction_cut_snapped requested=%d used=%d", res.cut_index, cut_idx

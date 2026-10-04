@@ -8,6 +8,7 @@ import pytest
 
 from midge.client import Client
 from midge.compaction import (
+    _find_cut_points,
     compact,
     count_tokens,
     find_cut_index,
@@ -116,8 +117,8 @@ def test_find_cut_index_oversized_last_turn_kept_anyway() -> None:
         AssistantMessage(content=[TextContent(text="b" * 5000)]),
     ]
     cut = find_cut_index(history, keep_recent_tokens=100)
-    assert cut == 2
-    assert isinstance(history[cut], UserMessage)
+    assert cut == 3
+    assert isinstance(history[cut], AssistantMessage)
 
 
 def test_find_cut_index_picks_earliest_fitting_user_boundary() -> None:
@@ -420,3 +421,195 @@ def test_needs_compaction_respects_an_explicit_counter() -> None:
         _assistant("ok", usage=Usage(input=1, output=1)),
     ]
     assert needs_compaction(history, threshold_tokens=10, count_tokens_fn=lambda _: 999) is True
+
+
+# ---- _find_cut_points ----
+
+
+def test_cut_points_autonomous_turn_no_text_only_assistant() -> None:
+    """A real autonomous turn: User + N pairs of (Assistant with one ToolCall, Result),
+    with no text-only assistant messages between them. Every assistant message (after the
+    previous result closed the call) is a valid cut point."""
+    history: list[Message] = [UserMessage(content="prompt")]
+    for i in range(6):
+        history.append(AssistantMessage(
+            content=[ToolCall(id=f"c{i}", name="read", arguments={})],
+            stop_reason="tool_use",
+        ))
+        history.append(ToolResultMessage(
+            tool_call_id=f"c{i}",
+            tool_name="read",
+            content=[TextContent(text=f"result{i}")],
+        ))
+    # 13 messages: [0]=User, [1]=A(c0), [2]=R(c0), [3]=A(c1), [4]=R(c1), ... [11]=A(c5), [12]=R(c5)
+    cps = _find_cut_points(history)
+    assert cps == [1, 3, 5, 7, 9, 11]
+
+
+def test_find_cut_index_autonomous_turn() -> None:
+    """find_cut_index on the same autonomous-turn shape, using last-4 budget."""
+    history: list[Message] = [UserMessage(content="prompt")]
+    for i in range(6):
+        history.append(AssistantMessage(
+            content=[ToolCall(id=f"c{i}", name="read", arguments={})],
+            stop_reason="tool_use",
+        ))
+        history.append(ToolResultMessage(
+            tool_call_id=f"c{i}",
+            tool_name="read",
+            content=[TextContent(text=f"result{i}")],
+        ))
+    cut = find_cut_index(history, keep_recent_tokens=count_tokens(history[-4:]))
+    assert cut == 9
+
+def test_cut_points_single_prompt_many_tool_pairs() -> None:
+    """A single UserMessage followed by assistant/tool pairs creates many cut points."""
+    history: list[Message] = [
+        UserMessage(content="prompt"),
+    ]
+    for i in range(3):
+        history.append(AssistantMessage(
+            content=[ToolCall(id=f"c{i}", name="read", arguments={})],
+            stop_reason="tool_use",
+        ))
+        history.append(ToolResultMessage(
+            tool_call_id=f"c{i}",
+            tool_name="read",
+            content=[TextContent(text=f"result{i}")],
+        ))
+        # Follow-up assistant message (no tool call)
+        history.append(AssistantMessage(
+            content=[TextContent(text=f"ok{i}")],
+            stop_reason="stop",
+        ))
+      # Cut at index 0 is excluded; all AssistantMessages with no prior open
+      # calls are valid cut points (both tool-using and text-only)
+    cps = _find_cut_points(history)
+      # Pattern: A(call) is a cut point if no open calls precede it (indices 1, 4, 7).
+      # Result messages (indices 2, 5, 8) are not cut points.
+      # Text-only A (indices 3, 6, 9) also have no open calls, so are cut points.
+    assert cps == [1, 3, 4, 6, 7, 9]
+    assert 2 not in cps    # tool result for c0
+    assert 5 not in cps    # tool result for c1
+    assert 8 not in cps    # tool result for c2
+
+
+def test_cut_points_no_cut_between_tool_call_and_second_result() -> None:
+    """An assistant with two tool calls: no cut point between call 1 and result 2."""
+    history: list[Message] = [
+        UserMessage(content="go"),
+        AssistantMessage(
+            content=[
+                ToolCall(id="t1", name="read", arguments={}),
+                ToolCall(id="t2", name="bash", arguments={}),
+            ],
+            stop_reason="tool_use",
+        ),
+        ToolResultMessage(tool_call_id="t1", tool_name="read", content=[TextContent(text="r1")]),
+        ToolResultMessage(tool_call_id="t2", tool_name="bash", content=[TextContent(text="r2")]),
+        AssistantMessage(content=[TextContent(text="done")], stop_reason="stop"),
+    ]
+    cps = _find_cut_points(history)
+    # Index 2 (first result) is not a cut point: t2 still open
+    assert 2 not in cps
+    # Index 3 (second result) is not a cut point: it is a ToolResultMessage, not User/Assistant
+    assert 3 not in cps
+    # Index 4 (assistant "done", no open calls) is a cut point
+    assert 4 in cps
+
+
+def test_find_cut_index_single_prompt_many_pairs() -> None:
+    """One UserMessage + many assistant/tool pairs, over budget: cut at an AssistantMessage."""
+    history: list[Message] = [
+        UserMessage(content="prompt"),
+    ]
+    for i in range(5):
+        history.append(AssistantMessage(
+            content=[ToolCall(id=f"c{i}", name="read", arguments={})],
+            stop_reason="tool_use",
+        ))
+        history.append(ToolResultMessage(
+            tool_call_id=f"c{i}",
+            tool_name="read",
+            content=[TextContent(text="x" * 200)]),
+        )
+        history.append(AssistantMessage(
+            content=[TextContent(text="x" * 200)],
+            stop_reason="stop",
+        ))
+    # Total history is large; budget that fits ~2 turns (6 msgs at end)
+    budget = count_tokens(history[-6:]) + 5
+    cut = find_cut_index(history, keep_recent_tokens=budget)
+    # Cut should be > 0 and land on an AssistantMessage (not the sole UserMessage at 0)
+    assert cut > 0
+    assert isinstance(history[cut], AssistantMessage)
+    open_before_cut: set[str] = set()
+    for m in history[:cut]:
+        if isinstance(m, AssistantMessage):
+            for c in m.content:
+                if isinstance(c, ToolCall):
+                    open_before_cut.add(c.id)
+        elif isinstance(m, ToolResultMessage):
+            open_before_cut.discard(m.tool_call_id)
+    # All calls before cut have results before cut
+    assert len(open_before_cut) == 0
+
+
+async def test_hook_cut_index_snaps_to_cut_point_past_tool_result() -> None:
+    """A hook-supplied cut_index on a ToolResultMessage is moved to next cut point."""
+    history: list[Message] = [
+        UserMessage(content="one"),
+        AssistantMessage(
+            content=[ToolCall(id="t1", name="read", arguments={})],
+            stop_reason="tool_use",
+        ),
+        ToolResultMessage(tool_call_id="t1", tool_name="read", content=[TextContent(text="x")]),
+        UserMessage(content="two"),
+        AssistantMessage(content=[TextContent(text="done")], stop_reason="stop"),
+    ]
+    hooks = Hooks()
+    # cut_index=2 lands on a ToolResultMessage
+    hooks.on("before_compact", lambda ev, ctx: CompactResult(cut_index=2))
+    client = Client()
+    install(client, [[say("SUMMARY"), finish()]])
+    result = await compact(
+        history, client=client, model="gpt-4o", keep_recent_tokens=10, hooks=hooks
+    )
+    assert result is not None
+    _, _, cut_idx = result
+    # 2 is a ToolResultMessage, snapped forward to next cut point (index 3, which is UserMessage "two")
+    assert cut_idx == 3
+
+
+async def test_compact_single_prompt_history_returns_summary_and_assistant() -> None:
+    """compact() on a single-prompt history returns summary + AssistantMessage suffix."""
+    history: list[Message] = [
+        UserMessage(content="go"),
+    ]
+    for i in range(4):
+        history.append(AssistantMessage(
+            content=[ToolCall(id=f"c{i}", name="read", arguments={})],
+            stop_reason="tool_use",
+        ))
+        history.append(ToolResultMessage(
+            tool_call_id=f"c{i}",
+            tool_name="read",
+            content=[TextContent(text="x" * 300)],
+        ))
+        history.append(AssistantMessage(
+            content=[TextContent(text="x" * 300)],
+            stop_reason="stop",
+        ))
+    budget = count_tokens(history[-6:]) + 5
+    client = Client()
+    install(client, [[say("## Goal\nDone"), finish()]])
+    result = await compact(
+        history, client=client, model="m", keep_recent_tokens=budget
+    )
+    assert result is not None
+    new_history, summary_text, cut_idx = result
+    assert cut_idx > 0
+    assert isinstance(new_history[0], UserMessage)
+    assert "<summary>" in new_history[0].content
+    assert isinstance(new_history[1], AssistantMessage)
+    assert summary_text == "## Goal\nDone"

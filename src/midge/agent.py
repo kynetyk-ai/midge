@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -181,6 +181,8 @@ class Agent:
         self.steering = steering
         self.history: list[Message] = []
         self._running = False
+        # Run at the loop edge, where history may change; see `Controls.run_turn`.
+        self.between_requests: Callable[[], AsyncIterator[Any]] | None = None
 
     async def stream(self, user_input: str | UserMessage) -> AsyncGenerator[AgentEvent, None]:
         # `history` is mutated in place throughout the turn. A second concurrent
@@ -399,6 +401,9 @@ class Agent:
             # the next request has not been built yet. The only safe seam.
             for ev in self._drain_steering(new_messages):
                 yield ev
+            if self.between_requests is not None:
+                async for ev in self.between_requests():
+                    yield ev
 
         if self.hooks is not None:
             await self.hooks.emit(TurnEnd(new_messages=new_messages))

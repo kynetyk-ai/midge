@@ -13,13 +13,14 @@ from typing import Any
 
 import pytest
 
-from midge.agent import Agent
+from midge.agent import Agent, AgentEnd
 from midge.client import Client, TextDelta
 from midge.commands import CompactionEnd, CompactionStart, Controls
 from midge.compaction import count_tokens
 from midge.messages import AssistantMessage, Message, TextContent, UserMessage
 from midge.persistence import Session, read_transcript
-from tests.fakes import ScriptedProvider, finish, install, install_gated, say
+from midge.tools import ToolRegistry, tool
+from tests.fakes import ScriptedProvider, finish, install, install_gated, say, tcall
 
 # Small enough that everything but the last exchange is summarized.
 _KEEP_ONE_TURN = 120
@@ -196,3 +197,110 @@ async def test_cancelling_during_compaction_changes_nothing(tmp_path: Path) -> N
     assert controls.session is not None
     controls.session.close()
     assert len(Session.load(path).messages) == 2
+
+
+@tool
+async def _noop() -> str:
+    """Return a long result so the context grows."""
+    return "ok " + "y" * 200
+
+
+def _long_turn_replies() -> list[list]:
+    """Six model responses for a long turn."""
+    return [
+        [tcall(id="c1", name="_noop", args="{}"), finish("tool_use")],
+        [say("## Goal\nsummary one"), finish()],
+        [tcall(id="c2", name="_noop", args="{}"), finish("tool_use")],
+        [say("## Goal\nsummary two"), finish()],
+        [say("done"), finish()],
+        [say("## Goal\nsummary three"), finish()],
+    ]
+
+
+def _controls_with_tool(
+    tmp_path: Path, client: Client, **kw: Any
+) -> tuple[Controls, Path]:
+    """Controls helper with `_noop` tool and pre-loaded session history."""
+    path = tmp_path / "t.jsonl"
+    history = _long_history()
+    session = Session.new(path, model="m")
+    session.append_many(history)
+    keep_recent = count_tokens(history[-2:]) + 5
+    agent = Agent(client=client, model="m", tools=ToolRegistry([_noop]))
+    controls = Controls(
+        agent, session=session, compaction_threshold=1, compaction_keep_recent=keep_recent, **kw
+    )
+    agent.history = list(history)
+    return controls, path
+
+
+def _without_timestamps(messages: list[Message]) -> list[dict[str, Any]]:
+    return [m.model_dump(exclude={"timestamp"}) for m in messages]
+
+
+async def test_compaction_runs_inside_a_long_turn(tmp_path: Path) -> None:
+    client = Client()
+    install(
+        client,
+        _long_turn_replies(),
+    )
+    controls, _ = _controls_with_tool(tmp_path, client)
+
+    events = await _drain(controls, "go")
+
+    first_compaction_end_idx = next(i for i, e in enumerate(events) if isinstance(e, CompactionEnd))
+    agent_end_idx = next(i for i, e in enumerate(events) if isinstance(e, AgentEnd))
+    assert first_compaction_end_idx < agent_end_idx
+    first_end = events[first_compaction_end_idx]
+    assert first_end.cut_index is not None
+    assert first_end.error is None
+
+
+async def test_the_request_after_a_mid_turn_compaction_is_smaller(tmp_path: Path) -> None:
+    client = Client()
+    bodies = install(
+        client,
+        _long_turn_replies(),
+    )
+    controls, _ = _controls_with_tool(tmp_path, client)
+
+    await _drain(controls, "go")
+    # request 0 is before compaction, 1 is the summary, 2 is after compaction
+    assert len(bodies[2]["messages"]) < len(bodies[0]["messages"])
+
+
+async def test_a_session_replays_to_the_agents_history_after_mid_turn_compaction(
+    tmp_path: Path,
+) -> None:
+    client = Client()
+    install(
+        client,
+        _long_turn_replies(),
+    )
+    controls, path = _controls_with_tool(tmp_path, client)
+
+    await _drain(controls, "go")
+    assert controls.session is not None
+    controls.session.close()
+
+    assert _without_timestamps(Session.load(path).messages) == _without_timestamps(controls.agent.history)
+
+
+async def test_abandoning_a_turn_after_a_mid_turn_compaction_leaves_a_replayable_session(
+    tmp_path: Path,
+) -> None:
+    client = Client()
+    install(
+        client,
+        _long_turn_replies(),
+    )
+    controls, path = _controls_with_tool(tmp_path, client)
+
+    async with aclosing(controls.run_turn("go")) as events:
+        async for ev in events:
+            if isinstance(ev, CompactionEnd):
+                break
+
+    assert controls.session is not None
+    controls.session.close()
+    assert _without_timestamps(Session.load(path).messages) == _without_timestamps(controls.agent.history)
