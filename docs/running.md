@@ -6,12 +6,14 @@ midge works on the directory it starts in: the coding tools read, write and run 
 
 ## Install
 
+The Quick start [in the README](../README.md#quick-start) shows how to install from a release tag. For development:
+
 ```bash
 poetry install                               # from this repo
 export OPENAI_API_KEY=sk-...
 ```
 
-midge reads the key from the environment only and does not load `.env` files. The model and provider come from [configuration](config.md); a missing key is reported when the TUI opens.
+midge reads the key from the environment only and does not load `.env` files. The model and provider come from [configuration](config.md); a missing key is reported when the TUI opens. Without the `tui` extra only `midge --rpc` is available; add `[tui]` for the TUI.
 
 `poetry run midge` works only inside this repo, because Poetry runs it from there. To start midge in another project, call the installed script:
 
@@ -65,7 +67,7 @@ The protocol, a minimal client and embedding guidance are in [rpc](rpc.md).
 
 ## In a container
 
-The root `Dockerfile` builds midge from `poetry.lock` into an image that works on whatever is mounted at `/workspace`. The agent sees that directory and nothing else of the host, so the container bounds what `bash` can reach.
+The root `Dockerfile` builds the midge wheel from source and installs it into an image that works on whatever is mounted at `/workspace`. The agent sees that directory and nothing else of the host, so the container bounds what `bash` can reach.
 
 ```bash
 docker build -t midge .                     # on Linux: --build-arg UID=$(id -u) --build-arg GID=$(id -g)
@@ -94,7 +96,7 @@ sbx run --name midge-myproj                  # re-attach later
 
 - The project is mounted, so the agent's edits appear on the host immediately.
 - Arguments after `--` go to `midge`: `sbx run --name midge-myproj -- --continue`.
-- The image installs midge from GitHub at the commit in `args.ref.default` in `midge.yaml`, not from your checkout. To upgrade, change that commit. `sbx` rebuilds the image only when the kit directory changes, and `sbx run --kit-arg` cannot set `ref` because it is resolved at build time.
+- The image installs midge from GitHub at the tag or commit in `args.ref.default` (a release tag by default). `sbx` rebuilds the image only when the kit directory changes, and `sbx run --kit-arg` cannot set `ref` because it is resolved at build time.
 - midge starts in the project, so its `.midge/config.toml` applies (see [config](config.md)).
 - The kit's `sandbox-env` skill, which tells the agent how to use the sandbox's package managers and network, loads from `[skills] system_dir`. Your host's shared skills store is mounted at `~/.agents/skills`.
 - `sbx ls` lists sandboxes, `sbx stop NAME` stops one and `sbx rm NAME` deletes it.

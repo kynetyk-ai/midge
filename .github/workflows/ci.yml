@@ -18,14 +18,19 @@ concurrency:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v7
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
 
       - name: Install Poetry
         run: pipx install poetry
@@ -46,4 +51,21 @@ jobs:
       # writing the code. Repeated here because the table it prints is the
       # actionable part, and a `-q` pytest run swallows it.
       - name: Size budget (core harness)
+        if: ${{ runner.os == 'Linux' && matrix.python-version == '3.11' }}
         run: poetry run python scripts/loc.py
+
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install Poetry
+        run: pipx install poetry
+
+      - name: Wheel smoke test
+        run: python scripts/smoke_wheel.py

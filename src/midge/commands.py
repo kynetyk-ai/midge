@@ -56,7 +56,7 @@ from midge.compaction import compact, needs_compaction
 from midge.config import SubagentConfig
 from midge.config import emit as emit_diagnostics
 from midge.extensions import keep_builtins, load_extensions
-from midge.messages import UserMessage
+from midge.messages import AssistantMessage, UserMessage
 from midge.persistence import (
     ProfileRecord,
     Session,
@@ -281,6 +281,10 @@ class Controls:
         self.session_dir = session_dir
         self.runner = runner
         self.on_subagent_event = on_subagent_event
+        # Running-turn state for intra-turn compaction.
+        self._turn_mark = 0
+        self._turn_written = 0
+        self._compacted_after: AssistantMessage | None = None
 
     # --- what the front-ends read to render themselves --------------------
 
@@ -468,7 +472,9 @@ class Controls:
         replaced, and those messages are dropped from context with nothing
         saying so. The TUI's automatic compaction was only ever safe because it
         runs between turns; putting it on a keystroke is what made this
-        reachable.
+        reachable. The automatic path now also runs inside a turn, but only at
+        the agent loop edge, which a command arriving at an arbitrary moment cannot
+        use.
         """
         self._refuse_if_busy("compact")
         summary, cut_index = await self._compact()
@@ -496,6 +502,50 @@ class Controls:
             self.session.append_compaction(summary=summary, cut_index=cut_index)
         return summary, cut_index
 
+    async def _maybe_compact(self) -> AsyncGenerator[CompactionStart | CompactionEnd, None]:
+        if self.compaction_threshold is None or not needs_compaction(
+            self.agent.history, threshold_tokens=self.compaction_threshold
+        ):
+            return
+        yield CompactionStart()
+        try:
+            _, cut_index = await self._compact()
+        except asyncio.CancelledError:
+            _logger.info("compaction_cancelled")
+            raise
+        except Exception as e:
+            _logger.exception("compaction_failed")
+            yield CompactionEnd(None, len(self.agent.history), error=str(e))
+            return
+        yield CompactionEnd(cut_index, len(self.agent.history))
+
+    async def _compact_between_requests(self) -> AsyncGenerator[CompactionStart | CompactionEnd, None]:
+        """Run at the agent's loop edge, where history may be replaced.
+
+        Writes the turn's messages so far to the session first, because a
+        compaction record's cut_index is applied to what is already on disk.
+        """
+        latest: AssistantMessage | None = None
+        for m in reversed(self.agent.history):
+            if isinstance(m, AssistantMessage):
+                latest = m
+                break
+        if latest is None or latest is self._compacted_after:
+            return
+        if self.compaction_threshold is None or not needs_compaction(
+            self.agent.history, threshold_tokens=self.compaction_threshold
+        ):
+            return
+        if self.session is not None:
+            tail = self.agent.history[self._turn_mark:]
+            self.session.append_many(tail)
+            self._turn_written += len(tail)
+        self._turn_mark = len(self.agent.history)
+        async for ev in self._maybe_compact():
+            yield ev
+        self._turn_mark = len(self.agent.history)
+        self._compacted_after = latest
+
     async def run_turn(
         self, message: str | UserMessage
     ) -> AsyncGenerator[AgentEvent | CompactionStart | CompactionEnd, None]:
@@ -513,39 +563,31 @@ class Controls:
         tool calls by then, and `repair_history` drops what a provider would
         refuse, so the tail is always safe to resume.
 
-        Compaction runs after the turn, never during it, which is what makes
-        swapping `agent.history` safe; see `compact`.
+        Compaction also runs between model requests inside a turn, through the agent's
+        loop edge (`_compact_between_requests`), which writes the turn so far before
+        recording the compaction.
         """
-        mark = len(self.agent.history)
+        self._turn_mark = len(self.agent.history)
+        self._turn_written = 0
+        self._compacted_after = None
+        self.agent.between_requests = self._compact_between_requests
         persisted = False
         try:
             async with aclosing(self.agent.stream(message)) as events:
                 async for ev in events:
                     if isinstance(ev, AgentEnd) and self.session is not None:
-                        self.session.append_many(ev.new_messages)
+                        self.session.append_many(ev.new_messages[self._turn_written:])
                         persisted = True
                     yield ev
         finally:
+            self.agent.between_requests = None
             if not persisted and self.session is not None:
-                tail = self.agent.history[mark:]
+                tail = self.agent.history[self._turn_mark:]
                 self.session.append_many(tail)
                 _logger.info("turn_persisted_partial messages=%d", len(tail))
 
-        if self.compaction_threshold is None or not needs_compaction(
-            self.agent.history, threshold_tokens=self.compaction_threshold
-        ):
-            return
-        yield CompactionStart()
-        try:
-            _, cut_index = await self._compact()
-        except asyncio.CancelledError:
-            _logger.info("compaction_cancelled")
-            raise
-        except Exception as e:
-            _logger.exception("compaction_failed")
-            yield CompactionEnd(None, len(self.agent.history), error=str(e))
-            return
-        yield CompactionEnd(cut_index, len(self.agent.history))
+        async for ev in self._maybe_compact():
+            yield ev
 
     def clear_context(self) -> dict[str, Any]:
         """Forget the conversation; keep recording to the same log.

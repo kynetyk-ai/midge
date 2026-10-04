@@ -26,7 +26,7 @@ marked **proposed** have no issue yet and are filed when work on them starts. Si
 is an afternoon, **M** a few sessions, **L** needs a design pass first. Within a milestone, items
 are listed roughly in the order worth doing them.
 
-*Status as of 2026-09-27: M1, M2 and M3 done; the release milestone is what remains. This is a living document: update it in the PR that closes an item.*
+*Status as of 2026-10-03: M1, M2, M3 and the release milestone are done; midge is at v0.1.0. This is a living document: update it in the PR that closes an item.*
 
 ---
 
@@ -135,15 +135,39 @@ on `develop` where it applied. The exit criteria, as met:
 
 ---
 
-## Release — closing the MVP
+## Release — a deployable package ✅
 
-| Item | Issue | Size | Notes |
-|---|---|---|---|
-| CI across Python 3.11–3.13 and macOS | **proposed** | S | CI runs 3.11 on Ubuntu only, and development happens on macOS. |
-| Build the wheel and smoke-test the installed `midge` | **proposed** | S | `poetry check` passes, but nothing proves `pipx install` works. |
-| One source for the version, a CHANGELOG, tag `v0.1.0` | **proposed** | S | The version lives in `pyproject.toml` and `__init__.py`, and there are no tags. |
-| `pyproject` description says "~2k LOC" | **proposed** | S | The core is about 3.8k. |
-| CLAUDE.md says `use_profile` is pending | **proposed** | S | #60 and #67 closed on 2026-07-30. |
+**Goal:** midge is something another project depends on by version, not by commit. A deployer pins
+a tag, installs only what an unattended agent needs into a sandbox image, type-checks its own
+extensions against midge, and drives `midge --rpc` from a host process with a client that moves
+in step with the protocol.
+
+**Done**, as `v0.1.0`: the version has one source, the wheel is smoke-tested in CI across Python 3.11–3.13 on Ubuntu and macOS, a headless install carries no TUI, the package ships `py.typed`, hosts have `midge.rpc.client`, and both images install the built wheel. Two bugs found while driving midge unattended were fixed on the way: compaction never ran inside a long turn (#162), and `midge --rpc` hung with stdin at `/dev/null` (#163).
+
+**Exit criteria:**
+
+- **A tag to pin to.** `v0.1.0` exists, the version has one source, and the sandbox kit's `ref`
+  can name a tag rather than a commit.
+- **The installed package is tested, not just the source tree.** CI builds the wheel, installs it
+  into a clean environment, and runs `midge --version` and a scripted RPC prompt against it.
+- **A headless install carries no TUI.** `pip install midge` is enough for `midge --rpc`;
+  `midge[tui]` adds Textual.
+- **Downstream code type-checks against midge.** An extension's `@tool` functions and `Profile`
+  declarations get midge's annotations, not `Unknown`.
+- **A host has a supported client.** Embedding no longer means copying `examples/rpc_client.py`.
+
+| Item | Issue | PR |
+|---|---|---|
+| One source for the version, a CHANGELOG, tag `v0.1.0` | — | this release |
+| Ship `py.typed` | — | this release |
+| Textual as an optional `tui` extra | — | this release |
+| Compaction inside a long autonomous turn | #162 | this release |
+| `midge --rpc` hung with stdin at `/dev/null` | #163 | this release |
+| Build the wheel and smoke-test the installed `midge` | — | this release |
+| CI across Python 3.11–3.13 and macOS | — | this release |
+| A packaged RPC client, `midge.rpc.client` | — | this release |
+| Sandbox kit and Dockerfile install the built wheel | — | this release |
+| `pyproject` description, CONTRIBUTING branch rule | — | this release |
 
 ---
 
@@ -156,8 +180,10 @@ These shape items above. None of them is settled by writing them down here.
 - **Settings for extensions.** An extension has no `Config` of its own, so the notes example reads
   `MIDGE_NOTES_KB` from the environment. Worth solving once a domain needs more than a path.
 
-Decided during M1, recorded so they are not reopened by accident:
+Decided, recorded so they are not reopened by accident:
 
+- **The RPC client ships inside midge** as `midge.rpc.client`, standard library only, so client and protocol share one version.
+- **Tags only, no PyPI, for v0.1.0.** Install with `pipx install "midge[tui] @ git+https://github.com/kynetyk-ai/midge@v0.1.0"`.
 - **midge is RPC-first.** The TUI is the human-facing mode; the unattended one is primary. Anything
   that needs a person in the loop lives in `tui/` and never blocks RPC.
 - **#101:** anything not read-only runs alone and in order; reads run together. `@tool(read_only=True)`

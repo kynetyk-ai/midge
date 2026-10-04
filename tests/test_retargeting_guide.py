@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from midge import cli
+from midge import cli, tui
 from midge.agent import Agent
 
 GUIDE = Path(__file__).resolve().parent.parent / "docs" / "retargeting.md"
@@ -31,7 +31,7 @@ def test_the_guides_domain_runs_as_the_guide_says(
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("HOME", str(tmp_path))
     captured: list[Agent] = []
-    monkeypatch.setattr(cli, "run_tui", lambda controls, **kw: captured.append(controls.agent))
+    monkeypatch.setattr(tui, "run_tui", lambda controls, **kw: captured.append(controls.agent))
 
     cli.main(["--no-session"])
 

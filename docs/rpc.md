@@ -36,14 +36,30 @@ midge opens no socket or port. One process serves one client, one agent and one 
 several agents means running several processes. Logging goes to stderr or the configured log file
 (see [logging](logging.md)).
 
+## Client
+
+`midge.rpc.client.MidgeClient` is the supported Python client; it uses only the standard library,
+so a host can vendor the file.
+
+```python
+from midge.rpc.client import MidgeClient
+
+with MidgeClient() as client:
+    for frame in client.prompt("what is in README.md?"):
+        if frame["type"] == "assistant_text_delta":
+            print(frame["delta"], end="")
+```
+
+It implements the two rules every client needs: waiting on `agent_settled` and passing unknown
+frames through.
+
 ## Framing
 
 - One JSON object per line, UTF-8, `\n`-terminated. Output is `json.dumps(obj, ensure_ascii=False)`.
 - **Stdout is the protocol and nothing else.** Diagnostics go to stderr, or to the log file.
 - A line longer than **16 MiB** is refused with a [`parse`](#refusals) response and discarded; the
   next line is read normally. A blank line is ignored and unanswered.
-- **EOF on stdin ends the process** after the turn in flight is cancelled and pending frames are
-  flushed. SIGTERM and SIGHUP do the same.
+- Stdin may be a pipe, a file or `/dev/null`; EOF ends the process after the turn in flight is cancelled and pending frames are flushed. SIGTERM and SIGHUP do the same.
 - At startup the server takes the real stdout for the protocol and points `sys.stdout` at stderr,
   so a `print()` from a tool, hook or extension lands on stderr.
 - Outgoing frames pass through a bounded queue. If the client stops reading and the queue fills,
@@ -184,8 +200,8 @@ Guarantees a client can rely on:
 
 - **`agent_settled` is last**, and always arrives — on success, error and abort alike. Wait on it,
   not on `agent_end`: a queued follow-up makes one prompt produce several `agent_end`s.
-- `compaction_start` / `compaction_end` come after the turn's `agent_end` and before
-  `agent_settled`.
+- `compaction_start` / `compaction_end` may arrive during a turn, between a `tool_result` and the
+    next model output, or after `agent_end`. They always come in pairs and before `agent_settled`.
 - Tool calls in one model response that change state run one at a time, in order; read-only ones
   may overlap. Each `tool_result` carries the `tool_call_id` it answers.
 
