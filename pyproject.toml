@@ -27,6 +27,7 @@ pytest = "^9.1"
 pytest-asyncio = "^1.4"
 ruff = "^0.16"
 pyright = "^1.1.414"
+textual = ">=8.2.8,<9.0.0"
 types-pyyaml = "^6.0.12.20260906"
 
 [build-system]
