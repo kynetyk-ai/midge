@@ -103,7 +103,7 @@ def check_abort() -> None:
 
 
 def check_compaction_within_a_turn() -> None:
-    midgectl.up_quiet("--compaction-threshold", "3000")
+    midgectl.up_quiet("--compaction-threshold", "1000", "--compaction-keep-recent", "500")
     frames = midgectl.prompt(
         "Read each file under src/toybox/ and tests/ one at a time, "
         "then give a one-line summary of each after reading all of them."
