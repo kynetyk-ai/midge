@@ -42,6 +42,7 @@ The RPC protocol has its own version number, carried in the `protocol` field of 
 - The skills catalogue is shown only when some tool can open a file by path.
 - Retargeting guide in `docs/retargeting.md`, with tested code blocks.
 - Sub-agent events forwarded to RPC clients with correlation metadata.
+- `midge.rpc.client.MidgeClient`: a standard-library client for `midge --rpc` that checks the protocol version, matches responses to requests, and streams a prompt's events until `agent_settled`.
 
 ### Changed
 
