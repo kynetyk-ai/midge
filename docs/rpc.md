@@ -42,8 +42,7 @@ several agents means running several processes. Logging goes to stderr or the co
 - **Stdout is the protocol and nothing else.** Diagnostics go to stderr, or to the log file.
 - A line longer than **16 MiB** is refused with a [`parse`](#refusals) response and discarded; the
   next line is read normally. A blank line is ignored and unanswered.
-- **EOF on stdin ends the process** after the turn in flight is cancelled and pending frames are
-  flushed. SIGTERM and SIGHUP do the same.
+- Stdin may be a pipe, a file or `/dev/null`; EOF ends the process after the turn in flight is cancelled and pending frames are flushed. SIGTERM and SIGHUP do the same.
 - At startup the server takes the real stdout for the protocol and points `sys.stdout` at stderr,
   so a `print()` from a tool, hook or extension lands on stderr.
 - Outgoing frames pass through a bounded queue. If the client stops reading and the queue fills,
